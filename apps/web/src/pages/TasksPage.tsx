@@ -1,4 +1,4 @@
-import { ReloadOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { FileExcelOutlined, ReloadOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -19,6 +19,7 @@ import { useMemo, useState } from 'react';
 import { apiRequest } from '../api/client.js';
 import type { Integration, TaskDetail, TaskSummary } from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
+import { ExcelImportModal } from './ExcelImportModal.js';
 
 const statusOptions = [
   { value: 'planned', label: '计划中' },
@@ -36,6 +37,7 @@ export function TasksPage() {
   const [currentUser, setCurrentUser] = useState<string>('true');
   const [connectionId, setConnectionId] = useState<string>();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [excelImportOpen, setExcelImportOpen] = useState(false);
   const integrations = useQuery({
     queryKey: ['integrations'],
     queryFn: () => apiRequest<Integration[]>('/api/v1/integrations'),
@@ -122,6 +124,13 @@ export function TasksPage() {
       </div>
       <Card>
         <Space wrap style={{ marginBottom: 16 }}>
+          <Button
+            type="primary"
+            icon={<FileExcelOutlined />}
+            onClick={() => setExcelImportOpen(true)}
+          >
+            Excel 安全导入
+          </Button>
           <Select
             allowClear
             placeholder="统一状态"
@@ -263,6 +272,7 @@ export function TasksPage() {
       >
         {detail.data?.data && <TaskDetailView task={detail.data.data} />}
       </Drawer>
+      <ExcelImportModal open={excelImportOpen} onClose={() => setExcelImportOpen(false)} />
     </Space>
   );
 }
@@ -296,6 +306,68 @@ function TaskDetailView({ task }: { task: TaskDetail }) {
           不持久化 Jira description，仅保存任务视图所需字段
         </Descriptions.Item>
       </Descriptions>
+      <div>
+        <Typography.Title level={4}>字段来源与合并决定</Typography.Title>
+        {task.fieldProvenances.length === 0 ? (
+          <Empty description="尚无逐字段来源记录" />
+        ) : (
+          <Table
+            rowKey="id"
+            size="small"
+            pagination={{ pageSize: 8 }}
+            dataSource={task.fieldProvenances}
+            columns={[
+              {
+                title: '字段',
+                dataIndex: 'fieldName',
+                render: (value: string) => fieldLabel(value),
+              },
+              {
+                title: '当前来源',
+                render: (_, row) => (
+                  <Space>
+                    <Tag color={row.sourceType === 'jira' ? 'blue' : 'green'}>
+                      {row.sourceType.toUpperCase()}
+                    </Tag>
+                    <Tag color={row.active ? 'success' : 'default'}>
+                      {row.active ? '当前生效' : '历史'}
+                    </Tag>
+                  </Space>
+                ),
+              },
+              {
+                title: '决定 / 值',
+                render: (_, row) => (
+                  <Space direction="vertical" size={0}>
+                    <Typography.Text>{provenanceDecision(row.decision)}</Typography.Text>
+                    <Typography.Text code>{displaySourceValue(row.value)}</Typography.Text>
+                  </Space>
+                ),
+              },
+              {
+                title: '原因',
+                dataIndex: 'reason',
+                render: (value: string | null) => value ?? '—',
+              },
+              {
+                title: '生效 / 失效',
+                render: (_, row) => (
+                  <Space direction="vertical" size={0}>
+                    <Typography.Text>
+                      {new Date(row.effectiveAt).toLocaleString('zh-CN')}
+                    </Typography.Text>
+                    <Typography.Text type="secondary">
+                      {row.supersededAt
+                        ? `失效 ${new Date(row.supersededAt).toLocaleString('zh-CN')}`
+                        : '仍在生效'}
+                    </Typography.Text>
+                  </Space>
+                ),
+              },
+            ]}
+          />
+        )}
+      </div>
       <div>
         <Typography.Title level={4}>状态观测时间线</Typography.Title>
         {task.statusEvents.length === 0 ? (
@@ -370,4 +442,32 @@ function TaskDetailView({ task }: { task: TaskDetail }) {
 function seconds(value: number | null): string {
   if (value === null) return '—';
   return `${(value / 3600).toFixed(value % 3600 === 0 ? 0 : 1)} h`;
+}
+
+function fieldLabel(value: string): string {
+  return (
+    {
+      plannedStartDate: '计划开始',
+      dueDate: '到期日',
+      originalEstimateSeconds: '原始预估工时',
+    }[value] ?? value
+  );
+}
+
+function provenanceDecision(value: TaskDetail['fieldProvenances'][number]['decision']): string {
+  return {
+    source_fact: '来源事实',
+    supplement: 'Excel 补充 Jira 空字段',
+    keep_jira: '保留 Jira 主事实',
+    override: '人工覆盖',
+    superseded: '已被替代',
+  }[value];
+}
+
+function displaySourceValue(value: unknown): string {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return JSON.stringify(value);
 }

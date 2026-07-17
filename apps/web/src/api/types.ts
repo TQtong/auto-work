@@ -195,6 +195,19 @@ export interface TaskDetail extends TaskSummary {
     contentHash: string;
     observedAt: string;
   }>;
+  fieldProvenances: Array<{
+    id: string;
+    fieldName: string;
+    sourceType: 'jira' | 'excel' | 'manual';
+    decision: 'source_fact' | 'supplement' | 'keep_jira' | 'override' | 'superseded';
+    value: unknown;
+    reason: string | null;
+    active: boolean;
+    effectiveAt: string;
+    supersededAt: string | null;
+    sourceObservationId: string | null;
+    excelImportRowId: string | null;
+  }>;
   statusEvents: Array<{
     id: string;
     from: { id: string | null; name: string | null; normalized: string | null };
@@ -204,6 +217,122 @@ export interface TaskDetail extends TaskSummary {
     observedIntervalStart: string | null;
     precision: 'observed_interval';
   }>;
+}
+
+export type ExcelDiagnosticSeverity = 'blocking' | 'conflict' | 'warning' | 'info';
+
+export interface ExcelDiagnostic {
+  severity: ExcelDiagnosticSeverity;
+  code: string;
+  message: string;
+  cell?: string;
+  suggestedAction?: string;
+}
+
+export interface ExcelImportSummary {
+  id: string;
+  fileName: string;
+  fileSha256: string;
+  fileSizeBytes: number;
+  parserVersion: string;
+  dateSystem: string;
+  workdayHours: number;
+  status: 'preview_ready' | 'committed' | 'failed';
+  sheetSummaries: Array<{
+    name: string;
+    normalizedName: string;
+    matchedBy: 'exact_name' | 'header';
+    rowCount: number;
+    taskRowCount: number;
+    containerRowCount: number;
+    ignoredColumns: Array<{ column: number; header: string | null }>;
+    diagnostics: ExcelDiagnostic[];
+  }>;
+  ignoredColumns: Array<{ sheetName: string; column: number; header: string | null }>;
+  diagnostics: ExcelDiagnostic[];
+  counts: {
+    blocking: number;
+    conflict: number;
+    warning: number;
+    info: number;
+    tasks: number;
+    containers: number;
+  };
+  errorCode: string | null;
+  errorSummary: string | null;
+  committedAt: string | null;
+  commitSummary: unknown;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExcelRawCell {
+  address: string;
+  type: string;
+  value: unknown;
+  formula: string | null;
+  cachedResult: unknown;
+  numberFormat: string | null;
+}
+
+export interface ExcelNormalizedRow {
+  parentIssueKey: string | null;
+  parentTitle: string | null;
+  title: string | null;
+  assigneeName: string | null;
+  plannedStartDate: string | null;
+  dueDate: string | null;
+  estimateHours: number | null;
+  personDays: number | null;
+  personDaysSource: 'empty' | 'formula_cache' | 'provided' | 'derived';
+  isCurrentUser: boolean;
+}
+
+export interface ExcelImportRow {
+  id: string;
+  sheetName: string;
+  rowNumber: number;
+  rowKind: 'task' | 'container';
+  fingerprint: string;
+  raw: Record<string, ExcelRawCell | null>;
+  normalized: ExcelNormalizedRow;
+  diagnostics: ExcelDiagnostic[];
+  candidates: Array<{
+    id: string;
+    issueKey: string | null;
+    title: string;
+    assigneeName: string | null;
+    jiraValues: {
+      plannedStartDate: string | null;
+      dueDate: string | null;
+      estimateHours: number | null;
+    };
+  }>;
+  resolution: Record<string, unknown>;
+  proposedAction: 'create_excel' | 'link_jira' | 'skip' | 'conflict' | 'blocked';
+  commitStatus: 'pending' | 'committed' | 'skipped';
+  matchedTask: { id: string; issueKey: string | null; title: string; primarySource: string } | null;
+  committedTaskId: string | null;
+  version: number;
+}
+
+export interface ExcelImportDetail extends ExcelImportSummary {
+  rows: ExcelImportRow[];
+}
+
+export interface ExcelCommitResult {
+  importId: string;
+  status: 'committed';
+  committedAt: string;
+  previewVersion: number;
+  summary: {
+    created: number;
+    linked: number;
+    supplemented: number;
+    keptJira: number;
+    skipped: number;
+  };
 }
 
 export interface RepositorySnapshot {
