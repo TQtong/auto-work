@@ -512,6 +512,8 @@ model Task {
   childTasks               Task[]                  @relation("TaskHierarchy")
   statusEvents             TaskStatusEvent[]
   sourceObservations       TaskSourceObservation[]
+  matchedExcelRows         ExcelImportRow[]
+  fieldProvenances         TaskFieldProvenance[]
 
   @@unique([connectionId, issueKey])
   @@index([projectId, normalizedStatus, dueDate])
@@ -542,20 +544,21 @@ model TaskStatusEvent {
 }
 
 model TaskSourceObservation {
-  id               String               @id
-  taskId           String               @map("task_id")
-  sourceType       String               @map("source_type")
-  sourceUpdatedAt  DateTime?            @map("source_updated_at")
-  contentHash      String               @map("content_hash")
-  fieldsJson       String               @map("fields_json")
-  warningsJson     String               @default("[]") @map("warnings_json")
-  syncRunId        String?              @map("sync_run_id")
-  mappingVersionId String?              @map("mapping_version_id")
-  observedAt       DateTime             @map("observed_at")
-  task             Task                 @relation(fields: [taskId], references: [id], onDelete: Restrict)
-  syncRun          JiraSyncRun?         @relation(fields: [syncRunId], references: [id], onDelete: Restrict)
-  mappingVersion   FieldMappingVersion? @relation(fields: [mappingVersionId], references: [id], onDelete: Restrict)
+  id               String                @id
+  taskId           String                @map("task_id")
+  sourceType       String                @map("source_type")
+  sourceUpdatedAt  DateTime?             @map("source_updated_at")
+  contentHash      String                @map("content_hash")
+  fieldsJson       String                @map("fields_json")
+  warningsJson     String                @default("[]") @map("warnings_json")
+  syncRunId        String?               @map("sync_run_id")
+  mappingVersionId String?               @map("mapping_version_id")
+  observedAt       DateTime              @map("observed_at")
+  task             Task                  @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  syncRun          JiraSyncRun?          @relation(fields: [syncRunId], references: [id], onDelete: Restrict)
+  mappingVersion   FieldMappingVersion?  @relation(fields: [mappingVersionId], references: [id], onDelete: Restrict)
   statusEvents     TaskStatusEvent[]
+  fieldProvenances TaskFieldProvenance[]
 
   @@unique([taskId, sourceUpdatedAt, contentHash])
   @@index([syncRunId])
@@ -607,6 +610,90 @@ model JiraSyncRun {
   @@index([connectionId, startedAt])
   @@index([status, startedAt])
   @@map("jira_sync_run")
+}
+
+model ExcelImport {
+  id                 String           @id
+  fileName           String           @map("file_name")
+  fileSha256         String           @map("file_sha256")
+  fileSizeBytes      Int              @map("file_size_bytes")
+  parserVersion      String           @map("parser_version")
+  dateSystem         String           @map("date_system")
+  workdayHours       Float            @default(8) @map("workday_hours")
+  status             String           @default("preview_ready")
+  sheetSummaryJson   String           @default("[]") @map("sheet_summary_json")
+  ignoredColumnsJson String           @default("[]") @map("ignored_columns_json")
+  blockingCount      Int              @default(0) @map("blocking_count")
+  conflictCount      Int              @default(0) @map("conflict_count")
+  warningCount       Int              @default(0) @map("warning_count")
+  infoCount          Int              @default(0) @map("info_count")
+  taskRowCount       Int              @default(0) @map("task_row_count")
+  containerRowCount  Int              @default(0) @map("container_row_count")
+  errorCode          String?          @map("error_code")
+  errorSummary       String?          @map("error_summary")
+  createdBy          String           @map("created_by")
+  committedAt        DateTime?        @map("committed_at")
+  version            Int              @default(1)
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+  rows               ExcelImportRow[]
+
+  @@unique([fileSha256, parserVersion])
+  @@index([status, createdAt])
+  @@map("excel_import")
+}
+
+model ExcelImportRow {
+  id                  String                @id
+  importId            String                @map("import_id")
+  sheetName           String                @map("sheet_name")
+  rowNumber           Int                   @map("row_number")
+  rowKind             String                @map("row_kind")
+  rowFingerprint      String                @map("row_fingerprint")
+  rawJson             String                @map("raw_json")
+  normalizedJson      String                @map("normalized_json")
+  diagnosticsJson     String                @default("[]") @map("diagnostics_json")
+  candidatesJson      String                @default("[]") @map("candidates_json")
+  resolutionJson      String                @default("{}") @map("resolution_json")
+  proposedAction      String                @map("proposed_action")
+  commitStatus        String                @default("pending") @map("commit_status")
+  matchedTaskId       String?               @map("matched_task_id")
+  committedTaskId     String?               @map("committed_task_id")
+  sourceObservationId String?               @map("source_observation_id")
+  version             Int                   @default(1)
+  createdAt           DateTime              @default(now()) @map("created_at")
+  updatedAt           DateTime              @updatedAt @map("updated_at")
+  import              ExcelImport           @relation(fields: [importId], references: [id], onDelete: Restrict)
+  matchedTask         Task?                 @relation(fields: [matchedTaskId], references: [id], onDelete: Restrict)
+  fieldProvenances    TaskFieldProvenance[]
+
+  @@unique([importId, sheetName, rowNumber])
+  @@index([importId, proposedAction, commitStatus])
+  @@index([rowFingerprint])
+  @@map("excel_import_row")
+}
+
+model TaskFieldProvenance {
+  id                  String                 @id
+  taskId              String                 @map("task_id")
+  fieldName           String                 @map("field_name")
+  sourceType          String                 @map("source_type")
+  decision            String
+  valueJson           String                 @map("value_json")
+  sourceObservationId String?                @map("source_observation_id")
+  excelImportRowId    String?                @map("excel_import_row_id")
+  reason              String?
+  active              Boolean                @default(false)
+  effectiveAt         DateTime               @default(now()) @map("effective_at")
+  supersededAt        DateTime?              @map("superseded_at")
+  createdAt           DateTime               @default(now()) @map("created_at")
+  task                Task                   @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  sourceObservation   TaskSourceObservation? @relation(fields: [sourceObservationId], references: [id], onDelete: Restrict)
+  excelImportRow      ExcelImportRow?        @relation(fields: [excelImportRowId], references: [id], onDelete: Restrict)
+
+  @@index([taskId, fieldName, active])
+  @@index([excelImportRowId])
+  @@map("task_field_provenance")
 }
 
 model IdempotencyRecord {

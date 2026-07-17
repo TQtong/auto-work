@@ -6,6 +6,7 @@ import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import fastifyCookie from '@fastify/cookie';
 import fastifyHelmet from '@fastify/helmet';
+import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { AppModule } from './app.module.js';
@@ -33,6 +34,18 @@ async function bootstrap(): Promise<void> {
   await mkdir(config.dataDir, { recursive: true });
 
   await app.register(fastifyCookie);
+  await app.register(fastifyMultipart, {
+    throwFileSizeLimit: true,
+    limits: {
+      fieldNameSize: 100,
+      fieldSize: 1_024,
+      fields: 0,
+      fileSize: 8 * 1024 * 1024,
+      files: 1,
+      headerPairs: 128,
+      parts: 1,
+    },
+  });
   await app.register(fastifyHelmet, {
     contentSecurityPolicy: {
       directives: {
