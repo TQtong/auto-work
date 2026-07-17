@@ -1,0 +1,204 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("AUTO_WORK_DATABASE_URL")
+}
+
+model SchemaMetadata {
+  id               Int      @id @default(1)
+  applicationVersion String  @map("application_version")
+  schemaChecksum   String    @map("schema_checksum")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@map("schema_metadata")
+}
+
+model InstanceLease {
+  name       String   @id
+  ownerId    String   @map("owner_id")
+  acquiredAt DateTime @map("acquired_at")
+  renewedAt  DateTime @map("renewed_at")
+  expiresAt  DateTime @map("expires_at")
+
+  @@map("instance_lease")
+}
+
+model UserProfile {
+  id           String          @id
+  windowsSid   String          @unique @map("windows_sid")
+  displayName  String          @map("display_name")
+  timezone     String          @default("Asia/Shanghai")
+  workdayHours Int             @default(8) @map("workday_hours")
+  version      Int             @default(1)
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+  aliases      IdentityAlias[]
+
+  @@map("user_profile")
+}
+
+model IdentityAlias {
+  id              String      @id
+  profileId       String      @map("profile_id")
+  aliasType       String      @map("alias_type")
+  value           String
+  normalizedValue String      @map("normalized_value")
+  source          String
+  enabled         Boolean     @default(false)
+  verifiedAt      DateTime?   @map("verified_at")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+  profile         UserProfile @relation(fields: [profileId], references: [id], onDelete: Restrict)
+
+  @@unique([profileId, aliasType, normalizedValue])
+  @@index([profileId, aliasType, enabled])
+  @@map("identity_alias")
+}
+
+model IntegrationConnection {
+  id                 String                @id
+  type               String
+  name               String
+  baseUrl            String?               @map("base_url")
+  credentialRef      String?               @map("credential_ref")
+  credentialMask     String?               @map("credential_mask")
+  enabled            Boolean               @default(true)
+  status             String                @default("unknown")
+  capabilitiesJson   String                @default("{}") @map("capabilities_json")
+  configJson         String                @default("{}") @map("config_json")
+  lastTestedAt       DateTime?             @map("last_tested_at")
+  lastSuccessAt      DateTime?             @map("last_success_at")
+  disabledAt         DateTime?             @map("disabled_at")
+  version            Int                   @default(1)
+  createdAt          DateTime              @default(now()) @map("created_at")
+  updatedAt          DateTime              @updatedAt @map("updated_at")
+  fieldMappings      FieldMappingVersion[]
+
+  @@index([type, enabled, status])
+  @@map("integration_connection")
+}
+
+model FieldMappingVersion {
+  id                    String                @id
+  connectionId          String                @map("connection_id")
+  versionNo             Int                   @map("version_no")
+  effectiveAt           DateTime              @default(now()) @map("effective_at")
+  fieldMappingsJson     String                @map("field_mappings_json")
+  statusMappingsJson    String                @default("{}") @map("status_mappings_json")
+  parserRulesJson       String                @default("{}") @map("parser_rules_json")
+  validationSummaryJson String                @default("{}") @map("validation_summary_json")
+  createdBy             String                @map("created_by")
+  createdAt             DateTime              @default(now()) @map("created_at")
+  connection            IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+
+  @@unique([connectionId, versionNo])
+  @@map("field_mapping_version")
+}
+
+model IdempotencyRecord {
+  id             String    @id
+  actorId        String    @map("actor_id")
+  route          String
+  idempotencyKey String    @map("idempotency_key")
+  requestHash    String    @map("request_hash")
+  state          String    @default("processing")
+  httpStatus     Int?      @map("http_status")
+  responseJson   String?   @map("response_json")
+  errorCode      String?   @map("error_code")
+  expiresAt      DateTime? @map("expires_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@unique([actorId, route, idempotencyKey])
+  @@index([expiresAt])
+  @@map("idempotency_record")
+}
+
+model Job {
+  id              String    @id
+  type            String
+  payloadRef      String?   @map("payload_ref")
+  payloadSummary  String    @default("{}") @map("payload_summary")
+  priority        Int       @default(100)
+  status          String    @default("queued")
+  progress        Int       @default(0)
+  scheduledAt     DateTime  @map("scheduled_at")
+  leaseOwner      String?   @map("lease_owner")
+  leaseUntil      DateTime? @map("lease_until")
+  attemptCount    Int       @default(0) @map("attempt_count")
+  maxAttempts     Int       @default(3) @map("max_attempts")
+  dedupeKey       String?   @map("dedupe_key")
+  cancelRequested Boolean   @default(false) @map("cancel_requested")
+  lastErrorCode   String?   @map("last_error_code")
+  lastError       String?   @map("last_error")
+  resultJson      String?   @map("result_json")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  startedAt       DateTime? @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, scheduledAt, priority])
+  @@index([dedupeKey, status])
+  @@map("job")
+}
+
+model AuditEvent {
+  eventId          String   @id @map("event_id")
+  occurredAt       DateTime @default(now()) @map("occurred_at")
+  actorType        String   @map("actor_type")
+  actorId          String   @map("actor_id")
+  action           String
+  targetType       String   @map("target_type")
+  targetId         String   @map("target_id")
+  correlationId    String   @map("correlation_id")
+  approvalId       String?  @map("approval_id")
+  outcome          String
+  beforeSummaryHash String? @map("before_summary_hash")
+  afterSummaryHash String?  @map("after_summary_hash")
+  clientSessionHash String  @map("client_session_hash")
+  errorCode        String?  @map("error_code")
+
+  @@index([occurredAt])
+  @@index([targetType, targetId])
+  @@index([correlationId])
+  @@map("audit_event")
+}
+
+model AppEventLog {
+  id            String   @id
+  timestamp     DateTime @default(now())
+  level         String
+  component     String
+  eventName     String   @map("event_name")
+  correlationId String?  @map("correlation_id")
+  operationId   String?  @map("operation_id")
+  targetType    String?  @map("target_type")
+  targetId      String?  @map("target_id")
+  durationMs    Int?     @map("duration_ms")
+  outcome       String?
+  errorCode     String?  @map("error_code")
+  attributesJson String  @default("{}") @map("attributes_json")
+
+  @@index([timestamp])
+  @@index([correlationId])
+  @@map("app_event_log")
+}
+
+model BackupArtifact {
+  id             String    @id
+  fileName       String?   @map("file_name")
+  path           String?
+  sha256         String?
+  sizeBytes      BigInt?   @map("size_bytes")
+  status         String
+  schemaChecksum String?   @map("schema_checksum")
+  verifiedAt     DateTime? @map("verified_at")
+  errorCode      String?   @map("error_code")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("backup_artifact")
+}

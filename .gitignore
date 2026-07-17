@@ -1,0 +1,25 @@
+node_modules/
+dist/
+coverage/
+.vite/
+*.log
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+
+# 本地运行数据不得进入版本库
+data/
+backups/
+exports/
+diagnostics/
+tmp/
+*.db
+*.db-shm
+*.db-wal
+
+# Windows 与编辑器文件
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/

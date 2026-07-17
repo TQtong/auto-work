@@ -1,0 +1,32 @@
+{
+  "name": "@auto-work/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "dev": "vite",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@ant-design/icons": "6.1.0",
+    "@auto-work/contracts": "workspace:*",
+    "@tanstack/react-query": "5.90.12",
+    "antd": "6.1.1",
+    "dayjs": "1.11.19",
+    "react": "19.2.1",
+    "react-dom": "19.2.1",
+    "react-router-dom": "7.10.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.1.2",
+    "@vitest/coverage-v8": "4.1.10",
+    "vite": "7.2.7",
+    "vitest": "4.1.10"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "name": "auto-work",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows 本机多项目研发、周报与绩效管理工作台",
+  "packageManager": "pnpm@10.14.0",
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "dev": "pnpm --parallel --filter @auto-work/api --filter @auto-work/web dev",
+    "lint": "pnpm -r --if-present lint",
+    "test": "pnpm -r --if-present test",
+    "test:coverage": "pnpm -r --if-present test:coverage",
+    "typecheck": "pnpm --filter @auto-work/contracts build && pnpm --filter @auto-work/domain build && pnpm --filter @auto-work/api typecheck && pnpm --filter @auto-work/web typecheck",
+    "format": "prettier --write package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs .prettierrc.json apps packages README.md",
+    "format:check": "prettier --check package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs .prettierrc.json apps packages README.md",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "db:generate": "pnpm --filter @auto-work/api prisma:generate",
+    "db:migrate": "pnpm --filter @auto-work/api prisma:migrate",
+    "db:deploy": "pnpm --filter @auto-work/api prisma:deploy",
+    "db:status": "pnpm --filter @auto-work/api prisma:status",
+    "db:validate": "pnpm --filter @auto-work/api prisma:validate"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^22.19.1",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^16.5.0",
+    "prettier": "^3.7.4",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.48.1"
+  }
+}

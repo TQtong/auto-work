@@ -1,0 +1,113 @@
+:root {
+  font-family: Inter, 'Microsoft YaHei', system-ui, sans-serif;
+  color: #13213c;
+  background: #f4f7fb;
+  font-synthesis: none;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  min-width: 1180px;
+  background: #f4f7fb;
+}
+.startup {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  align-items: center;
+  justify-content: center;
+}
+.app-layout {
+  min-height: 100vh;
+}
+.app-sider {
+  border-right: 1px solid #e7ecf3;
+  position: fixed !important;
+  inset: 0 auto 0 0;
+  z-index: 10;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 26px 22px 20px;
+}
+.brand h4 {
+  margin: 0 !important;
+}
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  color: white;
+  font-weight: 800;
+  background: linear-gradient(135deg, #1d4ed8, #06b6d4);
+  box-shadow: 0 8px 20px #1d4ed830;
+}
+.local-boundary {
+  position: absolute;
+  bottom: 20px;
+  left: 22px;
+  right: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px;
+  border-radius: 10px;
+  background: #f6f8fc;
+}
+.app-layout > .ant-layout {
+  margin-left: 246px;
+}
+.app-header {
+  height: 72px;
+  padding: 0 28px;
+  background: rgba(255, 255, 255, 0.96);
+  border-bottom: 1px solid #e7ecf3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 8;
+}
+.app-content {
+  padding: 28px;
+  max-width: 1680px;
+  width: 100%;
+  margin: 0 auto;
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+}
+.job-progress {
+  padding: 10px 0;
+  border-bottom: 1px solid #eef1f5;
+}
+.job-progress:last-child {
+  border-bottom: 0;
+}
+.safe-json {
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: #111827;
+  color: #d1fae5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ant-card {
+  box-shadow: 0 4px 16px rgb(28 50 87 / 5%);
+}
+@media (max-width: 1280px) {
+  .app-content {
+    padding: 20px;
+  }
+}
