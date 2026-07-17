@@ -81,3 +81,63 @@ export interface Backup {
   errorCode: string | null;
   createdAt: string;
 }
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  alias: string | null;
+  description: string | null;
+  enabled: boolean;
+  archivedAt: string | null;
+  repositoryCount: number;
+  version: number;
+}
+
+export interface RepositorySnapshot {
+  id: string;
+  headSha: string | null;
+  branchName: string | null;
+  detached: boolean;
+  unborn: boolean;
+  upstreamRef: string | null;
+  aheadCount: number;
+  behindCount: number;
+  stagedCount: number;
+  unstagedCount: number;
+  untrackedCount: number;
+  conflictedCount: number;
+  pathSummary: Array<{ path: string; previousPath?: string; state: string }>;
+  stashCount: number;
+  recentCommit: Record<string, string>;
+  remotes: Array<{
+    name: string;
+    sanitizedUrl: string | null;
+    protocol: string | null;
+    host: string | null;
+    path: string | null;
+  }>;
+  status: string;
+  errorCode: string | null;
+  collectedAt: string;
+}
+
+export interface RepositoryView {
+  id: string;
+  project: { id: string; name: string; alias: string | null } | null;
+  canonicalPath: string;
+  displayName: string;
+  alias: string | null;
+  gitDirKind: string;
+  remoteName: string | null;
+  remoteUrl: string | null;
+  remoteHost: string | null;
+  remotePath: string | null;
+  baselineBranch: string | null;
+  whitelistStatus: string;
+  statusReason: string | null;
+  lastSeenAt: string | null;
+  lastLocalRefreshAt: string | null;
+  freshness: string;
+  version: number;
+  latestSnapshot: RepositorySnapshot | null;
+}

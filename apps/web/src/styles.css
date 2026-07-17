@@ -82,6 +82,26 @@ body {
   width: 100%;
   margin: 0 auto;
 }
+.page-stack {
+  width: 100%;
+}
+.page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+.page-heading h2 {
+  margin-bottom: 4px !important;
+}
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+}
+.summary-grid h3 {
+  margin: 8px 0 0 !important;
+}
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

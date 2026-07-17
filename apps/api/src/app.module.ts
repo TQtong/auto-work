@@ -13,6 +13,8 @@ import { SettingsModule } from './modules/settings/settings.module.js';
 import { IntegrationsModule } from './modules/integrations/integrations.module.js';
 import { BackupModule } from './modules/backup/backup.module.js';
 import { SessionModule } from './modules/session/session.module.js';
+import { GitModule } from './infrastructure/git/git.module.js';
+import { RepositoriesModule } from './modules/repositories/repositories.module.js';
 
 @Module({
   imports: [
@@ -21,6 +23,7 @@ import { SessionModule } from './modules/session/session.module.js';
     DatabaseModule,
     HttpSecurityModule,
     VaultModule,
+    GitModule,
     ScheduleModule.forRoot(),
     SessionModule,
     AuditModule,
@@ -29,6 +32,7 @@ import { SessionModule } from './modules/session/session.module.js';
     SettingsModule,
     IntegrationsModule,
     BackupModule,
+    RepositoriesModule,
     HealthModule,
   ],
 })

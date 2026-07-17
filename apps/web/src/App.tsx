@@ -22,6 +22,9 @@ const DashboardPage = lazy(async () => ({
 const FeatureStagePage = lazy(async () => ({
   default: (await import('./pages/FeatureStagePage.js')).FeatureStagePage,
 }));
+const RepositoriesPage = lazy(async () => ({
+  default: (await import('./pages/RepositoriesPage.js')).RepositoriesPage,
+}));
 const OperationsPage = lazy(async () => ({
   default: (await import('./pages/OperationsPage.js')).OperationsPage,
 }));
@@ -141,21 +144,7 @@ export function App() {
           <Suspense fallback={<Skeleton active paragraph={{ rows: 8 }} />}>
             <Routes>
               <Route path="/" element={<DashboardPage />} />
-              <Route
-                path="/repositories"
-                element={
-                  <FeatureStagePage
-                    title="项目与仓库"
-                    description="仓库发现、GitLab 元数据与本地状态读模型将在第二阶段接入。"
-                    dependencies={[
-                      '确认 D:\\company 仓库根',
-                      '受限 Git Worker 健康握手',
-                      'GitLab 能力矩阵',
-                      '仓库白名单确认',
-                    ]}
-                  />
-                }
-              />
+              <Route path="/repositories" element={<RepositoriesPage />} />
               <Route
                 path="/git-batches"
                 element={

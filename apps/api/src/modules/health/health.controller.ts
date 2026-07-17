@@ -4,6 +4,7 @@ import type { FastifyRequest } from 'fastify';
 import { APP_CONFIG, type AppConfig } from '../../config/config.module.js';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import { InstanceLeaseService } from '../jobs/instance-lease.service.js';
+import { GitHealthService } from '../../infrastructure/git/git-health.service.js';
 
 @Controller('health')
 export class HealthController {
@@ -11,6 +12,7 @@ export class HealthController {
     private readonly prisma: PrismaService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly instanceLease: InstanceLeaseService,
+    private readonly gitHealth: GitHealthService,
   ) {}
 
   @Get()
@@ -27,7 +29,11 @@ export class HealthController {
             persistence: 'sqlite',
             leaseOwner: this.instanceLease.currentOwnerId,
           },
-          gitWorker: { ready: false, reason: '尚未完成首次健康握手' },
+          gitWorker: {
+            ready: this.gitHealth.ready,
+            version: this.gitHealth.version,
+            reason: this.gitHealth.reason,
+          },
         },
         binding: { host: this.config.host, port: this.config.port, loopbackOnly: true },
         environment: this.config.environment,

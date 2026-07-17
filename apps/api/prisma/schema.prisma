@@ -8,10 +8,10 @@ datasource db {
 }
 
 model SchemaMetadata {
-  id               Int      @id @default(1)
-  applicationVersion String  @map("application_version")
-  schemaChecksum   String    @map("schema_checksum")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+  id                 Int      @id @default(1)
+  applicationVersion String   @map("application_version")
+  schemaChecksum     String   @map("schema_checksum")
+  updatedAt          DateTime @updatedAt @map("updated_at")
 
   @@map("schema_metadata")
 }
@@ -58,24 +58,102 @@ model IdentityAlias {
   @@map("identity_alias")
 }
 
+model Project {
+  id           String       @id
+  name         String
+  alias        String?
+  description  String?
+  enabled      Boolean      @default(true)
+  sortOrder    Int          @default(0) @map("sort_order")
+  version      Int          @default(1)
+  archivedAt   DateTime?    @map("archived_at")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+  repositories Repository[]
+
+  @@index([enabled, archivedAt, sortOrder])
+  @@map("project")
+}
+
+model Repository {
+  id                 String        @id
+  projectId          String?       @map("project_id")
+  canonicalPath      String        @unique @map("canonical_path")
+  realPathHash       String        @map("real_path_hash")
+  identityHash       String        @map("identity_hash")
+  displayName        String        @map("display_name")
+  alias              String?
+  gitDirKind         String        @map("git_dir_kind")
+  remoteName         String?       @map("remote_name")
+  remoteUrl          String?       @map("remote_url")
+  remoteProtocol     String?       @map("remote_protocol")
+  remoteHost         String?       @map("remote_host")
+  remotePath         String?       @map("remote_path")
+  gitlabProjectRef   String?       @map("gitlab_project_ref")
+  baselineBranch     String?       @map("baseline_branch")
+  whitelistStatus    String        @default("discovered") @map("whitelist_status")
+  statusReason       String?       @map("status_reason")
+  lastSeenAt         DateTime?     @map("last_seen_at")
+  lastLocalRefreshAt DateTime?     @map("last_local_refresh_at")
+  version            Int           @default(1)
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+  project            Project?      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  snapshots          GitSnapshot[]
+
+  @@index([projectId, whitelistStatus])
+  @@index([identityHash])
+  @@index([remoteHost, remotePath])
+  @@map("repository")
+}
+
+model GitSnapshot {
+  id               String     @id
+  repositoryId     String     @map("repository_id")
+  headSha          String?    @map("head_sha")
+  branchName       String?    @map("branch_name")
+  detached         Boolean    @default(false)
+  unborn           Boolean    @default(false)
+  upstreamRef      String?    @map("upstream_ref")
+  aheadCount       Int        @default(0) @map("ahead_count")
+  behindCount      Int        @default(0) @map("behind_count")
+  stagedCount      Int        @default(0) @map("staged_count")
+  unstagedCount    Int        @default(0) @map("unstaged_count")
+  untrackedCount   Int        @default(0) @map("untracked_count")
+  conflictedCount  Int        @default(0) @map("conflicted_count")
+  pathSummaryJson  String     @default("[]") @map("path_summary_json")
+  stashCount       Int        @default(0) @map("stash_count")
+  recentCommitJson String     @default("{}") @map("recent_commit_json")
+  remotesJson      String     @default("[]") @map("remotes_json")
+  outputTruncated  Boolean    @default(false) @map("output_truncated")
+  status           String     @default("fresh")
+  errorCode        String?    @map("error_code")
+  errorSummary     String?    @map("error_summary")
+  collectedAt      DateTime   @default(now()) @map("collected_at")
+  repository       Repository @relation(fields: [repositoryId], references: [id], onDelete: Restrict)
+
+  @@index([repositoryId, collectedAt])
+  @@map("git_snapshot")
+}
+
 model IntegrationConnection {
-  id                 String                @id
-  type               String
-  name               String
-  baseUrl            String?               @map("base_url")
-  credentialRef      String?               @map("credential_ref")
-  credentialMask     String?               @map("credential_mask")
-  enabled            Boolean               @default(true)
-  status             String                @default("unknown")
-  capabilitiesJson   String                @default("{}") @map("capabilities_json")
-  configJson         String                @default("{}") @map("config_json")
-  lastTestedAt       DateTime?             @map("last_tested_at")
-  lastSuccessAt      DateTime?             @map("last_success_at")
-  disabledAt         DateTime?             @map("disabled_at")
-  version            Int                   @default(1)
-  createdAt          DateTime              @default(now()) @map("created_at")
-  updatedAt          DateTime              @updatedAt @map("updated_at")
-  fieldMappings      FieldMappingVersion[]
+  id               String                @id
+  type             String
+  name             String
+  baseUrl          String?               @map("base_url")
+  credentialRef    String?               @map("credential_ref")
+  credentialMask   String?               @map("credential_mask")
+  enabled          Boolean               @default(true)
+  status           String                @default("unknown")
+  capabilitiesJson String                @default("{}") @map("capabilities_json")
+  configJson       String                @default("{}") @map("config_json")
+  lastTestedAt     DateTime?             @map("last_tested_at")
+  lastSuccessAt    DateTime?             @map("last_success_at")
+  disabledAt       DateTime?             @map("disabled_at")
+  version          Int                   @default(1)
+  createdAt        DateTime              @default(now()) @map("created_at")
+  updatedAt        DateTime              @updatedAt @map("updated_at")
+  fieldMappings    FieldMappingVersion[]
 
   @@index([type, enabled, status])
   @@map("integration_connection")
@@ -146,20 +224,20 @@ model Job {
 }
 
 model AuditEvent {
-  eventId          String   @id @map("event_id")
-  occurredAt       DateTime @default(now()) @map("occurred_at")
-  actorType        String   @map("actor_type")
-  actorId          String   @map("actor_id")
-  action           String
-  targetType       String   @map("target_type")
-  targetId         String   @map("target_id")
-  correlationId    String   @map("correlation_id")
-  approvalId       String?  @map("approval_id")
-  outcome          String
-  beforeSummaryHash String? @map("before_summary_hash")
-  afterSummaryHash String?  @map("after_summary_hash")
-  clientSessionHash String  @map("client_session_hash")
-  errorCode        String?  @map("error_code")
+  eventId           String   @id @map("event_id")
+  occurredAt        DateTime @default(now()) @map("occurred_at")
+  actorType         String   @map("actor_type")
+  actorId           String   @map("actor_id")
+  action            String
+  targetType        String   @map("target_type")
+  targetId          String   @map("target_id")
+  correlationId     String   @map("correlation_id")
+  approvalId        String?  @map("approval_id")
+  outcome           String
+  beforeSummaryHash String?  @map("before_summary_hash")
+  afterSummaryHash  String?  @map("after_summary_hash")
+  clientSessionHash String   @map("client_session_hash")
+  errorCode         String?  @map("error_code")
 
   @@index([occurredAt])
   @@index([targetType, targetId])
@@ -168,19 +246,19 @@ model AuditEvent {
 }
 
 model AppEventLog {
-  id            String   @id
-  timestamp     DateTime @default(now())
-  level         String
-  component     String
-  eventName     String   @map("event_name")
-  correlationId String?  @map("correlation_id")
-  operationId   String?  @map("operation_id")
-  targetType    String?  @map("target_type")
-  targetId      String?  @map("target_id")
-  durationMs    Int?     @map("duration_ms")
-  outcome       String?
-  errorCode     String?  @map("error_code")
-  attributesJson String  @default("{}") @map("attributes_json")
+  id             String   @id
+  timestamp      DateTime @default(now())
+  level          String
+  component      String
+  eventName      String   @map("event_name")
+  correlationId  String?  @map("correlation_id")
+  operationId    String?  @map("operation_id")
+  targetType     String?  @map("target_type")
+  targetId       String?  @map("target_id")
+  durationMs     Int?     @map("duration_ms")
+  outcome        String?
+  errorCode      String?  @map("error_code")
+  attributesJson String   @default("{}") @map("attributes_json")
 
   @@index([timestamp])
   @@index([correlationId])
