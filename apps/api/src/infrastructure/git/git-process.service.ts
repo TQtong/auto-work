@@ -7,6 +7,7 @@ const DEFAULT_OUTPUT_LIMIT = 2 * 1024 * 1024;
 export interface GitCommandResult {
   stdout: Buffer;
   stderr: string;
+  exitCode: number;
   durationMs: number;
 }
 
@@ -16,6 +17,27 @@ export class GitProcessService {
     cwd: string,
     args: readonly string[],
     options: { timeoutMs?: number; outputLimit?: number; allowExitCodes?: readonly number[] } = {},
+  ): Promise<GitCommandResult> {
+    return this.run(cwd, args, 'read', options);
+  }
+
+  /**
+   * 写命令仍然只接收参数数组并关闭所有交互凭据提示。调用方只能传入动作白名单生成的参数，
+   * 不能把 API 输入直接作为完整命令或参数数组转交到这里。
+   */
+  public async runWrite(
+    cwd: string,
+    args: readonly string[],
+    options: { timeoutMs?: number; outputLimit?: number; allowExitCodes?: readonly number[] } = {},
+  ): Promise<GitCommandResult> {
+    return this.run(cwd, args, 'write', options);
+  }
+
+  private async run(
+    cwd: string,
+    args: readonly string[],
+    mode: 'read' | 'write',
+    options: { timeoutMs?: number; outputLimit?: number; allowExitCodes?: readonly number[] },
   ): Promise<GitCommandResult> {
     this.assertArguments(args);
     return new Promise((resolvePromise, reject) => {
@@ -28,13 +50,19 @@ export class GitProcessService {
         'GIT_OBJECT_DIRECTORY',
         'GIT_ALTERNATE_OBJECT_DIRECTORIES',
         'GIT_SSH_COMMAND',
+        'GIT_ASKPASS',
+        'SSH_ASKPASS',
+        'GIT_CONFIG_COUNT',
+        'GIT_CONFIG_KEY_0',
+        'GIT_CONFIG_VALUE_0',
       ]) {
         delete environment[key];
       }
       Object.assign(environment, {
         GIT_TERMINAL_PROMPT: '0',
         GCM_INTERACTIVE: 'Never',
-        GIT_OPTIONAL_LOCKS: '0',
+        GIT_OPTIONAL_LOCKS: mode === 'read' ? '0' : '1',
+        GIT_CONFIG_NOSYSTEM: '1',
         LC_ALL: 'C.UTF-8',
       });
       const child = spawn('git.exe', ['--no-pager', ...args], {
@@ -58,11 +86,16 @@ export class GitProcessService {
       const timer = setTimeout(() => {
         child.kill();
         finishWithError(
-          new DomainError('GIT_READ_TIMEOUT', 'Git 只读命令超时', {
-            httpStatus: 503,
-            retryable: true,
-            details: { timeoutMs: options.timeoutMs ?? 5_000 },
-          }),
+          new DomainError(
+            mode === 'read' ? 'GIT_READ_TIMEOUT' : 'GIT_WRITE_TIMEOUT',
+            mode === 'read' ? 'Git 只读命令超时' : 'Git 写命令超时，结果必须人工复核',
+            {
+              httpStatus: 503,
+              retryable: mode === 'read',
+              suggestedAction: mode === 'write' ? 'manual_review' : 'none',
+              details: { timeoutMs: options.timeoutMs ?? 5_000 },
+            },
+          ),
         );
       }, options.timeoutMs ?? 5_000);
       const collect = (target: Buffer[], chunk: Buffer) => {
@@ -87,19 +120,26 @@ export class GitProcessService {
         settled = true;
         clearTimeout(timer);
         const allowed = options.allowExitCodes ?? [0];
-        const stderrText = Buffer.concat(stderr).toString('utf8').trim().slice(0, 2_000);
+        const stderrText = this.redactOutput(
+          Buffer.concat(stderr).toString('utf8').trim().slice(0, 2_000),
+        );
         if (code === null || !allowed.includes(code)) {
           reject(
-            new DomainError('GIT_READ_FAILED', 'Git 只读命令执行失败', {
-              httpStatus: 422,
-              details: { exitCode: code, stderr: stderrText },
-            }),
+            new DomainError(
+              mode === 'read' ? 'GIT_READ_FAILED' : 'GIT_WRITE_FAILED',
+              mode === 'read' ? 'Git 只读命令执行失败' : 'Git 写命令执行失败',
+              {
+                httpStatus: 422,
+                details: { exitCode: code, stderr: stderrText },
+              },
+            ),
           );
           return;
         }
         resolvePromise({
           stdout: Buffer.concat(stdout),
           stderr: stderrText,
+          exitCode: code,
           durationMs: Date.now() - startedAt,
         });
       });
@@ -115,5 +155,14 @@ export class GitProcessService {
         });
       }
     }
+  }
+
+  private redactOutput(value: string): string {
+    return value
+      .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+(?::[^\s/@]*)?@/giu, '$1[REDACTED]@')
+      .replace(
+        /(?:Bearer|PRIVATE-TOKEN|token|secret|password|oauth2)\s*[:=]?\s*\S+/giu,
+        '[REDACTED]',
+      );
   }
 }

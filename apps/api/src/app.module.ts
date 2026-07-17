@@ -16,6 +16,7 @@ import { SessionModule } from './modules/session/session.module.js';
 import { GitModule } from './infrastructure/git/git.module.js';
 import { RepositoriesModule } from './modules/repositories/repositories.module.js';
 import { GitLabModule } from './modules/gitlab/gitlab.module.js';
+import { GitBatchesModule } from './modules/git-batches/git-batches.module.js';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { GitLabModule } from './modules/gitlab/gitlab.module.js';
     SettingsModule,
     IntegrationsModule,
     GitLabModule,
+    GitBatchesModule,
     BackupModule,
     RepositoriesModule,
     HealthModule,

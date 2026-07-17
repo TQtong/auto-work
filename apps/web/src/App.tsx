@@ -25,6 +25,9 @@ const FeatureStagePage = lazy(async () => ({
 const RepositoriesPage = lazy(async () => ({
   default: (await import('./pages/RepositoriesPage.js')).RepositoriesPage,
 }));
+const GitBatchesPage = lazy(async () => ({
+  default: (await import('./pages/GitBatchesPage.js')).GitBatchesPage,
+}));
 const OperationsPage = lazy(async () => ({
   default: (await import('./pages/OperationsPage.js')).OperationsPage,
 }));
@@ -145,21 +148,7 @@ export function App() {
             <Routes>
               <Route path="/" element={<DashboardPage />} />
               <Route path="/repositories" element={<RepositoriesPage />} />
-              <Route
-                path="/git-batches"
-                element={
-                  <FeatureStagePage
-                    title="Git 批次"
-                    description="每个允许动作按预检快照、人工批准、执行前复核和逐仓结果实现。"
-                    dependencies={[
-                      '仓库白名单',
-                      '固定动作参数模型',
-                      '预检过期与快照哈希',
-                      '仓库锁与恢复建议',
-                    ]}
-                  />
-                }
-              />
+              <Route path="/git-batches" element={<GitBatchesPage />} />
               <Route
                 path="/tasks"
                 element={

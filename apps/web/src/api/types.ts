@@ -210,3 +210,77 @@ export interface GitLabProjectCache {
   latestPipeline: GitLabRepositorySummary['latestPipeline'];
   latestCommit: GitLabRepositorySummary['latestCommit'];
 }
+
+export type GitBatchAction =
+  | 'fetch_prune'
+  | 'pull_ff_only'
+  | 'create_branch'
+  | 'checkout'
+  | 'push_set_upstream'
+  | 'push'
+  | 'stash_create'
+  | 'stash_apply'
+  | 'stage_paths'
+  | 'commit';
+
+export interface GitBatchItem {
+  id: string;
+  repositoryId: string;
+  repositoryName: string;
+  repositoryAlias: string | null;
+  status: string;
+  previewSnapshot: {
+    headSha?: string | null;
+    branchName?: string | null;
+    upstreamRef?: string | null;
+    stagedCount?: number;
+    unstagedCount?: number;
+    untrackedCount?: number;
+    conflictedCount?: number;
+    alreadySatisfied?: boolean;
+  };
+  displayCommand: string | null;
+  expectedChanges: string[];
+  warnings: Array<{ id: string; severity: 'information' | 'warning'; message: string }>;
+  blockingReasons: Array<{ code: string; message: string; recovery: string }>;
+  riskLevel: 'information' | 'warning' | 'sensitive';
+  executable: boolean;
+  selected: boolean;
+  resultCode: string | null;
+  resultSummary: string | null;
+  postHeadSha: string | null;
+  outputSummary: string | null;
+  exitCode: number | null;
+  durationMs: number | null;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface GitBatch {
+  id: string;
+  action: GitBatchAction;
+  parameters: Record<string, unknown>;
+  status: string;
+  version: number;
+  previewHash: string | null;
+  previewedAt: string | null;
+  expiresAt: string | null;
+  approvedAt: string | null;
+  executionStartedAt: string | null;
+  executionEndedAt: string | null;
+  summary: Record<string, number>;
+  cancelReason: string | null;
+  createdAt: string;
+  items: GitBatchItem[];
+}
+
+export interface GitBatchSummary {
+  id: string;
+  action: GitBatchAction;
+  status: string;
+  version: number;
+  expiresAt: string | null;
+  summary: Record<string, number>;
+  createdAt: string;
+  updatedAt: string;
+}

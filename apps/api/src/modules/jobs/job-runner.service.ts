@@ -48,6 +48,17 @@ export class JobRunnerService implements OnApplicationBootstrap {
                 lastErrorCode: 'RESULT_REQUIRES_REVIEW',
               },
       });
+      if (recovery === 'manual_review' && job.type === 'git.batch.execute' && job.payloadRef) {
+        await this.prisma.gitBatch.updateMany({
+          where: { id: job.payloadRef, status: 'running' },
+          data: {
+            status: 'needs_review',
+            executionEndedAt: new Date(),
+            cancelReason: 'Worker 租约过期，无法确认最后一个 Git 写动作是否完成',
+            version: { increment: 1 },
+          },
+        });
+      }
     }
   }
 
@@ -164,6 +175,17 @@ export class JobRunnerService implements OnApplicationBootstrap {
               lastError: this.safeError(error),
             },
       });
+      if (handler.recovery === 'manual_review' && job.payloadRef) {
+        await this.prisma.gitBatch.updateMany({
+          where: { id: job.payloadRef, status: 'running' },
+          data: {
+            status: 'needs_review',
+            executionEndedAt: new Date(),
+            cancelReason: 'Git 执行作业异常退出，最终仓库状态必须人工复核',
+            version: { increment: 1 },
+          },
+        });
+      }
       this.logger.warn(`作业 ${jobId} 执行失败：${this.safeError(error)}`);
     } finally {
       clearInterval(heartbeat);

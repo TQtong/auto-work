@@ -123,6 +123,35 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.git-preview-table {
+  margin-top: 24px;
+}
+.item-detail {
+  width: 100%;
+  padding: 8px 16px 16px;
+}
+.item-detail .ant-collapse {
+  width: 100%;
+}
+.approval-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 24px;
+  padding: 20px;
+  border: 1px solid #ffd591;
+  border-radius: 12px;
+  background: #fffaf0;
+}
+.approval-panel h4 {
+  margin: 0 !important;
+}
+.clickable-row {
+  cursor: pointer;
+}
+.clickable-row:hover > td {
+  background: #f0f7ff !important;
+}
 .ant-card {
   box-shadow: 0 4px 16px rgb(28 50 87 / 5%);
 }

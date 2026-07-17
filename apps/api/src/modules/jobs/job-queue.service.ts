@@ -55,6 +55,13 @@ export class JobQueueService {
   public async requestCancel(jobId: string): Promise<void> {
     const job = await this.prisma.job.findUnique({ where: { id: jobId } });
     if (!job) throw new DomainError('JOB_NOT_FOUND', '作业不存在', { httpStatus: 404 });
+    if (job.type.startsWith('git.batch.')) {
+      throw new DomainError(
+        'GIT_BATCH_STATE_CONFLICT',
+        'Git 批次必须通过批次取消端点处理；执行开始后禁止盲目终止写进程',
+        { httpStatus: 409, suggestedAction: 'manual_review' },
+      );
+    }
     if (['succeeded', 'failed', 'cancelled', 'dead_letter'].includes(job.status)) {
       throw new DomainError('JOB_ALREADY_FINISHED', '已完成的作业不能取消', { httpStatus: 409 });
     }
