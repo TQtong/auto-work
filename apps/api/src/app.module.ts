@@ -19,6 +19,7 @@ import { GitLabModule } from './modules/gitlab/gitlab.module.js';
 import { GitBatchesModule } from './modules/git-batches/git-batches.module.js';
 import { JiraModule } from './modules/jira/jira.module.js';
 import { ExcelImportsModule } from './modules/excel-imports/excel-imports.module.js';
+import { EvidenceModule } from './modules/evidence/evidence.module.js';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { ExcelImportsModule } from './modules/excel-imports/excel-imports.module
     GitBatchesModule,
     JiraModule,
     ExcelImportsModule,
+    EvidenceModule,
     BackupModule,
     RepositoriesModule,
     HealthModule,

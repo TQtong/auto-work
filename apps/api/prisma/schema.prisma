@@ -72,6 +72,7 @@ model Project {
   updatedAt      DateTime     @updatedAt @map("updated_at")
   repositories   Repository[]
   tasks          Task[]
+  evidences      Evidence[]
 
   @@index([enabled, archivedAt, sortOrder])
   @@map("project")
@@ -276,6 +277,7 @@ model GitLabProject {
   tags              GitLabTag[]
   releases          GitLabRelease[]
   members           GitLabProjectMember[]
+  evidences         Evidence[]
 
   @@unique([connectionId, externalId])
   @@index([connectionId, pathWithNamespace])
@@ -516,6 +518,7 @@ model Task {
   matchedExcelRows         ExcelImportRow[]        @relation("ExcelMatchedTask")
   committedExcelRows       ExcelImportRow[]        @relation("ExcelCommittedTask")
   fieldProvenances         TaskFieldProvenance[]
+  evidenceLinks            EvidenceLink[]
 
   @@unique([connectionId, issueKey])
   @@index([projectId, normalizedStatus, dueDate])
@@ -701,6 +704,89 @@ model TaskFieldProvenance {
   @@index([taskId, fieldName, active])
   @@index([excelImportRowId])
   @@map("task_field_provenance")
+}
+
+model Evidence {
+  id                String         @id
+  sourceType        String         @map("source_type")
+  sourceInternalId  String         @map("source_internal_id")
+  sourceExternalKey String         @map("source_external_key")
+  gitlabProjectId   String?        @map("gitlab_project_id")
+  projectId         String?        @map("project_id")
+  eventAt           DateTime?      @map("event_at")
+  title             String
+  url               String?
+  contentHash       String         @map("content_hash")
+  availabilityState String         @default("available") @map("availability_state")
+  metadataJson      String         @default("{}") @map("metadata_json")
+  sourceSyncedAt    DateTime?      @map("source_synced_at")
+  version           Int            @default(1)
+  createdAt         DateTime       @default(now()) @map("created_at")
+  updatedAt         DateTime       @updatedAt @map("updated_at")
+  gitlabProject     GitLabProject? @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+  project           Project?       @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  links             EvidenceLink[]
+
+  @@unique([sourceType, sourceInternalId])
+  @@index([projectId, eventAt])
+  @@index([gitlabProjectId, sourceType, availabilityState])
+  @@index([availabilityState, updatedAt])
+  @@map("evidence")
+}
+
+model EvidenceLink {
+  id                String              @id
+  targetType        String              @map("target_type")
+  targetId          String              @map("target_id")
+  taskId            String?             @map("task_id")
+  evidenceId        String              @map("evidence_id")
+  method            String
+  confidence        Float
+  status            String              @default("suggested")
+  explanation       String
+  matchedValue      String?             @map("matched_value")
+  ruleVersion       String              @map("rule_version")
+  sourceContentHash String              @map("source_content_hash")
+  decisionReason    String?             @map("decision_reason")
+  confirmedBy       String?             @map("confirmed_by")
+  confirmedAt       DateTime?           @map("confirmed_at")
+  rejectedBy        String?             @map("rejected_by")
+  rejectedAt        DateTime?           @map("rejected_at")
+  expiresAt         DateTime?           @map("expires_at")
+  expiredAt         DateTime?           @map("expired_at")
+  revalidationState String              @default("valid") @map("revalidation_state")
+  version           Int                 @default(1)
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @updatedAt @map("updated_at")
+  task              Task?               @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  evidence          Evidence            @relation(fields: [evidenceId], references: [id], onDelete: Restrict)
+  events            EvidenceLinkEvent[]
+
+  @@unique([targetType, targetId, evidenceId])
+  @@index([taskId, status, confidence])
+  @@index([evidenceId, status])
+  @@index([status, expiresAt])
+  @@map("evidence_link")
+}
+
+model EvidenceLinkEvent {
+  id                String       @id
+  evidenceLinkId    String       @map("evidence_link_id")
+  sequence          Int
+  action            String
+  fromStatus        String?      @map("from_status")
+  toStatus          String       @map("to_status")
+  actorType         String       @map("actor_type")
+  actorId           String       @map("actor_id")
+  reason            String?
+  sourceContentHash String       @map("source_content_hash")
+  ruleVersion       String       @map("rule_version")
+  occurredAt        DateTime     @default(now()) @map("occurred_at")
+  link              EvidenceLink @relation(fields: [evidenceLinkId], references: [id], onDelete: Restrict)
+
+  @@unique([evidenceLinkId, sequence])
+  @@index([occurredAt])
+  @@map("evidence_link_event")
 }
 
 model IdempotencyRecord {

@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../src/infrastructure/database/prisma.service.js';
+import type { EvidenceMaterializerService } from '../src/modules/evidence/evidence-materializer.service.js';
 import type { GitLabApiClient } from '../src/modules/gitlab/gitlab-api.client.js';
 import { GitLabReadService } from '../src/modules/gitlab/gitlab-read.service.js';
 import { GitLabSyncService } from '../src/modules/gitlab/gitlab-sync.service.js';
@@ -182,7 +183,13 @@ describe('GitLab 多资源缓存集成', () => {
         },
       ),
     } as unknown as GitLabApiClient;
-    const service = new GitLabSyncService(prisma as unknown as PrismaService, api);
+    const refreshConnection = vi.fn().mockResolvedValue({ materialized: 0, suggested: 0 });
+    const evidenceMaterializer = { refreshConnection } as unknown as EvidenceMaterializerService;
+    const service = new GitLabSyncService(
+      prisma as unknown as PrismaService,
+      api,
+      evidenceMaterializer,
+    );
     const connection = await prisma.integrationConnection.findUniqueOrThrow({
       where: { id: 'gitlab-connection' },
     });
@@ -202,6 +209,7 @@ describe('GitLab 多资源缓存集成', () => {
       releases: 1,
       members: 1,
     });
+    expect(refreshConnection).toHaveBeenCalledTimes(1);
     expect(resolveProject).toHaveBeenCalledWith('https://git.example.com', 'token-value', '101');
     expect(resolveProject).not.toHaveBeenCalledWith(
       'https://git.example.com',
@@ -287,6 +295,7 @@ describe('GitLab 多资源缓存集成', () => {
         vi.fn().mockResolvedValue(undefined),
       ),
     ).rejects.toThrow();
+    expect(refreshConnection).toHaveBeenCalledTimes(1);
     expect(
       await prisma.gitLabBranch.findUnique({
         where: { gitlabProjectId_name: { gitlabProjectId: project.id, name: 'partial-branch' } },
@@ -317,6 +326,7 @@ describe('GitLab 多资源缓存集成', () => {
     await expect(
       service.sync(connection, 'token-value', vi.fn().mockResolvedValue(undefined)),
     ).resolves.toBeDefined();
+    expect(refreshConnection).toHaveBeenCalledTimes(2);
     await expect(
       prisma.gitLabBranch.findUniqueOrThrow({
         where: { gitlabProjectId_name: { gitlabProjectId: project.id, name: 'main' } },

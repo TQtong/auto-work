@@ -3,6 +3,7 @@ import { DomainError } from '@auto-work/contracts';
 import { newId } from '@auto-work/domain';
 import type { IntegrationConnection } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
+import { EvidenceMaterializerService } from '../evidence/evidence-materializer.service.js';
 import { GitLabApiClient } from './gitlab-api.client.js';
 import {
   gitlabBranchSchema,
@@ -31,6 +32,7 @@ export class GitLabSyncService {
   public constructor(
     private readonly prisma: PrismaService,
     private readonly client: GitLabApiClient,
+    private readonly evidenceMaterializer: EvidenceMaterializerService,
   ) {}
 
   public async sync(
@@ -188,8 +190,10 @@ export class GitLabSyncService {
         where: { id: connection.id },
         data: { status: 'healthy', lastSuccessAt: new Date(), version: { increment: 1 } },
       });
+      // 只有 GitLab 缓存范围完整成功后才重建证据，失败页不会让旧建议错误过期。
+      const evidence = await this.evidenceMaterializer.refreshConnection(connection.id);
       await reportProgress(100);
-      return { runId, counts };
+      return { runId, counts, evidence };
     } catch (error) {
       const domainError = error as DomainError;
       const errorSummary = domainError.message.slice(0, 1_000);
