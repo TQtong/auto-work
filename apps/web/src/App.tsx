@@ -28,6 +28,9 @@ const RepositoriesPage = lazy(async () => ({
 const GitBatchesPage = lazy(async () => ({
   default: (await import('./pages/GitBatchesPage.js')).GitBatchesPage,
 }));
+const TasksPage = lazy(async () => ({
+  default: (await import('./pages/TasksPage.js')).TasksPage,
+}));
 const OperationsPage = lazy(async () => ({
   default: (await import('./pages/OperationsPage.js')).OperationsPage,
 }));
@@ -149,21 +152,7 @@ export function App() {
               <Route path="/" element={<DashboardPage />} />
               <Route path="/repositories" element={<RepositoriesPage />} />
               <Route path="/git-batches" element={<GitBatchesPage />} />
-              <Route
-                path="/tasks"
-                element={
-                  <FeatureStagePage
-                    title="任务与证据"
-                    description="Jira 复合水位、Excel 逐行预检与 Git 证据生命周期将在第三阶段接入。"
-                    dependencies={[
-                      'Jira 字段映射版本',
-                      'Excel 安全解析',
-                      '逐字段来源合并',
-                      '证据匹配与人工确认',
-                    ]}
-                  />
-                }
-              />
+              <Route path="/tasks" element={<TasksPage />} />
               <Route
                 path="/weekly-reports"
                 element={

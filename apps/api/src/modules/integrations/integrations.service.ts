@@ -158,26 +158,35 @@ export class IntegrationsService {
       input.config ?? (JSON.parse(before.configJson) as Record<string, unknown>),
     );
     let newCredentialRef: string | null = null;
+    let credentialProbeResult: Awaited<ReturnType<IntegrationProbeRegistry['probe']>> | null = null;
     const credential = input.credential
       ? this.validateCredential(before.type as IntegrationType, input.credential)
       : undefined;
     if (credential) {
       newCredentialRef = await this.vault.put(JSON.stringify(credential));
-      const testResult = await this.probes.probe({
+      credentialProbeResult = await this.probes.probe({
         id,
         type: before.type as IntegrationType,
         baseUrl: normalized.baseUrl,
         config: normalized.config,
         credential,
       });
-      if (!testResult.healthy) {
+      const credentialUsable =
+        credentialProbeResult.healthy ||
+        (before.type === 'jira' &&
+          credentialProbeResult.status === 'configuration_required' &&
+          credentialProbeResult.capabilities.authenticated === true);
+      if (!credentialUsable) {
         await this.vault.delete(newCredentialRef);
         throw new DomainError(
           'CREDENTIAL_TEST_FAILED',
-          testResult.message ?? '新凭证连接测试未通过',
+          credentialProbeResult.message ?? '新凭证连接测试未通过',
           {
             httpStatus: 422,
-            details: { code: testResult.errorCode, status: testResult.status },
+            details: {
+              code: credentialProbeResult.errorCode,
+              status: credentialProbeResult.status,
+            },
             suggestedAction: 'reconfigure',
           },
         );
@@ -193,9 +202,13 @@ export class IntegrationsService {
       if (credential && newCredentialRef) {
         updateData.credentialRef = newCredentialRef;
         updateData.credentialMask = JSON.stringify(this.maskCredential(credential));
-        updateData.status = 'healthy';
+        const probeResult = credentialProbeResult!;
+        updateData.status = probeResult.status;
+        updateData.capabilitiesJson = JSON.stringify(probeResult.capabilities);
         updateData.lastTestedAt = new Date();
-        updateData.lastSuccessAt = new Date();
+        if (probeResult.healthy || probeResult.capabilities.authenticated === true) {
+          updateData.lastSuccessAt = new Date();
+        }
       }
       const updated = await this.prisma.integrationConnection.updateMany({
         where: { id, version: input.version },

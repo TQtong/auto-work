@@ -87,10 +87,123 @@ export interface ProjectSummary {
   name: string;
   alias: string | null;
   description: string | null;
+  jiraProjectKey: string | null;
   enabled: boolean;
   archivedAt: string | null;
   repositoryCount: number;
+  taskCount: number;
   version: number;
+}
+
+export interface JiraCapabilityField {
+  id: string;
+  name: string;
+  custom: boolean;
+  schema: { type?: string | null; items?: string | null } | null;
+  occurrenceRate: number;
+  sampleValues: unknown[];
+}
+
+export interface JiraCapabilityStatus {
+  id: string;
+  name: string;
+  categoryKey: string | null;
+  categoryName: string | null;
+}
+
+export interface JiraCapabilities {
+  status: string;
+  capabilities: {
+    authenticated?: boolean;
+    identity?: { id: string; username?: string | null; name?: string | null };
+    search?: { post: boolean; getFallback: boolean; selectedMethod: 'post' | 'get' };
+    fields?: JiraCapabilityField[];
+    projects?: Array<{ id: string; key: string; name: string; archived: boolean }>;
+    statuses?: JiraCapabilityStatus[];
+    sampleIssueCount?: number;
+    sampleTotal?: number;
+    descriptionPersisted?: boolean;
+    readOnly?: boolean;
+  };
+  currentMapping: { id: string; versionNo: number; effectiveAt: string } | null;
+  cursors: Array<{
+    scope: string;
+    lastUpdatedAt: string | null;
+    lastTiebreaker: string | null;
+    overlapSeconds: number;
+    lastSuccessRunId: string | null;
+  }>;
+}
+
+export interface JiraMappingVersion {
+  id: string;
+  connectionId: string;
+  versionNo: number;
+  fieldMappings: Record<string, string | null>;
+  statusMappings: Record<string, string>;
+  parserRules: Record<string, unknown>;
+  validationSummary: Record<string, unknown>;
+  effectiveAt: string;
+  createdAt: string;
+}
+
+export interface TaskSummary {
+  id: string;
+  source: 'jira' | 'excel' | 'manual';
+  issueKey: string | null;
+  projectKey: string | null;
+  project: { id: string; name: string; jiraProjectKey: string | null } | null;
+  issueType: string | null;
+  parent: { issueKey: string | null; title: string | null };
+  title: string;
+  priority: string | null;
+  assigneeName: string | null;
+  isCurrentUser: boolean;
+  status: { rawId: string | null; rawName: string | null; normalized: string };
+  schedule: { plannedStartDate: string | null; dueDate: string | null };
+  worklog: {
+    originalEstimateSeconds: number | null;
+    remainingEstimateSeconds: number | null;
+    timeSpentSeconds: number | null;
+  };
+  sprints: Array<{ id: string | null; name: string | null; raw?: string }>;
+  labels: string[];
+  components: string[];
+  externalUpdatedAt: string | null;
+  lastObservedAt: string;
+  visibilityState: string;
+  counts: { sourceObservations: number; statusEvents: number } | null;
+  version: number;
+}
+
+export interface TaskDetail extends TaskSummary {
+  descriptionPolicy: string;
+  parentTask: { id: string; issueKey: string | null; title: string } | null;
+  childTasks: Array<{
+    id: string;
+    issueKey: string | null;
+    title: string;
+    normalizedStatus: string;
+  }>;
+  mappingVersion: { id: string; versionNo: number } | null;
+  observations: Array<{
+    id: string;
+    sourceType: string;
+    sourceUpdatedAt: string | null;
+    fields: Record<string, unknown>;
+    warnings: Array<{ code: string; message: string }>;
+    contentHash: string;
+    observedAt: string;
+  }>;
+  statusEvents: Array<{
+    id: string;
+    from: { id: string | null; name: string | null; normalized: string | null };
+    to: { id: string | null; name: string | null; normalized: string };
+    effectiveAt: string | null;
+    observedAt: string;
+    observedIntervalStart: string | null;
+    precision: 'observed_interval';
+  }>;
 }
 
 export interface RepositorySnapshot {

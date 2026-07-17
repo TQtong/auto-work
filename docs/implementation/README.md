@@ -15,7 +15,9 @@
 | 02A | 仓库发现、注册表、只读 Git 状态与仓库中心 | [阶段二 A 实现与验证](./phase-2a-repository-read-model.md) | verified |
 | 02B | GitLab 能力探测与只读缓存 | [阶段二 B 实现与验证](./phase-2b-gitlab-read-cache.md) | implemented |
 | 02C | 受限 Git 动作、批次预检、批准与执行 | [阶段二 C 实现与验证](./phase-2c-restricted-git-batches.md) | verified |
-| 03 | Jira、Excel、任务与证据 | 待提交 | planned |
+| 03A | Jira 能力探测、版本化映射、防漏同步与任务主事实 | [阶段三 A 实现与验证](./phase-3a-jira-task-sync.md) | implemented |
+| 03B | Excel 安全预检、逐字段补充与 provenance | 待提交 | planned |
+| 03C | Git/GitLab 证据建议、确认与生命周期 | 待提交 | planned |
 | 04 | 周报、钉钉、AI 建议 | 待提交 | planned |
 | 05 | 季度绩效、导出、运维与发布门禁 | 待提交 | planned |
 

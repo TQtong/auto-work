@@ -278,19 +278,52 @@ export class RepositoryService {
     name: string;
     alias?: string | undefined;
     description?: string | undefined;
+    jiraProjectKey?: string | undefined;
   }) {
     const data: Prisma.ProjectCreateInput = { id: newId(), name: input.name };
     if (input.alias !== undefined) data.alias = input.alias;
     if (input.description !== undefined) data.description = input.description;
+    if (input.jiraProjectKey !== undefined) data.jiraProjectKey = input.jiraProjectKey;
     return this.prisma.project.create({
       data,
     });
   }
 
+  public async updateProject(
+    id: string,
+    input: {
+      version: number;
+      name?: string | undefined;
+      alias?: string | null | undefined;
+      description?: string | null | undefined;
+      jiraProjectKey?: string | null | undefined;
+    },
+  ) {
+    const { version, ...changes } = input;
+    const data: Prisma.ProjectUpdateManyMutationInput = { version: { increment: 1 } };
+    if (changes.name !== undefined) data.name = changes.name;
+    if (changes.alias !== undefined) data.alias = changes.alias;
+    if (changes.description !== undefined) data.description = changes.description;
+    if (changes.jiraProjectKey !== undefined) data.jiraProjectKey = changes.jiraProjectKey;
+    const result = await this.prisma.project.updateMany({
+      where: { id, version },
+      data,
+    });
+    if (result.count !== 1) {
+      const exists = await this.prisma.project.findUnique({ where: { id }, select: { id: true } });
+      throw new DomainError(
+        exists ? errorCodes.versionConflict : errorCodes.notFound,
+        exists ? '项目版本已变化，请刷新后重试' : '项目不存在',
+        { httpStatus: exists ? 409 : 404 },
+      );
+    }
+    return this.prisma.project.findUniqueOrThrow({ where: { id } });
+  }
+
   public async listProjects(includeArchived: boolean) {
     const rows = await this.prisma.project.findMany({
       where: includeArchived ? {} : { archivedAt: null },
-      include: { _count: { select: { repositories: true } } },
+      include: { _count: { select: { repositories: true, tasks: true } } },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     });
     return rows.map((row) => ({
@@ -298,9 +331,11 @@ export class RepositoryService {
       name: row.name,
       alias: row.alias,
       description: row.description,
+      jiraProjectKey: row.jiraProjectKey,
       enabled: row.enabled,
       archivedAt: row.archivedAt?.toISOString() ?? null,
       repositoryCount: row._count.repositories,
+      taskCount: row._count.tasks,
       version: row.version,
     }));
   }

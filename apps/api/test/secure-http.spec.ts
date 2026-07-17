@@ -28,4 +28,16 @@ describe('外部 HTTPS SSRF 防护', () => {
       }),
     ).rejects.toMatchObject({ code: 'EXTERNAL_REDIRECT_HOST_REJECTED' });
   });
+
+  it('POST 正文超过 512 KiB 时在 DNS 与网络请求前拒绝', async () => {
+    const service = new SecureHttpService();
+    await expect(
+      service.postJson({
+        url: new URL('https://jira.example.com/rest/api/2/search'),
+        expectedHost: 'jira.example.com',
+        allowPrivateNetwork: false,
+        body: { jql: 'x'.repeat(512 * 1024) },
+      }),
+    ).rejects.toMatchObject({ code: 'EXTERNAL_REQUEST_TOO_LARGE' });
+  });
 });

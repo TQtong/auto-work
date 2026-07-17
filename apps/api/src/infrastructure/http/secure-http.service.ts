@@ -22,6 +22,35 @@ export class SecureHttpService {
     allowPrivateNetwork: boolean;
     timeoutMs?: number;
   }): Promise<SecureHttpResponse> {
+    return this.requestJson({ ...input, method: 'GET' });
+  }
+
+  public async postJson(input: {
+    url: URL;
+    expectedHost: string;
+    headers?: Record<string, string>;
+    allowPrivateNetwork: boolean;
+    timeoutMs?: number;
+    body: unknown;
+  }): Promise<SecureHttpResponse> {
+    const encodedBody = Buffer.from(JSON.stringify(input.body), 'utf8');
+    if (encodedBody.length > 512 * 1024) {
+      throw new DomainError('EXTERNAL_REQUEST_TOO_LARGE', '外部请求正文超过安全上限', {
+        httpStatus: 422,
+      });
+    }
+    return this.requestJson({ ...input, method: 'POST', encodedBody });
+  }
+
+  private async requestJson(input: {
+    url: URL;
+    expectedHost: string;
+    headers?: Record<string, string>;
+    allowPrivateNetwork: boolean;
+    timeoutMs?: number;
+    method: 'GET' | 'POST';
+    encodedBody?: Buffer;
+  }): Promise<SecureHttpResponse> {
     this.assertUrl(input.url, input.expectedHost);
     const addresses = await lookup(input.url.hostname, { all: true, verbatim: true }).catch(() => {
       throw new DomainError('EXTERNAL_DNS_FAILED', '外部服务域名解析失败', {
@@ -50,10 +79,16 @@ export class SecureHttpService {
       const req = request(
         input.url,
         {
-          method: 'GET',
+          method: input.method,
           headers: {
             Accept: 'application/json',
             'User-Agent': 'Auto-Work/0.1',
+            ...(input.encodedBody
+              ? {
+                  'Content-Type': 'application/json; charset=utf-8',
+                  'Content-Length': String(input.encodedBody.length),
+                }
+              : {}),
             ...input.headers,
           },
           lookup: pinnedLookup,
@@ -129,6 +164,7 @@ export class SecureHttpService {
           }),
         );
       });
+      if (input.encodedBody) req.write(input.encodedBody);
       req.end();
     });
   }

@@ -18,7 +18,24 @@ const createProjectSchema = z.object({
   name: z.string().trim().min(1).max(120),
   alias: z.string().trim().max(120).optional(),
   description: z.string().trim().max(2_000).optional(),
+  jiraProjectKey: z
+    .string()
+    .regex(/^[A-Z][A-Z0-9_]{0,99}$/u)
+    .optional(),
 });
+const updateProjectSchema = z
+  .object({
+    version: z.number().int().positive(),
+    name: z.string().trim().min(1).max(120).optional(),
+    alias: z.string().trim().max(120).nullable().optional(),
+    description: z.string().trim().max(2_000).nullable().optional(),
+    jiraProjectKey: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]{0,99}$/u)
+      .nullable()
+      .optional(),
+  })
+  .strict();
 const confirmSchema = z.object({
   displayName: z.string().trim().min(1).max(120),
   alias: z.string().trim().max(120).nullable().optional(),
@@ -98,6 +115,17 @@ export class RepositoriesController {
   ) {
     const data = await this.repositories.listProjects(archived === 'true');
     return apiResponse(data, request.autoWork.correlationId, { asOf: new Date().toISOString() });
+  }
+
+  @Put('projects/:id')
+  public async updateProject(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Req() request: FastifyRequest,
+  ) {
+    const project = await this.repositories.updateProject(id, updateProjectSchema.parse(body));
+    await this.recordAudit(request, 'project.updated', 'project', project.id);
+    return apiResponse(project, request.autoWork.correlationId);
   }
 
   @Get('repositories')

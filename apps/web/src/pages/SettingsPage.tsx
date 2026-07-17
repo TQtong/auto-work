@@ -24,6 +24,7 @@ import { useEffect, useState } from 'react';
 import { apiRequest } from '../api/client.js';
 import type { GitLabProjectCache, IdentityAlias, Integration, UserProfile } from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
+import { JiraSettingsModal } from './JiraSettingsModal.js';
 
 interface IntegrationFormValues {
   type: Integration['type'];
@@ -230,6 +231,7 @@ function IntegrationSettings() {
   const selectedType = Form.useWatch('type', form);
   const [open, setOpen] = useState(false);
   const [cacheConnection, setCacheConnection] = useState<Integration | null>(null);
+  const [jiraConnection, setJiraConnection] = useState<Integration | null>(null);
   const [messageApi, holder] = message.useMessage();
   const integrations = useQuery({
     queryKey: ['integrations'],
@@ -274,10 +276,15 @@ function IntegrationSettings() {
       if (kind === 'test')
         return apiRequest(`/api/v1/integrations/${row.id}/test`, { method: 'POST' });
       if (kind === 'sync')
-        return apiRequest(`/api/v1/integrations/${row.id}/gitlab/sync`, {
-          method: 'POST',
-          body: '{}',
-        });
+        return row.type === 'jira'
+          ? apiRequest(`/api/v1/integrations/${row.id}/jira/sync`, {
+              method: 'POST',
+              body: JSON.stringify({ scope: 'incremental' }),
+            })
+          : apiRequest(`/api/v1/integrations/${row.id}/gitlab/sync`, {
+              method: 'POST',
+              body: '{}',
+            });
       if (kind === 'disable')
         return apiRequest(`/api/v1/integrations/${row.id}/disable`, {
           method: 'POST',
@@ -398,6 +405,24 @@ function IntegrationSettings() {
                     </Button>
                   </>
                 )}
+                {row.type === 'jira' && (
+                  <>
+                    <Button size="small" onClick={() => setJiraConnection(row)}>
+                      字段与状态映射
+                    </Button>
+                    <Button
+                      size="small"
+                      onClick={() => action.mutate({ row, kind: 'sync' })}
+                      disabled={
+                        !row.enabled ||
+                        !row.credentialMask ||
+                        !['healthy', 'degraded'].includes(row.status)
+                      }
+                    >
+                      同步个人任务
+                    </Button>
+                  </>
+                )}
                 <Popconfirm
                   title="禁用后定时同步和外部调用都会停止，历史记录仍保留。"
                   onConfirm={() => action.mutate({ row, kind: 'disable' })}
@@ -476,6 +501,7 @@ function IntegrationSettings() {
           ]}
         />
       </Modal>
+      <JiraSettingsModal connection={jiraConnection} onClose={() => setJiraConnection(null)} />
       <Modal
         title="新建外部连接"
         width={680}
@@ -675,7 +701,13 @@ function toIntegrationPayload(values: IntegrationFormValues) {
   if (values.type === 'jira')
     return {
       ...common,
-      config: { authScheme: values.authScheme, accountName: values.accountName, maxResults: 100 },
+      config: {
+        authScheme: values.authScheme,
+        ...(values.authScheme === 'basic_pat' && values.accountName
+          ? { accountName: values.accountName }
+          : {}),
+        maxResults: 100,
+      },
       credential: { token: values.token },
     };
   if (values.type === 'dingtalk_log')

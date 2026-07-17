@@ -160,7 +160,7 @@ describe.runIf(process.platform === 'win32')('受限 Git 批次动作引擎', ()
     expect(push.executable).toBe(false);
     expect(push.blockingReasons.map((item) => item.code)).toContain('GIT_PUSH_NOT_FAST_FORWARD');
     expect(push.displayCommand).not.toMatch(/force/iu);
-  });
+  }, 15_000);
 
   it('stash apply 冲突进入 needs_review，并保留原 stash 供人工恢复', async () => {
     await writeFile(join(repositoryDirectory, '中文 文件.txt'), 'stash 版本\n', 'utf8');

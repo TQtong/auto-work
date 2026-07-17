@@ -59,48 +59,50 @@ model IdentityAlias {
 }
 
 model Project {
-  id           String       @id
-  name         String
-  alias        String?
-  description  String?
-  enabled      Boolean      @default(true)
-  sortOrder    Int          @default(0) @map("sort_order")
-  version      Int          @default(1)
-  archivedAt   DateTime?    @map("archived_at")
-  createdAt    DateTime     @default(now()) @map("created_at")
-  updatedAt    DateTime     @updatedAt @map("updated_at")
-  repositories Repository[]
+  id             String       @id
+  name           String
+  alias          String?
+  description    String?
+  jiraProjectKey String?      @unique @map("jira_project_key")
+  enabled        Boolean      @default(true)
+  sortOrder      Int          @default(0) @map("sort_order")
+  version        Int          @default(1)
+  archivedAt     DateTime?    @map("archived_at")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  repositories   Repository[]
+  tasks          Task[]
 
   @@index([enabled, archivedAt, sortOrder])
   @@map("project")
 }
 
 model Repository {
-  id                 String        @id
-  projectId          String?       @map("project_id")
-  canonicalPath      String        @unique @map("canonical_path")
-  realPathHash       String        @map("real_path_hash")
-  identityHash       String        @map("identity_hash")
-  displayName        String        @map("display_name")
+  id                 String         @id
+  projectId          String?        @map("project_id")
+  canonicalPath      String         @unique @map("canonical_path")
+  realPathHash       String         @map("real_path_hash")
+  identityHash       String         @map("identity_hash")
+  displayName        String         @map("display_name")
   alias              String?
-  gitDirKind         String        @map("git_dir_kind")
-  remoteName         String?       @map("remote_name")
-  remoteUrl          String?       @map("remote_url")
-  remoteProtocol     String?       @map("remote_protocol")
-  remoteHost         String?       @map("remote_host")
-  remotePort         Int?          @map("remote_port")
-  remotePath         String?       @map("remote_path")
-  gitlabConnectionId String?       @map("gitlab_connection_id")
-  gitlabProjectRef   String?       @map("gitlab_project_ref")
-  baselineBranch     String?       @map("baseline_branch")
-  whitelistStatus    String        @default("discovered") @map("whitelist_status")
-  statusReason       String?       @map("status_reason")
-  lastSeenAt         DateTime?     @map("last_seen_at")
-  lastLocalRefreshAt DateTime?     @map("last_local_refresh_at")
-  version            Int           @default(1)
-  createdAt          DateTime      @default(now()) @map("created_at")
-  updatedAt          DateTime      @updatedAt @map("updated_at")
-  project            Project?      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  gitDirKind         String         @map("git_dir_kind")
+  remoteName         String?        @map("remote_name")
+  remoteUrl          String?        @map("remote_url")
+  remoteProtocol     String?        @map("remote_protocol")
+  remoteHost         String?        @map("remote_host")
+  remotePort         Int?           @map("remote_port")
+  remotePath         String?        @map("remote_path")
+  gitlabConnectionId String?        @map("gitlab_connection_id")
+  gitlabProjectRef   String?        @map("gitlab_project_ref")
+  baselineBranch     String?        @map("baseline_branch")
+  whitelistStatus    String         @default("discovered") @map("whitelist_status")
+  statusReason       String?        @map("status_reason")
+  lastSeenAt         DateTime?      @map("last_seen_at")
+  lastLocalRefreshAt DateTime?      @map("last_local_refresh_at")
+  version            Int            @default(1)
+  createdAt          DateTime       @default(now()) @map("created_at")
+  updatedAt          DateTime       @updatedAt @map("updated_at")
+  project            Project?       @relation(fields: [projectId], references: [id], onDelete: Restrict)
   snapshots          GitSnapshot[]
   gitBatchItems      GitBatchItem[]
 
@@ -112,24 +114,24 @@ model Repository {
 }
 
 model GitBatch {
-  id                  String              @id
+  id                  String         @id
   action              String
-  parametersJson      String              @map("parameters_json")
-  status              String              @default("draft")
-  version             Int                 @default(1)
-  previewHash         String?             @map("preview_hash")
-  previewedAt         DateTime?            @map("previewed_at")
-  expiresAt           DateTime?            @map("expires_at")
-  createdBy           String              @map("created_by")
-  approvedBy          String?             @map("approved_by")
-  approvedAt          DateTime?            @map("approved_at")
-  approvalRequestHash String?             @map("approval_request_hash")
-  executionStartedAt  DateTime?            @map("execution_started_at")
-  executionEndedAt    DateTime?            @map("execution_ended_at")
-  summaryJson         String              @default("{}") @map("summary_json")
-  cancelReason        String?             @map("cancel_reason")
-  createdAt           DateTime            @default(now()) @map("created_at")
-  updatedAt           DateTime            @updatedAt @map("updated_at")
+  parametersJson      String         @map("parameters_json")
+  status              String         @default("draft")
+  version             Int            @default(1)
+  previewHash         String?        @map("preview_hash")
+  previewedAt         DateTime?      @map("previewed_at")
+  expiresAt           DateTime?      @map("expires_at")
+  createdBy           String         @map("created_by")
+  approvedBy          String?        @map("approved_by")
+  approvedAt          DateTime?      @map("approved_at")
+  approvalRequestHash String?        @map("approval_request_hash")
+  executionStartedAt  DateTime?      @map("execution_started_at")
+  executionEndedAt    DateTime?      @map("execution_ended_at")
+  summaryJson         String         @default("{}") @map("summary_json")
+  cancelReason        String?        @map("cancel_reason")
+  createdAt           DateTime       @default(now()) @map("created_at")
+  updatedAt           DateTime       @updatedAt @map("updated_at")
   items               GitBatchItem[]
 
   @@index([status, createdAt])
@@ -138,34 +140,34 @@ model GitBatch {
 }
 
 model GitBatchItem {
-  id                    String              @id
-  batchId               String              @map("batch_id")
-  repositoryId          String              @map("repository_id")
-  ordinal               Int
-  status                String              @default("queued")
-  previewSnapshotJson   String              @default("{}") @map("preview_snapshot_json")
-  previewSnapshotHash   String?             @map("preview_snapshot_hash")
-  displayCommand        String?             @map("display_command")
-  expectedChangesJson   String              @default("[]") @map("expected_changes_json")
-  warningsJson          String              @default("[]") @map("warnings_json")
-  blockingReasonsJson   String              @default("[]") @map("blocking_reasons_json")
-  riskLevel             String              @default("information") @map("risk_level")
-  executable            Boolean             @default(false)
-  selected              Boolean             @default(false)
-  executionCheckJson    String?             @map("execution_check_json")
-  exitCode              Int?                @map("exit_code")
-  resultCode            String?             @map("result_code")
-  resultSummary         String?             @map("result_summary")
-  postHeadSha           String?             @map("post_head_sha")
-  outputSummary         String?             @map("output_summary")
-  durationMs            Int?                @map("duration_ms")
-  startedAt             DateTime?            @map("started_at")
-  completedAt           DateTime?            @map("completed_at")
-  createdAt             DateTime             @default(now()) @map("created_at")
-  updatedAt             DateTime             @updatedAt @map("updated_at")
-  batch                 GitBatch             @relation(fields: [batchId], references: [id], onDelete: Restrict)
-  repository            Repository           @relation(fields: [repositoryId], references: [id], onDelete: Restrict)
-  events                GitOperationEvent[]
+  id                  String              @id
+  batchId             String              @map("batch_id")
+  repositoryId        String              @map("repository_id")
+  ordinal             Int
+  status              String              @default("queued")
+  previewSnapshotJson String              @default("{}") @map("preview_snapshot_json")
+  previewSnapshotHash String?             @map("preview_snapshot_hash")
+  displayCommand      String?             @map("display_command")
+  expectedChangesJson String              @default("[]") @map("expected_changes_json")
+  warningsJson        String              @default("[]") @map("warnings_json")
+  blockingReasonsJson String              @default("[]") @map("blocking_reasons_json")
+  riskLevel           String              @default("information") @map("risk_level")
+  executable          Boolean             @default(false)
+  selected            Boolean             @default(false)
+  executionCheckJson  String?             @map("execution_check_json")
+  exitCode            Int?                @map("exit_code")
+  resultCode          String?             @map("result_code")
+  resultSummary       String?             @map("result_summary")
+  postHeadSha         String?             @map("post_head_sha")
+  outputSummary       String?             @map("output_summary")
+  durationMs          Int?                @map("duration_ms")
+  startedAt           DateTime?           @map("started_at")
+  completedAt         DateTime?           @map("completed_at")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+  batch               GitBatch            @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  repository          Repository          @relation(fields: [repositoryId], references: [id], onDelete: Restrict)
+  events              GitOperationEvent[]
 
   @@unique([batchId, repositoryId])
   @@index([batchId, ordinal])
@@ -239,6 +241,9 @@ model IntegrationConnection {
   fieldMappings    FieldMappingVersion[]
   gitlabProjects   GitLabProject[]
   gitlabSyncRuns   GitLabSyncRun[]
+  jiraTasks        Task[]
+  jiraSyncCursors  SyncCursor[]
+  jiraSyncRuns     JiraSyncRun[]
 
   @@index([type, enabled, status])
   @@map("integration_connection")
@@ -445,20 +450,163 @@ model GitLabSyncRun {
 }
 
 model FieldMappingVersion {
-  id                    String                @id
-  connectionId          String                @map("connection_id")
-  versionNo             Int                   @map("version_no")
-  effectiveAt           DateTime              @default(now()) @map("effective_at")
-  fieldMappingsJson     String                @map("field_mappings_json")
-  statusMappingsJson    String                @default("{}") @map("status_mappings_json")
-  parserRulesJson       String                @default("{}") @map("parser_rules_json")
-  validationSummaryJson String                @default("{}") @map("validation_summary_json")
-  createdBy             String                @map("created_by")
-  createdAt             DateTime              @default(now()) @map("created_at")
-  connection            IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  id                     String                  @id
+  connectionId           String                  @map("connection_id")
+  versionNo              Int                     @map("version_no")
+  effectiveAt            DateTime                @default(now()) @map("effective_at")
+  fieldMappingsJson      String                  @map("field_mappings_json")
+  statusMappingsJson     String                  @default("{}") @map("status_mappings_json")
+  parserRulesJson        String                  @default("{}") @map("parser_rules_json")
+  validationSummaryJson  String                  @default("{}") @map("validation_summary_json")
+  createdBy              String                  @map("created_by")
+  createdAt              DateTime                @default(now()) @map("created_at")
+  connection             IntegrationConnection   @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  tasks                  Task[]
+  taskSourceObservations TaskSourceObservation[]
+  jiraSyncRuns           JiraSyncRun[]
 
   @@unique([connectionId, versionNo])
   @@map("field_mapping_version")
+}
+
+model Task {
+  id                       String                  @id
+  connectionId             String?                 @map("connection_id")
+  projectId                String?                 @map("project_id")
+  primarySource            String                  @map("primary_source")
+  externalId               String?                 @map("external_id")
+  issueKey                 String?                 @map("issue_key")
+  projectKey               String?                 @map("project_key")
+  issueType                String?                 @map("issue_type")
+  parentTaskId             String?                 @map("parent_task_id")
+  parentIssueKey           String?                 @map("parent_issue_key")
+  parentTitle              String?                 @map("parent_title")
+  title                    String
+  descriptionPolicy        String                  @default("not_persisted") @map("description_policy")
+  priority                 String?
+  assigneeExternalId       String?                 @map("assignee_external_id")
+  assigneeName             String?                 @map("assignee_name")
+  isCurrentUser            Boolean                 @default(false) @map("is_current_user")
+  rawStatusId              String?                 @map("raw_status_id")
+  rawStatusName            String?                 @map("raw_status_name")
+  normalizedStatus         String                  @default("other") @map("normalized_status")
+  plannedStartDate         String?                 @map("planned_start_date")
+  dueDate                  String?                 @map("due_date")
+  originalEstimateSeconds  Int?                    @map("original_estimate_seconds")
+  remainingEstimateSeconds Int?                    @map("remaining_estimate_seconds")
+  timeSpentSeconds         Int?                    @map("time_spent_seconds")
+  sprintIdsJson            String                  @default("[]") @map("sprint_ids_json")
+  labelsJson               String                  @default("[]") @map("labels_json")
+  componentsJson           String                  @default("[]") @map("components_json")
+  externalUpdatedAt        DateTime?               @map("external_updated_at")
+  lastObservedAt           DateTime                @map("last_observed_at")
+  visibilityState          String                  @default("visible") @map("visibility_state")
+  mappingVersionId         String?                 @map("mapping_version_id")
+  version                  Int                     @default(1)
+  createdAt                DateTime                @default(now()) @map("created_at")
+  updatedAt                DateTime                @updatedAt @map("updated_at")
+  connection               IntegrationConnection?  @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  project                  Project?                @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  mappingVersion           FieldMappingVersion?    @relation(fields: [mappingVersionId], references: [id], onDelete: Restrict)
+  parentTask               Task?                   @relation("TaskHierarchy", fields: [parentTaskId], references: [id], onDelete: Restrict)
+  childTasks               Task[]                  @relation("TaskHierarchy")
+  statusEvents             TaskStatusEvent[]
+  sourceObservations       TaskSourceObservation[]
+
+  @@unique([connectionId, issueKey])
+  @@index([projectId, normalizedStatus, dueDate])
+  @@index([connectionId, visibilityState, externalUpdatedAt])
+  @@index([parentTaskId])
+  @@map("task")
+}
+
+model TaskStatusEvent {
+  id                    String                @id
+  taskId                String                @map("task_id")
+  fromRawStatusId       String?               @map("from_raw_status_id")
+  fromRawStatusName     String?               @map("from_raw_status_name")
+  fromNormalizedStatus  String?               @map("from_normalized_status")
+  toRawStatusId         String?               @map("to_raw_status_id")
+  toRawStatusName       String?               @map("to_raw_status_name")
+  toNormalizedStatus    String                @map("to_normalized_status")
+  effectiveAt           DateTime?             @map("effective_at")
+  observedAt            DateTime              @map("observed_at")
+  observedIntervalStart DateTime?             @map("observed_interval_start")
+  sourceObservationId   String                @map("source_observation_id")
+  task                  Task                  @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  sourceObservation     TaskSourceObservation @relation(fields: [sourceObservationId], references: [id], onDelete: Restrict)
+
+  @@unique([taskId, sourceObservationId])
+  @@index([taskId, observedAt])
+  @@map("task_status_event")
+}
+
+model TaskSourceObservation {
+  id               String               @id
+  taskId           String               @map("task_id")
+  sourceType       String               @map("source_type")
+  sourceUpdatedAt  DateTime?            @map("source_updated_at")
+  contentHash      String               @map("content_hash")
+  fieldsJson       String               @map("fields_json")
+  warningsJson     String               @default("[]") @map("warnings_json")
+  syncRunId        String?              @map("sync_run_id")
+  mappingVersionId String?              @map("mapping_version_id")
+  observedAt       DateTime             @map("observed_at")
+  task             Task                 @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  syncRun          JiraSyncRun?         @relation(fields: [syncRunId], references: [id], onDelete: Restrict)
+  mappingVersion   FieldMappingVersion? @relation(fields: [mappingVersionId], references: [id], onDelete: Restrict)
+  statusEvents     TaskStatusEvent[]
+
+  @@unique([taskId, sourceUpdatedAt, contentHash])
+  @@index([syncRunId])
+  @@index([taskId, observedAt])
+  @@map("task_source_observation")
+}
+
+model SyncCursor {
+  id               String                @id
+  connectionId     String                @map("connection_id")
+  scope            String
+  lastUpdatedAt    DateTime?             @map("last_updated_at")
+  lastTiebreaker   String?               @map("last_tiebreaker")
+  overlapSeconds   Int                   @default(120) @map("overlap_seconds")
+  lastSuccessRunId String?               @map("last_success_run_id")
+  version          Int                   @default(1)
+  updatedAt        DateTime              @updatedAt @map("updated_at")
+  connection       IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+
+  @@unique([connectionId, scope])
+  @@map("sync_cursor")
+}
+
+model JiraSyncRun {
+  id               String                  @id
+  connectionId     String                  @map("connection_id")
+  scope            String
+  trigger          String
+  status           String
+  mappingVersionId String                  @map("mapping_version_id")
+  queryHash        String                  @map("query_hash")
+  requestJson      String                  @default("{}") @map("request_json")
+  pageCount        Int                     @default(0) @map("page_count")
+  readCount        Int                     @default(0) @map("read_count")
+  createdCount     Int                     @default(0) @map("created_count")
+  updatedCount     Int                     @default(0) @map("updated_count")
+  unchangedCount   Int                     @default(0) @map("unchanged_count")
+  errorCount       Int                     @default(0) @map("error_count")
+  errorCode        String?                 @map("error_code")
+  errorSummary     String?                 @map("error_summary")
+  cursorBeforeJson String                  @default("{}") @map("cursor_before_json")
+  cursorAfterJson  String                  @default("{}") @map("cursor_after_json")
+  startedAt        DateTime                @map("started_at")
+  completedAt      DateTime?               @map("completed_at")
+  connection       IntegrationConnection   @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  mappingVersion   FieldMappingVersion     @relation(fields: [mappingVersionId], references: [id], onDelete: Restrict)
+  taskObservations TaskSourceObservation[]
+
+  @@index([connectionId, startedAt])
+  @@index([status, startedAt])
+  @@map("jira_sync_run")
 }
 
 model IdempotencyRecord {

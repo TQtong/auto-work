@@ -17,6 +17,7 @@ import { GitModule } from './infrastructure/git/git.module.js';
 import { RepositoriesModule } from './modules/repositories/repositories.module.js';
 import { GitLabModule } from './modules/gitlab/gitlab.module.js';
 import { GitBatchesModule } from './modules/git-batches/git-batches.module.js';
+import { JiraModule } from './modules/jira/jira.module.js';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { GitBatchesModule } from './modules/git-batches/git-batches.module.js';
     IntegrationsModule,
     GitLabModule,
     GitBatchesModule,
+    JiraModule,
     BackupModule,
     RepositoriesModule,
     HealthModule,
