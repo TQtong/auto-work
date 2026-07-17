@@ -2,7 +2,7 @@
 
 ## 1. 当前增量状态
 
-03C 按可独立复核的提交拆分实现。当前 03C1 已完成纯领域匹配内核和关联矩阵，03C2a 已完成统一持久化、GitLab 六类来源物化、拒绝抑制、重新建议、来源失效和复核标记；确认/拒绝/撤销/手工关系 API、用户审计及任务证据 UI 会在本阶段后续提交继续完成。因完整生命周期尚未闭环，本阶段状态为 `implemented`，不能提前视为 `verified`。
+03C 按可独立复核的提交拆分实现。当前 03C1 已完成纯领域匹配内核和关联矩阵，03C2a 已完成统一持久化、GitLab 六类来源物化、拒绝抑制、重新建议、来源失效和复核标记，03C2b 已完成确认/拒绝/撤销/手工关系 API、幂等、乐观锁、自动过期和事务审计；任务证据 UI 与真实浏览器验收会在本阶段后续提交继续完成。因页面闭环尚未完成，本阶段状态为 `implemented`，不能提前视为 `verified`。
 
 ## 2. 03C1 领域匹配内核
 
@@ -32,7 +32,29 @@
 
 全仓 `pnpm verify` 通过：contracts 2、domain 21、API 92、Web 3，合计 118 个测试；格式、Lint、类型检查和两端生产构建全部成功。全新 SQLite 数据库应用 8 条迁移后状态最新、Prisma schema diff 为零、`integrity_check=ok`、外键违规为 0。
 
-## 5. 后续门禁
+## 5. 03C2b 生命周期 API 与事务审计
+
+| 方法与路径                                       | 作用                                             | 写入门禁                    |
+| ------------------------------------------------ | ------------------------------------------------ | --------------------------- |
+| `GET /api/v1/tasks/:id/evidence`                 | 分状态读取任务关系、证据事实和不可变事件         | 只读；惰性收敛到期关系      |
+| `GET /api/v1/evidence`                           | 按来源、可用性、项目分页读取可手工绑定的证据目录 | 只读                        |
+| `POST /api/v1/evidence-links/:id/confirm`        | 确认建议或重新确认变化后的来源                   | version + `Idempotency-Key` |
+| `POST /api/v1/evidence-links/:id/reject`         | 保存明确拒绝与原因                               | version + 原因 + 幂等键     |
+| `POST /api/v1/evidence-links`                    | 将现有证据手工绑定到任务并立即确认               | 关系唯一 + 说明 + 幂等键    |
+| `DELETE /api/v1/evidence-links/:id/confirmation` | 撤销确认/拒绝但保留关系和历史                    | version + 撤销原因 + 幂等键 |
+
+- 所有用户写入使用条件版本更新；并发修改返回 `412 EVIDENCE_LINK_VERSION_STALE`，不会覆盖新决定。
+- 关系变更、EvidenceLinkEvent、AuditEvent 和 completed 幂等响应在同一 SQLite 事务提交；失败请求将幂等记录收敛为 failed，并额外写 rejected/failed 审计。
+- 同 key 同请求返回原响应，同 key 不同请求返回幂等冲突；缺失或非法 key 在进入业务事务前拒绝。
+- 自动规则的确认/拒绝撤销后回到 suggested；手工关系撤销后转 expired。两者都不物理删除，事件序列可完整回放。
+- 确认支持可选有效期；15 分钟调度和读路径都会收敛到期关系。系统过期使用条件版本更新，写 `expired` 系统事件及 `evidence.link_expired` 审计。
+- 重新确认会把 `needs_revalidation` 恢复为 valid，并把确认依据更新到当前来源内容哈希。
+
+`evidence-lifecycle.integration.spec.ts` 从空库应用全部生产迁移，覆盖成功确认与重放、过期版本/failed 幂等、拒绝与撤销、手工绑定唯一性、手工撤销保留、定时过期、事件/审计原子性、目录分页、非法游标、缺失幂等键、严格 body 和同 key 不同请求。
+
+03C2b 完成后的全仓 `pnpm verify` 再次通过：contracts 2、domain 21、API 98、Web 3，合计 124 个测试，格式、Lint、类型检查和两端生产构建全绿。
+
+## 6. 后续门禁
 
 只有以下路径全部实现并通过 SQLite 集成测试及真实浏览器验收后，03C 才能提升为 `verified`：
 

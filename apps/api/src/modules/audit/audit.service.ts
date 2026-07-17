@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { newId, requestHash } from '@auto-work/domain';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 
@@ -23,8 +24,23 @@ export class AuditService {
 
   /** 审计只保存非敏感摘要哈希；调用方不得把原始 Token、正文或外部响应传入。 */
   public async record(input: AuditInput): Promise<string> {
+    return this.create(this.prisma, input);
+  }
+
+  /** 关键业务可把审计与状态变更放在同一事务，避免业务成功但审计缺失。 */
+  public async recordInTransaction(
+    tx: Prisma.TransactionClient,
+    input: AuditInput,
+  ): Promise<string> {
+    return this.create(tx, input);
+  }
+
+  private async create(
+    client: Prisma.TransactionClient | PrismaService,
+    input: AuditInput,
+  ): Promise<string> {
     const eventId = newId();
-    await this.prisma.auditEvent.create({
+    await client.auditEvent.create({
       data: {
         eventId,
         actorType: input.actorType ?? 'local_user',
