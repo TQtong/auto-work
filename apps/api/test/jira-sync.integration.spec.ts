@@ -416,4 +416,71 @@ describe('Jira 防漏增量同步', () => {
       2,
     );
   });
+
+  it('Jira 后续出现非空值时替代 Excel 补充，并保留可解释的来源历史', async () => {
+    await prisma.integrationConnection.update({
+      where: { id: connectionId },
+      data: { status: 'healthy' },
+    });
+    const firstUpdated = '2026-07-17T14:00:00.000Z';
+    const { service: initialService } = serviceWithPages(() => ({
+      startAt: 0,
+      total: 1,
+      issues: [issue('PROJ-900', firstUpdated, { duedate: null })],
+    }));
+    const initialRun = await createRun();
+    await execute(initialService, initialRun.id);
+    const task = await prisma.task.findUniqueOrThrow({
+      where: { connectionId_issueKey: { connectionId, issueKey: 'PROJ-900' } },
+    });
+    const excelObservation = await prisma.taskSourceObservation.create({
+      data: {
+        id: newId(),
+        taskId: task.id,
+        sourceType: 'excel',
+        contentHash: requestHash({ taskId: task.id, dueDate: '2026-07-20' }),
+        fieldsJson: JSON.stringify({ dueDate: '2026-07-20' }),
+        observedAt: new Date(),
+      },
+    });
+    await prisma.$transaction([
+      prisma.task.update({ where: { id: task.id }, data: { dueDate: '2026-07-20' } }),
+      prisma.taskFieldProvenance.create({
+        data: {
+          id: newId(),
+          taskId: task.id,
+          fieldName: 'dueDate',
+          sourceType: 'excel',
+          decision: 'supplement',
+          valueJson: JSON.stringify('2026-07-20'),
+          sourceObservationId: excelObservation.id,
+          reason: '测试 Excel 补充值',
+          active: true,
+        },
+      }),
+    ]);
+
+    const { service: laterService } = serviceWithPages(() => ({
+      startAt: 0,
+      total: 1,
+      issues: [issue('PROJ-900', '2026-07-17T15:00:00.000Z', { duedate: '2026-07-25' })],
+    }));
+    const laterRun = await createRun();
+    await execute(laterService, laterRun.id);
+
+    const updated = await prisma.task.findUniqueOrThrow({ where: { id: task.id } });
+    expect(updated.dueDate).toBe('2026-07-25');
+    const history = await prisma.taskFieldProvenance.findMany({
+      where: { taskId: task.id, fieldName: 'dueDate' },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(history).toHaveLength(2);
+    expect(history[0]).toMatchObject({
+      sourceType: 'excel',
+      decision: 'supplement',
+      active: false,
+    });
+    expect(history[0]?.supersededAt).not.toBeNull();
+    expect(history[1]).toMatchObject({ sourceType: 'jira', decision: 'source_fact', active: true });
+  });
 });

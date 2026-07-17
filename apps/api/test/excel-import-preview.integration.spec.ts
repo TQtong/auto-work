@@ -145,6 +145,14 @@ describe('Excel 预检持久化集成', () => {
     });
     expect(JSON.stringify(failed)).not.toContain(buffer.toString('base64'));
     expect(JSON.stringify(failed)).not.toContain(temporaryDirectory);
+    await expect(
+      service.preview({ buffer, fileName: '再次上传.xlsx', mimeType: xlsxMime }),
+    ).rejects.toMatchObject({ code: 'EXCEL_CONTAINER_INVALID' });
+    expect(
+      await prisma.excelImport.count({
+        where: { fileSha256: sha256(buffer), status: 'failed' },
+      }),
+    ).toBe(1);
   });
 });
 

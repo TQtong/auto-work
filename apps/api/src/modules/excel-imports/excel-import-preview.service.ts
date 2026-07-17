@@ -26,7 +26,15 @@ export class ExcelImportPreviewService {
         fileSha256_parserVersion: { fileSha256, parserVersion: PARSER_VERSION },
       },
     });
-    if (existing) return { import: this.publicImport(existing), replayed: true };
+    if (existing) {
+      if (existing.status === 'failed') {
+        throw new DomainError(existing.errorCode ?? 'EXCEL_PREVIEW_FAILED', 'Excel 预检失败', {
+          httpStatus: 422,
+          details: { importId: existing.id, reason: existing.errorSummary },
+        });
+      }
+      return { import: this.publicImport(existing), replayed: true };
+    }
 
     try {
       const facts = await this.guard.inspect(input);
@@ -58,8 +66,7 @@ export class ExcelImportPreviewService {
       const preparedRows = parsed.rows.map((row) =>
         this.prepareRow(row, jiraTasks, currentAliases),
       );
-      const allDiagnostics = [
-        ...preparedRows.flatMap((row) => row.diagnostics),
+      const importDiagnostics = [
         ...parsed.sheetSummaries.flatMap((sheet) => sheet.diagnostics),
         ...(facts.hasExternalLinks
           ? [
@@ -80,6 +87,10 @@ export class ExcelImportPreviewService {
             ]
           : []),
       ];
+      const allDiagnostics = [
+        ...preparedRows.flatMap((row) => row.diagnostics),
+        ...importDiagnostics,
+      ];
       const count = (severity: ExcelDiagnostic['severity']) =>
         allDiagnostics.filter((diagnostic) => diagnostic.severity === severity).length;
       const importId = newId();
@@ -96,6 +107,7 @@ export class ExcelImportPreviewService {
             status: 'preview_ready',
             sheetSummaryJson: JSON.stringify(parsed.sheetSummaries),
             ignoredColumnsJson: JSON.stringify(parsed.ignoredColumns),
+            diagnosticsJson: JSON.stringify(importDiagnostics),
             blockingCount: count('blocking'),
             conflictCount: count('conflict'),
             warningCount: count('warning'),
@@ -297,6 +309,7 @@ export class ExcelImportPreviewService {
     status: string;
     sheetSummaryJson: string;
     ignoredColumnsJson: string;
+    diagnosticsJson: string;
     blockingCount: number;
     conflictCount: number;
     warningCount: number;
@@ -306,6 +319,7 @@ export class ExcelImportPreviewService {
     errorCode: string | null;
     errorSummary: string | null;
     committedAt: Date | null;
+    commitSummaryJson: string;
     version: number;
     createdAt: Date;
     updatedAt: Date;
@@ -321,6 +335,7 @@ export class ExcelImportPreviewService {
       status: item.status,
       sheetSummaries: JSON.parse(item.sheetSummaryJson) as unknown,
       ignoredColumns: JSON.parse(item.ignoredColumnsJson) as unknown,
+      diagnostics: JSON.parse(item.diagnosticsJson) as unknown,
       counts: {
         blocking: item.blockingCount,
         conflict: item.conflictCount,
@@ -332,6 +347,7 @@ export class ExcelImportPreviewService {
       errorCode: item.errorCode,
       errorSummary: item.errorSummary,
       committedAt: item.committedAt?.toISOString() ?? null,
+      commitSummary: JSON.parse(item.commitSummaryJson) as unknown,
       version: item.version,
       createdAt: item.createdAt.toISOString(),
       updatedAt: item.updatedAt.toISOString(),

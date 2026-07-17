@@ -93,6 +93,10 @@ export class TasksController {
         childTasks: { select: { id: true, issueKey: true, title: true, normalizedStatus: true } },
         sourceObservations: { orderBy: { observedAt: 'desc' }, take: 50 },
         statusEvents: { orderBy: { observedAt: 'desc' }, take: 50 },
+        fieldProvenances: {
+          orderBy: [{ fieldName: 'asc' }, { effectiveAt: 'desc' }],
+          take: 100,
+        },
       },
     });
     if (!task) throw new DomainError(errorCodes.notFound, '任务不存在', { httpStatus: 404 });
@@ -113,6 +117,19 @@ export class TasksController {
           warnings: JSON.parse(observation.warningsJson) as unknown,
           contentHash: observation.contentHash,
           observedAt: observation.observedAt.toISOString(),
+        })),
+        fieldProvenances: task.fieldProvenances.map((provenance) => ({
+          id: provenance.id,
+          fieldName: provenance.fieldName,
+          sourceType: provenance.sourceType,
+          decision: provenance.decision,
+          value: JSON.parse(provenance.valueJson) as unknown,
+          reason: provenance.reason,
+          active: provenance.active,
+          effectiveAt: provenance.effectiveAt.toISOString(),
+          supersededAt: provenance.supersededAt?.toISOString() ?? null,
+          sourceObservationId: provenance.sourceObservationId,
+          excelImportRowId: provenance.excelImportRowId,
         })),
         statusEvents: task.statusEvents.map((event) => ({
           id: event.id,

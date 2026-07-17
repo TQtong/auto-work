@@ -471,6 +471,7 @@ model FieldMappingVersion {
 
 model Task {
   id                       String                  @id
+  sourceStableKey          String?                 @unique @map("source_stable_key")
   connectionId             String?                 @map("connection_id")
   projectId                String?                 @map("project_id")
   primarySource            String                  @map("primary_source")
@@ -512,7 +513,8 @@ model Task {
   childTasks               Task[]                  @relation("TaskHierarchy")
   statusEvents             TaskStatusEvent[]
   sourceObservations       TaskSourceObservation[]
-  matchedExcelRows         ExcelImportRow[]
+  matchedExcelRows         ExcelImportRow[]        @relation("ExcelMatchedTask")
+  committedExcelRows       ExcelImportRow[]        @relation("ExcelCommittedTask")
   fieldProvenances         TaskFieldProvenance[]
 
   @@unique([connectionId, issueKey])
@@ -559,6 +561,7 @@ model TaskSourceObservation {
   mappingVersion   FieldMappingVersion?  @relation(fields: [mappingVersionId], references: [id], onDelete: Restrict)
   statusEvents     TaskStatusEvent[]
   fieldProvenances TaskFieldProvenance[]
+  excelImportRows  ExcelImportRow[]      @relation("ExcelRowObservation")
 
   @@unique([taskId, sourceUpdatedAt, contentHash])
   @@index([syncRunId])
@@ -623,6 +626,7 @@ model ExcelImport {
   status             String           @default("preview_ready")
   sheetSummaryJson   String           @default("[]") @map("sheet_summary_json")
   ignoredColumnsJson String           @default("[]") @map("ignored_columns_json")
+  diagnosticsJson    String           @default("[]") @map("diagnostics_json")
   blockingCount      Int              @default(0) @map("blocking_count")
   conflictCount      Int              @default(0) @map("conflict_count")
   warningCount       Int              @default(0) @map("warning_count")
@@ -633,6 +637,7 @@ model ExcelImport {
   errorSummary       String?          @map("error_summary")
   createdBy          String           @map("created_by")
   committedAt        DateTime?        @map("committed_at")
+  commitSummaryJson  String           @default("{}") @map("commit_summary_json")
   version            Int              @default(1)
   createdAt          DateTime         @default(now()) @map("created_at")
   updatedAt          DateTime         @updatedAt @map("updated_at")
@@ -644,27 +649,29 @@ model ExcelImport {
 }
 
 model ExcelImportRow {
-  id                  String                @id
-  importId            String                @map("import_id")
-  sheetName           String                @map("sheet_name")
-  rowNumber           Int                   @map("row_number")
-  rowKind             String                @map("row_kind")
-  rowFingerprint      String                @map("row_fingerprint")
-  rawJson             String                @map("raw_json")
-  normalizedJson      String                @map("normalized_json")
-  diagnosticsJson     String                @default("[]") @map("diagnostics_json")
-  candidatesJson      String                @default("[]") @map("candidates_json")
-  resolutionJson      String                @default("{}") @map("resolution_json")
-  proposedAction      String                @map("proposed_action")
-  commitStatus        String                @default("pending") @map("commit_status")
-  matchedTaskId       String?               @map("matched_task_id")
-  committedTaskId     String?               @map("committed_task_id")
-  sourceObservationId String?               @map("source_observation_id")
-  version             Int                   @default(1)
-  createdAt           DateTime              @default(now()) @map("created_at")
-  updatedAt           DateTime              @updatedAt @map("updated_at")
-  import              ExcelImport           @relation(fields: [importId], references: [id], onDelete: Restrict)
-  matchedTask         Task?                 @relation(fields: [matchedTaskId], references: [id], onDelete: Restrict)
+  id                  String                 @id
+  importId            String                 @map("import_id")
+  sheetName           String                 @map("sheet_name")
+  rowNumber           Int                    @map("row_number")
+  rowKind             String                 @map("row_kind")
+  rowFingerprint      String                 @map("row_fingerprint")
+  rawJson             String                 @map("raw_json")
+  normalizedJson      String                 @map("normalized_json")
+  diagnosticsJson     String                 @default("[]") @map("diagnostics_json")
+  candidatesJson      String                 @default("[]") @map("candidates_json")
+  resolutionJson      String                 @default("{}") @map("resolution_json")
+  proposedAction      String                 @map("proposed_action")
+  commitStatus        String                 @default("pending") @map("commit_status")
+  matchedTaskId       String?                @map("matched_task_id")
+  committedTaskId     String?                @map("committed_task_id")
+  sourceObservationId String?                @map("source_observation_id")
+  version             Int                    @default(1)
+  createdAt           DateTime               @default(now()) @map("created_at")
+  updatedAt           DateTime               @updatedAt @map("updated_at")
+  import              ExcelImport            @relation(fields: [importId], references: [id], onDelete: Restrict)
+  matchedTask         Task?                  @relation("ExcelMatchedTask", fields: [matchedTaskId], references: [id], onDelete: Restrict)
+  committedTask       Task?                  @relation("ExcelCommittedTask", fields: [committedTaskId], references: [id], onDelete: Restrict)
+  sourceObservation   TaskSourceObservation? @relation("ExcelRowObservation", fields: [sourceObservationId], references: [id], onDelete: Restrict)
   fieldProvenances    TaskFieldProvenance[]
 
   @@unique([importId, sheetName, rowNumber])

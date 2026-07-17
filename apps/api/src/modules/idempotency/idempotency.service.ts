@@ -76,8 +76,9 @@ export class IdempotencyService {
   }
 
   public async fail(recordId: string, errorCode: string): Promise<void> {
-    await this.prisma.idempotencyRecord.update({
-      where: { id: recordId },
+    // 业务事务已经完成时，后续审计或响应异常不得把可重放的 completed 记录降级为 failed。
+    await this.prisma.idempotencyRecord.updateMany({
+      where: { id: recordId, state: 'processing' },
       data: { state: 'failed', errorCode },
     });
   }

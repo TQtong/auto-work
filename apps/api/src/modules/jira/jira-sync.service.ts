@@ -1,5 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import type { FieldMappingVersion, IntegrationConnection, JiraSyncRun, Task } from '@prisma/client';
+import {
+  Prisma,
+  type FieldMappingVersion,
+  type IntegrationConnection,
+  type JiraSyncRun,
+  type Task,
+} from '@prisma/client';
 import { DomainError, type NormalizedTaskStatus } from '@auto-work/contracts';
 import { buildJiraQuery, newId, requestHash } from '@auto-work/domain';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
@@ -281,105 +287,180 @@ export class JiraSyncService {
     runId: string,
     value: NormalizedJiraTask,
   ): Promise<'created' | 'updated' | 'unchanged'> {
-    const existing = await this.prisma.task.findUnique({
-      where: { connectionId_issueKey: { connectionId, issueKey: value.issueKey } },
-      include: { sourceObservations: { orderBy: { observedAt: 'desc' }, take: 1 } },
-    });
-    const project = await this.prisma.project.findUnique({
-      where: { jiraProjectKey: value.projectKey },
-      select: { id: true },
-    });
-    const observedAt = new Date();
-    const data = {
-      projectId: project?.id ?? null,
-      primarySource: 'jira',
-      externalId: value.externalId,
-      issueKey: value.issueKey,
-      projectKey: value.projectKey,
-      issueType: value.issueType,
-      parentIssueKey: value.parentIssueKey,
-      parentTitle: value.parentTitle,
-      title: value.title.slice(0, 4_000),
-      descriptionPolicy: 'not_persisted',
-      priority: value.priority,
-      assigneeExternalId: value.assigneeExternalId,
-      assigneeName: value.assigneeName,
-      isCurrentUser: value.isCurrentUser,
-      rawStatusId: value.rawStatusId,
-      rawStatusName: value.rawStatusName,
-      normalizedStatus: value.normalizedStatus,
-      plannedStartDate: value.plannedStartDate,
-      dueDate: value.dueDate,
-      originalEstimateSeconds: value.originalEstimateSeconds,
-      remainingEstimateSeconds: value.remainingEstimateSeconds,
-      timeSpentSeconds: value.timeSpentSeconds,
-      sprintIdsJson: JSON.stringify(value.sprintIds),
-      labelsJson: JSON.stringify(value.labels),
-      componentsJson: JSON.stringify(value.components),
-      externalUpdatedAt: value.externalUpdatedAt,
-      lastObservedAt: observedAt,
-      visibilityState: 'visible',
-      mappingVersionId: mapping.id,
-    };
-    const unchanged = existing?.sourceObservations[0]?.contentHash === value.contentHash;
-    const task: Task = existing
-      ? await this.prisma.task.update({
-          where: { id: existing.id },
-          data: unchanged
-            ? { lastObservedAt: observedAt, visibilityState: 'visible' }
-            : { ...data, version: { increment: 1 } },
-        })
-      : await this.prisma.task.create({
-          data: { id: newId(), connectionId, ...data },
-        });
-    const observation = await this.prisma.taskSourceObservation.findFirst({
-      where: {
-        taskId: task.id,
-        sourceUpdatedAt: value.externalUpdatedAt,
-        contentHash: value.contentHash,
-      },
-    });
-    if (!observation) {
-      const createdObservation = await this.prisma.taskSourceObservation.create({
-        data: {
-          id: newId(),
-          taskId: task.id,
-          sourceType: 'jira',
-          sourceUpdatedAt: value.externalUpdatedAt,
-          contentHash: value.contentHash,
-          fieldsJson: JSON.stringify(value.observationFields),
-          warningsJson: JSON.stringify(value.warnings),
-          syncRunId: runId,
-          mappingVersionId: mapping.id,
-          observedAt,
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.task.findUnique({
+        where: { connectionId_issueKey: { connectionId, issueKey: value.issueKey } },
+        include: {
+          sourceObservations: { orderBy: { observedAt: 'desc' }, take: 1 },
+          fieldProvenances: {
+            where: { active: true, sourceType: 'excel', decision: 'supplement' },
+          },
         },
       });
-      if (
-        !existing ||
-        existing.rawStatusId !== value.rawStatusId ||
-        existing.rawStatusName !== value.rawStatusName ||
-        existing.normalizedStatus !== value.normalizedStatus
-      ) {
-        await this.prisma.taskStatusEvent.create({
+      const project = await tx.project.findUnique({
+        where: { jiraProjectKey: value.projectKey },
+        select: { id: true },
+      });
+      const observedAt = new Date();
+      const supplementFields = new Set(existing?.fieldProvenances.map((item) => item.fieldName));
+      const data = {
+        sourceStableKey: `jira:${connectionId}:${value.issueKey}`,
+        projectId: project?.id ?? null,
+        primarySource: 'jira',
+        externalId: value.externalId,
+        issueKey: value.issueKey,
+        projectKey: value.projectKey,
+        issueType: value.issueType,
+        parentIssueKey: value.parentIssueKey,
+        parentTitle: value.parentTitle,
+        title: value.title.slice(0, 4_000),
+        descriptionPolicy: 'not_persisted',
+        priority: value.priority,
+        assigneeExternalId: value.assigneeExternalId,
+        assigneeName: value.assigneeName,
+        isCurrentUser: value.isCurrentUser,
+        rawStatusId: value.rawStatusId,
+        rawStatusName: value.rawStatusName,
+        normalizedStatus: value.normalizedStatus,
+        // Jira 仍为空时保留已确认的 Excel 补充值；这不是把 Excel 回写到 Jira。
+        plannedStartDate:
+          value.plannedStartDate ??
+          (supplementFields.has('plannedStartDate') ? (existing?.plannedStartDate ?? null) : null),
+        dueDate:
+          value.dueDate ?? (supplementFields.has('dueDate') ? (existing?.dueDate ?? null) : null),
+        originalEstimateSeconds:
+          value.originalEstimateSeconds ??
+          (supplementFields.has('originalEstimateSeconds')
+            ? (existing?.originalEstimateSeconds ?? null)
+            : null),
+        remainingEstimateSeconds: value.remainingEstimateSeconds,
+        timeSpentSeconds: value.timeSpentSeconds,
+        sprintIdsJson: JSON.stringify(value.sprintIds),
+        labelsJson: JSON.stringify(value.labels),
+        componentsJson: JSON.stringify(value.components),
+        externalUpdatedAt: value.externalUpdatedAt,
+        lastObservedAt: observedAt,
+        visibilityState: 'visible',
+        mappingVersionId: mapping.id,
+      };
+      const unchanged = existing?.sourceObservations[0]?.contentHash === value.contentHash;
+      const task: Task = existing
+        ? await tx.task.update({
+            where: { id: existing.id },
+            data: unchanged
+              ? {
+                  lastObservedAt: observedAt,
+                  visibilityState: 'visible',
+                  sourceStableKey: data.sourceStableKey,
+                }
+              : { ...data, version: { increment: 1 } },
+          })
+        : await tx.task.create({
+            data: { id: newId(), connectionId, ...data },
+          });
+      let observation = await tx.taskSourceObservation.findFirst({
+        where: {
+          taskId: task.id,
+          sourceUpdatedAt: value.externalUpdatedAt,
+          contentHash: value.contentHash,
+        },
+      });
+      if (!observation) {
+        observation = await tx.taskSourceObservation.create({
           data: {
             id: newId(),
             taskId: task.id,
-            fromRawStatusId: existing?.rawStatusId ?? null,
-            fromRawStatusName: existing?.rawStatusName ?? null,
-            fromNormalizedStatus: existing?.normalizedStatus ?? null,
-            toRawStatusId: value.rawStatusId,
-            toRawStatusName: value.rawStatusName,
-            toNormalizedStatus: value.normalizedStatus,
-            // Search 未携带 changelog，只能声明从上次观测到本次观测的变化区间。
-            effectiveAt: value.externalUpdatedAt,
+            sourceType: 'jira',
+            sourceUpdatedAt: value.externalUpdatedAt,
+            contentHash: value.contentHash,
+            fieldsJson: JSON.stringify(value.observationFields),
+            warningsJson: JSON.stringify(value.warnings),
+            syncRunId: runId,
+            mappingVersionId: mapping.id,
             observedAt,
-            observedIntervalStart: existing?.lastObservedAt ?? null,
-            sourceObservationId: createdObservation.id,
           },
         });
+        if (
+          !existing ||
+          existing.rawStatusId !== value.rawStatusId ||
+          existing.rawStatusName !== value.rawStatusName ||
+          existing.normalizedStatus !== value.normalizedStatus
+        ) {
+          await tx.taskStatusEvent.create({
+            data: {
+              id: newId(),
+              taskId: task.id,
+              fromRawStatusId: existing?.rawStatusId ?? null,
+              fromRawStatusName: existing?.rawStatusName ?? null,
+              fromNormalizedStatus: existing?.normalizedStatus ?? null,
+              toRawStatusId: value.rawStatusId,
+              toRawStatusName: value.rawStatusName,
+              toNormalizedStatus: value.normalizedStatus,
+              // Search 未携带 changelog，只能声明从上次观测到本次观测的变化区间。
+              effectiveAt: value.externalUpdatedAt,
+              observedAt,
+              observedIntervalStart: existing?.lastObservedAt ?? null,
+              sourceObservationId: observation.id,
+            },
+          });
+        }
       }
+      for (const [fieldName, fieldValue] of [
+        ['plannedStartDate', value.plannedStartDate],
+        ['dueDate', value.dueDate],
+        ['originalEstimateSeconds', value.originalEstimateSeconds],
+      ] as const) {
+        if (fieldValue !== null) {
+          await this.activateJiraProvenance(
+            tx,
+            task.id,
+            fieldName,
+            fieldValue,
+            observation.id,
+            observedAt,
+          );
+        }
+      }
+      return existing ? (unchanged ? 'unchanged' : 'updated') : 'created';
+    });
+  }
+
+  private async activateJiraProvenance(
+    tx: Prisma.TransactionClient,
+    taskId: string,
+    fieldName: string,
+    value: unknown,
+    sourceObservationId: string,
+    effectiveAt: Date,
+  ): Promise<void> {
+    const current = await tx.taskFieldProvenance.findFirst({
+      where: { taskId, fieldName, active: true },
+    });
+    if (
+      current?.sourceType === 'jira' &&
+      current.sourceObservationId === sourceObservationId &&
+      current.valueJson === JSON.stringify(value)
+    ) {
+      return;
     }
-    return existing ? (unchanged ? 'unchanged' : 'updated') : 'created';
+    await tx.taskFieldProvenance.updateMany({
+      where: { taskId, fieldName, active: true },
+      data: { active: false, supersededAt: effectiveAt },
+    });
+    await tx.taskFieldProvenance.create({
+      data: {
+        id: newId(),
+        taskId,
+        fieldName,
+        sourceType: 'jira',
+        decision: 'source_fact',
+        valueJson: JSON.stringify(value),
+        sourceObservationId,
+        reason: 'Jira 本次观测提供非空主事实，替代本地补充值',
+        active: true,
+        effectiveAt,
+      },
+    });
   }
 
   private async linkParents(connectionId: string): Promise<void> {

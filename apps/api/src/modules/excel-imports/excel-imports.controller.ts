@@ -1,10 +1,13 @@
-import { Controller, Get, Param, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Param, Post, Put, Req } from '@nestjs/common';
 import { apiResponse, DomainError } from '@auto-work/contracts';
-import { sha256 } from '@auto-work/domain';
+import { requestHash, sha256 } from '@auto-work/domain';
 import type { FastifyRequest } from 'fastify';
 import { LocalSecurityService } from '../../infrastructure/http/local-security.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { IdempotencyService } from '../idempotency/idempotency.service.js';
 import { SessionService } from '../session/session.service.js';
+import { ExcelImportCommitService } from './excel-import-commit.service.js';
+import { commitExcelImportSchema, saveExcelResolutionsSchema } from './excel-import.schemas.js';
 import { ExcelImportPreviewService } from './excel-import-preview.service.js';
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -13,6 +16,8 @@ const MAX_FILE_BYTES = 8 * 1024 * 1024;
 export class ExcelImportsController {
   public constructor(
     private readonly previews: ExcelImportPreviewService,
+    private readonly commits: ExcelImportCommitService,
+    private readonly idempotency: IdempotencyService,
     private readonly audit: AuditService,
     private readonly sessions: SessionService,
     private readonly security: LocalSecurityService,
@@ -97,5 +102,80 @@ export class ExcelImportsController {
   @Get(':id')
   public async detail(@Param('id') id: string, @Req() request: FastifyRequest) {
     return apiResponse(await this.previews.detail(id), request.autoWork.correlationId);
+  }
+
+  @Put(':id/resolutions')
+  public async saveResolutions(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = saveExcelResolutionsSchema.parse(body);
+    const result = await this.commits.saveResolutions(id, input);
+    await this.audit.record({
+      actorId: this.sessions.currentProfileId,
+      action: 'excel.resolutions_saved',
+      targetType: 'excel_import',
+      targetId: id,
+      correlationId: request.autoWork.correlationId,
+      outcome: 'succeeded',
+      after: { version: result.version, rowCount: input.rows.length },
+      clientSessionHash: this.security.sessionHash(request.autoWork.sessionId),
+    });
+    return apiResponse(result, request.autoWork.correlationId);
+  }
+
+  @Post(':id/commit')
+  @HttpCode(200)
+  public async commit(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = commitExcelImportSchema.parse(body);
+    if (!key || !/^[A-Za-z0-9._:-]{8,200}$/u.test(key)) {
+      throw new DomainError(
+        'IDEMPOTENCY_KEY_REQUIRED',
+        'Excel 导入提交必须提供格式有效的 Idempotency-Key',
+        { httpStatus: 422 },
+      );
+    }
+    const route = `/api/v1/excel-imports/${id}/commit`;
+    const started = await this.idempotency.start({
+      actorId: this.sessions.currentProfileId,
+      route,
+      key,
+      requestHash: requestHash({ importId: id, ...input }),
+    });
+    if (started.kind === 'replay') {
+      return apiResponse(started.response, request.autoWork.correlationId);
+    }
+    if (started.kind === 'processing') {
+      throw new DomainError('IDEMPOTENCY_REQUEST_PROCESSING', '相同 Excel 提交正在处理中', {
+        httpStatus: 409,
+        retryable: true,
+      });
+    }
+    try {
+      const result = await this.commits.commit(id, input, started.recordId);
+      await this.audit.record({
+        actorId: this.sessions.currentProfileId,
+        action: 'excel.import_committed',
+        targetType: 'excel_import',
+        targetId: id,
+        correlationId: request.autoWork.correlationId,
+        outcome: 'succeeded',
+        after: result,
+        clientSessionHash: this.security.sessionHash(request.autoWork.sessionId),
+      });
+      return apiResponse(result, request.autoWork.correlationId);
+    } catch (error) {
+      await this.idempotency.fail(
+        started.recordId,
+        error instanceof DomainError ? error.code : 'EXCEL_IMPORT_COMMIT_FAILED',
+      );
+      throw error;
+    }
   }
 }
