@@ -20,6 +20,7 @@ import { IdempotencyService } from '../idempotency/idempotency.service.js';
 import { SessionService } from '../session/session.service.js';
 import { EvidenceLifecycleService } from './evidence-lifecycle.service.js';
 import {
+  batchConfirmEvidenceLinksSchema,
   confirmEvidenceLinkSchema,
   createManualEvidenceLinkSchema,
   rejectEvidenceLinkSchema,
@@ -79,6 +80,19 @@ export class EvidenceController {
       }),
       request.autoWork.correlationId,
       { asOf: new Date().toISOString() },
+    );
+  }
+
+  @Post('evidence-links/batch-confirm')
+  @HttpCode(200)
+  public async batchConfirm(
+    @Body() body: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = batchConfirmEvidenceLinksSchema.parse(body);
+    return this.mutate('/api/v1/evidence-links/batch-confirm', key, input, request, (recordId) =>
+      this.lifecycle.batchConfirm(input, this.context(request, recordId)),
     );
   }
 

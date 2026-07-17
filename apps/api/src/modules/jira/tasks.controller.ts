@@ -11,6 +11,9 @@ const taskQuerySchema = z
     projectKey: z.string().trim().min(1).max(100).optional(),
     status: z.enum(normalizedTaskStatuses).optional(),
     source: z.enum(['jira', 'excel', 'manual']).optional(),
+    evidenceState: z
+      .enum(['none', 'suggested', 'confirmed', 'rejected', 'expired', 'needs_revalidation'])
+      .optional(),
     currentUser: z.enum(['true', 'false']).optional(),
     visibility: z.enum(['visible', 'out_of_scope', 'unavailable']).default('visible'),
     dateFrom: z
@@ -41,6 +44,16 @@ export class TasksController {
       ...(query.status ? { normalizedStatus: query.status } : {}),
       ...(query.source ? { primarySource: query.source } : {}),
       ...(query.currentUser ? { isCurrentUser: query.currentUser === 'true' } : {}),
+      ...(query.evidenceState
+        ? {
+            evidenceLinks:
+              query.evidenceState === 'none'
+                ? { none: {} }
+                : query.evidenceState === 'needs_revalidation'
+                  ? { some: { revalidationState: 'needs_revalidation' } }
+                  : { some: { status: query.evidenceState } },
+          }
+        : {}),
       ...(query.dateFrom || query.dateTo
         ? {
             dueDate: {
@@ -58,7 +71,10 @@ export class TasksController {
         take: query.limit,
         include: {
           project: { select: { id: true, name: true, jiraProjectKey: true } },
-          _count: { select: { sourceObservations: true, statusEvents: true } },
+          evidenceLinks: { select: { status: true, revalidationState: true } },
+          _count: {
+            select: { sourceObservations: true, statusEvents: true, evidenceLinks: true },
+          },
         },
       }),
       this.prisma.task.count({ where }),
@@ -97,6 +113,7 @@ export class TasksController {
           orderBy: [{ fieldName: 'asc' }, { effectiveAt: 'desc' }],
           take: 100,
         },
+        evidenceLinks: { select: { status: true, revalidationState: true } },
       },
     });
     if (!task) throw new DomainError(errorCodes.notFound, '任务不存在', { httpStatus: 404 });
@@ -181,7 +198,8 @@ export class TasksController {
     visibilityState: string;
     version: number;
     project?: { id: string; name: string; jiraProjectKey: string | null } | null;
-    _count?: { sourceObservations: number; statusEvents: number };
+    _count?: { sourceObservations: number; statusEvents: number; evidenceLinks: number };
+    evidenceLinks?: Array<{ status: string; revalidationState: string }>;
   }) {
     return {
       id: task.id,
@@ -213,7 +231,34 @@ export class TasksController {
       lastObservedAt: task.lastObservedAt.toISOString(),
       visibilityState: task.visibilityState,
       counts: task._count ?? null,
+      evidence: this.evidenceSummary(task.evidenceLinks ?? []),
       version: task.version,
+    };
+  }
+
+  private evidenceSummary(links: Array<{ status: string; revalidationState: string }>) {
+    const counts = { suggested: 0, confirmed: 0, rejected: 0, expired: 0 };
+    for (const link of links) counts[link.status as keyof typeof counts] += 1;
+    const needsRevalidation = links.filter(
+      (link) => link.revalidationState === 'needs_revalidation',
+    ).length;
+    // 单一摘要状态按“需复核 > 待确认 > 已确认 > 无证据 > 拒绝 > 失效”排序，优先暴露需要人工处理的关系。
+    return {
+      counts,
+      needsRevalidation,
+      total: links.length,
+      state:
+        needsRevalidation > 0
+          ? 'needs_revalidation'
+          : counts.suggested > 0
+            ? 'suggested'
+            : counts.confirmed > 0
+              ? 'confirmed'
+              : links.length === 0
+                ? 'none'
+                : counts.rejected > 0
+                  ? 'rejected'
+                  : 'expired',
     };
   }
 

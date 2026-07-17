@@ -11,6 +11,7 @@ import { AuditService } from '../src/modules/audit/audit.service.js';
 import { EvidenceController } from '../src/modules/evidence/evidence.controller.js';
 import { EvidenceLifecycleService } from '../src/modules/evidence/evidence-lifecycle.service.js';
 import { IdempotencyService } from '../src/modules/idempotency/idempotency.service.js';
+import { TasksController } from '../src/modules/jira/tasks.controller.js';
 import type { SessionService } from '../src/modules/session/session.service.js';
 
 describe('证据关系确认、拒绝、撤销与过期', () => {
@@ -233,6 +234,59 @@ describe('证据关系确认、拒绝、撤销与过期', () => {
     expect(await prisma.evidenceLink.count({ where: { id: manualLink.id } })).toBe(1);
   });
 
+  it('批量确认只接受同一高确定性规则，关键词或混合方法由服务端拒绝', async () => {
+    await prisma.evidenceLink.create({
+      data: {
+        id: 'link-2',
+        targetType: 'task',
+        targetId: 'task-1',
+        taskId: 'task-1',
+        evidenceId: 'evidence-2',
+        method: 'keyword',
+        confidence: 0.79,
+        status: 'suggested',
+        explanation: '低置信关键词候选',
+        ruleVersion: 'evidence-rule-v1',
+        sourceContentHash: 'content-hash-2',
+      },
+    });
+    await expect(
+      controller.batchConfirm(
+        {
+          items: [
+            { id: 'link-1', version: 1 },
+            { id: 'link-2', version: 1 },
+          ],
+        },
+        'batch-mismatch-0001',
+        request,
+      ),
+    ).rejects.toMatchObject({ code: 'EVIDENCE_BATCH_RULE_MISMATCH' });
+    expect(await prisma.evidenceLink.count({ where: { status: 'confirmed' } })).toBe(0);
+
+    await prisma.evidenceLink.update({
+      where: { id: 'link-2' },
+      data: { method: 'commit_issue_key', confidence: 0.98 },
+    });
+    const result = await controller.batchConfirm(
+      {
+        items: [
+          { id: 'link-1', version: 1 },
+          { id: 'link-2', version: 1 },
+        ],
+      },
+      'batch-confirm-0001',
+      request,
+    );
+    expect(result.data).toMatchObject({ confirmed: 2, method: 'commit_issue_key' });
+    expect(await prisma.evidenceLink.count({ where: { status: 'confirmed' } })).toBe(2);
+    expect(
+      await prisma.auditEvent.findFirstOrThrow({
+        where: { action: 'evidence.links_batch_confirmed' },
+      }),
+    ).toMatchObject({ outcome: 'succeeded' });
+  });
+
   it('定时过期写系统事件和审计，读模型返回分组计数与来源新鲜度', async () => {
     await prisma.evidenceLink.update({
       where: { id: 'link-1' },
@@ -277,5 +331,32 @@ describe('证据关系确认、拒绝、撤销与过期', () => {
     await expect(
       controller.confirm('link-1', { version: 2 }, 'conflict-key-0001', request),
     ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+  });
+
+  it('任务列表按证据状态筛选并返回待确认、确认和复核计数', async () => {
+    const tasks = new TasksController(prisma as unknown as PrismaService);
+    const suggested = await tasks.list({ evidenceState: 'suggested', limit: '20' }, request);
+    expect(suggested.data).toEqual([
+      expect.objectContaining({
+        id: 'task-1',
+        evidence: {
+          total: 1,
+          needsRevalidation: 0,
+          state: 'suggested',
+          counts: { suggested: 1, confirmed: 0, rejected: 0, expired: 0 },
+        },
+      }),
+    ]);
+    expect((await tasks.list({ evidenceState: 'confirmed', limit: '20' }, request)).data).toEqual(
+      [],
+    );
+    await prisma.evidenceLink.update({
+      where: { id: 'link-1' },
+      data: { status: 'confirmed', revalidationState: 'needs_revalidation' },
+    });
+    const review = await tasks.list({ evidenceState: 'needs_revalidation', limit: '20' }, request);
+    expect(review.data[0]).toMatchObject({
+      evidence: { state: 'needs_revalidation', needsRevalidation: 1 },
+    });
   });
 });

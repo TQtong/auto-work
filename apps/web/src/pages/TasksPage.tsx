@@ -20,6 +20,8 @@ import { apiRequest } from '../api/client.js';
 import type { Integration, TaskDetail, TaskSummary } from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
 import { ExcelImportModal } from './ExcelImportModal.js';
+import { TaskEvidencePanel } from './TaskEvidencePanel.js';
+import { evidenceStateLabel } from './evidence-view-model.js';
 
 const statusOptions = [
   { value: 'planned', label: '计划中' },
@@ -36,6 +38,7 @@ export function TasksPage() {
   const [status, setStatus] = useState<string>();
   const [currentUser, setCurrentUser] = useState<string>('true');
   const [connectionId, setConnectionId] = useState<string>();
+  const [evidenceState, setEvidenceState] = useState<string>();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [excelImportOpen, setExcelImportOpen] = useState(false);
   const integrations = useQuery({
@@ -52,9 +55,10 @@ export function TasksPage() {
     ...(status ? { status } : {}),
     ...(currentUser ? { currentUser } : {}),
     ...(connectionId ? { connectionId } : {}),
+    ...(evidenceState ? { evidenceState } : {}),
   }).toString();
   const tasks = useQuery({
-    queryKey: ['tasks', status, currentUser, connectionId],
+    queryKey: ['tasks', status, currentUser, connectionId, evidenceState],
     queryFn: () => apiRequest<TaskSummary[]>(`/api/v1/tasks?${queryString}`),
     refetchInterval: 15_000,
   });
@@ -157,6 +161,21 @@ export function TasksPage() {
             options={jiraConnections.map((item) => ({ value: item.id, label: item.name }))}
             style={{ width: 220 }}
           />
+          <Select
+            allowClear
+            placeholder="证据状态"
+            value={evidenceState}
+            onChange={setEvidenceState}
+            style={{ width: 170 }}
+            options={[
+              { value: 'none', label: '无证据' },
+              { value: 'suggested', label: '待确认' },
+              { value: 'confirmed', label: '已有确认' },
+              { value: 'rejected', label: '已拒绝' },
+              { value: 'expired', label: '已失效' },
+              { value: 'needs_revalidation', label: '需要复核' },
+            ]}
+          />
           {jiraConnections.map((connection) => (
             <Button
               key={connection.id}
@@ -256,6 +275,21 @@ export function TasksPage() {
               ),
             },
             {
+              title: '证据',
+              width: 180,
+              render: (_, row) => (
+                <Space direction="vertical" size={0}>
+                  <Tag color={evidenceStateColor(row.evidence.state)}>
+                    {evidenceStateLabel(row.evidence.state)}
+                  </Tag>
+                  <Typography.Text type="secondary">
+                    确认 {row.evidence.counts.confirmed} · 待处理{' '}
+                    {row.evidence.counts.suggested + row.evidence.needsRevalidation}
+                  </Typography.Text>
+                </Space>
+              ),
+            },
+            {
               title: '最后观测',
               dataIndex: 'lastObservedAt',
               render: (value: string) => new Date(value).toLocaleString('zh-CN'),
@@ -265,7 +299,7 @@ export function TasksPage() {
       </Card>
       <Drawer
         title={detail.data?.data.issueKey ?? '任务详情'}
-        width={760}
+        width="min(1280px, 96vw)"
         open={Boolean(selectedTaskId)}
         onClose={() => setSelectedTaskId(null)}
         destroyOnHidden
@@ -369,6 +403,10 @@ function TaskDetailView({ task }: { task: TaskDetail }) {
         )}
       </div>
       <div>
+        <Typography.Title level={4}>任务与 Git/GitLab 证据</Typography.Title>
+        <TaskEvidencePanel task={task} />
+      </div>
+      <div>
         <Typography.Title level={4}>状态观测时间线</Typography.Title>
         {task.statusEvents.length === 0 ? (
           <Empty description="尚无状态变化观测" />
@@ -470,4 +508,15 @@ function displaySourceValue(value: unknown): string {
     return String(value);
   }
   return JSON.stringify(value);
+}
+
+function evidenceStateColor(state: TaskSummary['evidence']['state']): string {
+  return {
+    none: 'default',
+    suggested: 'processing',
+    confirmed: 'success',
+    rejected: 'error',
+    expired: 'default',
+    needs_revalidation: 'warning',
+  }[state];
 }

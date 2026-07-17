@@ -1,15 +1,24 @@
 import { Injectable } from '@nestjs/common';
 import type { EvidenceLink, Prisma } from '@prisma/client';
 import { DomainError, errorCodes } from '@auto-work/contracts';
-import { evidenceRuleVersion, newId } from '@auto-work/domain';
+import { evidenceRuleVersion, newId, requestHash } from '@auto-work/domain';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import type {
+  BatchConfirmEvidenceLinksInput,
   ConfirmEvidenceLinkInput,
   CreateManualEvidenceLinkInput,
   RejectEvidenceLinkInput,
   RevokeEvidenceDecisionInput,
 } from './evidence.schemas.js';
+
+const batchConfirmableMethods = new Set([
+  'branch_issue_key',
+  'commit_issue_key',
+  'mr_title_issue_key',
+  'mr_branch_issue_key',
+  'pipeline_confirmed_commit',
+]);
 
 interface MutationContext {
   actorId: string;
@@ -156,6 +165,96 @@ export class EvidenceLifecycleService {
       });
       await this.completeIdempotency(tx, context.idempotencyRecordId, result);
       return result;
+    });
+  }
+
+  public async batchConfirm(input: BatchConfirmEvidenceLinksInput, context: MutationContext) {
+    return this.prisma.$transaction(async (tx) => {
+      // 前端勾选只改善操作体验；真正的批量安全边界必须在同一数据库事务内重新校验。
+      this.assertFutureExpiry(input.expiresAt);
+      const requested = new Map(input.items.map((item) => [item.id, item.version]));
+      if (requested.size !== input.items.length) {
+        throw new DomainError('EVIDENCE_BATCH_DUPLICATE_LINK', '批量确认不能重复选择同一关系', {
+          httpStatus: 422,
+        });
+      }
+      const links = await tx.evidenceLink.findMany({
+        where: { id: { in: [...requested.keys()] } },
+        include: { evidence: true },
+        orderBy: { id: 'asc' },
+      });
+      if (links.length !== requested.size) {
+        throw new DomainError(errorCodes.notFound, '部分证据关系不存在', { httpStatus: 404 });
+      }
+      const methods = new Set(links.map((link) => link.method));
+      if (
+        methods.size !== 1 ||
+        !links.every(
+          (link) =>
+            batchConfirmableMethods.has(link.method) &&
+            link.confidence >= 0.95 &&
+            (link.status === 'suggested' ||
+              (link.status === 'confirmed' && link.revalidationState === 'needs_revalidation')),
+        )
+      ) {
+        throw new DomainError(
+          'EVIDENCE_BATCH_RULE_MISMATCH',
+          '批量确认只允许同一高确定性规则；关键词、AI、手工或不同规则必须逐条查看',
+          { httpStatus: 422 },
+        );
+      }
+      const results: unknown[] = [];
+      for (const link of links) {
+        const expectedVersion = requested.get(link.id);
+        if (expectedVersion === undefined) {
+          throw new DomainError(errorCodes.notFound, '批量确认关系不存在', { httpStatus: 404 });
+        }
+        if (expectedVersion !== link.version) this.assertVersion(link, expectedVersion);
+        const changed = await tx.evidenceLink.updateMany({
+          where: { id: link.id, version: expectedVersion },
+          data: {
+            status: 'confirmed',
+            sourceContentHash: link.evidence.contentHash,
+            confirmedBy: context.actorId,
+            confirmedAt: new Date(),
+            rejectedBy: null,
+            rejectedAt: null,
+            expiredAt: null,
+            decisionReason: null,
+            revalidationState: 'valid',
+            ...(input.expiresAt !== undefined
+              ? { expiresAt: input.expiresAt ? new Date(input.expiresAt) : null }
+              : {}),
+            version: { increment: 1 },
+          },
+        });
+        this.assertUpdated(changed.count);
+        const updated = await this.findLink(tx, link.id);
+        await this.appendEvent(
+          tx,
+          updated,
+          link.status === 'confirmed' ? 'batch_reconfirmed' : 'batch_confirmed',
+          link.status,
+          'confirmed',
+          context,
+          `同一高确定性规则批量确认：${link.method}`,
+        );
+        results.push(this.serializeLink(await this.findLink(tx, link.id)));
+      }
+      const method = links[0]?.method ?? 'unknown';
+      const response = { confirmed: results.length, method, items: results };
+      await this.audit.recordInTransaction(tx, {
+        actorId: context.actorId,
+        action: 'evidence.links_batch_confirmed',
+        targetType: 'evidence_link_batch',
+        targetId: requestHash([...requested.keys()].sort()),
+        correlationId: context.correlationId,
+        outcome: 'succeeded',
+        after: { count: results.length, method },
+        clientSessionHash: context.clientSessionHash,
+      });
+      await this.completeIdempotency(tx, context.idempotencyRecordId, response);
+      return response;
     });
   }
 

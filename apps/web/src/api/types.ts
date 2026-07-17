@@ -172,7 +172,13 @@ export interface TaskSummary {
   externalUpdatedAt: string | null;
   lastObservedAt: string;
   visibilityState: string;
-  counts: { sourceObservations: number; statusEvents: number } | null;
+  counts: { sourceObservations: number; statusEvents: number; evidenceLinks: number } | null;
+  evidence: {
+    counts: { suggested: number; confirmed: number; rejected: number; expired: number };
+    needsRevalidation: number;
+    total: number;
+    state: 'none' | 'suggested' | 'confirmed' | 'rejected' | 'expired' | 'needs_revalidation';
+  };
   version: number;
 }
 
@@ -217,6 +223,84 @@ export interface TaskDetail extends TaskSummary {
     observedIntervalStart: string | null;
     precision: 'observed_interval';
   }>;
+}
+
+export type EvidenceLinkStatus = 'suggested' | 'confirmed' | 'rejected' | 'expired';
+export type EvidenceAvailability = 'available' | 'stale' | 'unavailable';
+export type EvidenceSourceType =
+  'branch' | 'commit' | 'merge_request' | 'pipeline' | 'tag' | 'release' | 'manual';
+
+export interface EvidenceFact {
+  id: string;
+  sourceType: EvidenceSourceType;
+  sourceExternalKey: string;
+  eventAt: string | null;
+  title: string;
+  url: string | null;
+  contentHash: string;
+  availabilityState: EvidenceAvailability;
+  sourceSyncedAt: string | null;
+  project: { id: string; name: string } | null;
+  gitlabProject: { id: string; pathWithNamespace: string; webUrl: string } | null;
+}
+
+export interface EvidenceLinkView {
+  id: string;
+  targetType: string;
+  targetId: string;
+  evidenceId: string;
+  method:
+    | 'branch_issue_key'
+    | 'commit_issue_key'
+    | 'mr_title_issue_key'
+    | 'mr_branch_issue_key'
+    | 'pipeline_confirmed_commit'
+    | 'keyword'
+    | 'ai'
+    | 'manual';
+  confidence: number;
+  status: EvidenceLinkStatus;
+  explanation: string;
+  matchedValue: string | null;
+  ruleVersion: string;
+  sourceContentHash: string;
+  decisionReason: string | null;
+  confirmedBy: string | null;
+  confirmedAt: string | null;
+  rejectedBy: string | null;
+  rejectedAt: string | null;
+  expiresAt: string | null;
+  expiredAt: string | null;
+  revalidationState: 'valid' | 'needs_revalidation';
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  evidence: EvidenceFact;
+  events: Array<{
+    id: string;
+    sequence: number;
+    action: string;
+    fromStatus: string | null;
+    toStatus: string;
+    actorType: string;
+    actorId: string;
+    reason: string | null;
+    sourceContentHash: string;
+    ruleVersion: string;
+    occurredAt: string;
+  }>;
+}
+
+export interface TaskEvidenceView {
+  taskId: string;
+  counts: { suggested: number; confirmed: number; rejected: number; expired: number };
+  items: EvidenceLinkView[];
+}
+
+export interface EvidenceCatalogView {
+  items: Array<EvidenceFact & { linkCount: number; version: number }>;
+  total: number;
+  page: { cursor?: string; nextCursor?: string; hasMore: boolean; limit: number };
 }
 
 export type ExcelDiagnosticSeverity = 'blocking' | 'conflict' | 'warning' | 'info';
