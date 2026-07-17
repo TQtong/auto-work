@@ -4,6 +4,7 @@ import {
   Alert,
   Button,
   Card,
+  Descriptions,
   Divider,
   Form,
   Input,
@@ -21,7 +22,7 @@ import {
 } from 'antd';
 import { useEffect, useState } from 'react';
 import { apiRequest } from '../api/client.js';
-import type { IdentityAlias, Integration, UserProfile } from '../api/types.js';
+import type { GitLabProjectCache, IdentityAlias, Integration, UserProfile } from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
 
 interface IntegrationFormValues {
@@ -43,6 +44,8 @@ interface IntegrationFormValues {
   model?: string;
   accountName?: string;
   authScheme?: 'bearer' | 'basic_pat';
+  gitlabProjectRefs?: string;
+  gitlabHistoryDays?: number;
 }
 
 export function SettingsPage() {
@@ -226,12 +229,26 @@ function IntegrationSettings() {
   const [form] = Form.useForm<IntegrationFormValues>();
   const selectedType = Form.useWatch('type', form);
   const [open, setOpen] = useState(false);
+  const [cacheConnection, setCacheConnection] = useState<Integration | null>(null);
   const [messageApi, holder] = message.useMessage();
   const integrations = useQuery({
     queryKey: ['integrations'],
     queryFn: () => apiRequest<Integration[]>('/api/v1/integrations'),
   });
-  const refresh = async () => queryClient.invalidateQueries({ queryKey: ['integrations'] });
+  const gitlabProjects = useQuery({
+    queryKey: ['gitlab-projects', cacheConnection?.id],
+    queryFn: () => {
+      if (!cacheConnection) throw new Error('未选择 GitLab 连接');
+      return apiRequest<GitLabProjectCache[]>(
+        `/api/v1/integrations/${cacheConnection.id}/gitlab/projects`,
+      );
+    },
+    enabled: Boolean(cacheConnection),
+  });
+  const refresh = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['integrations'] });
+    await queryClient.invalidateQueries({ queryKey: ['gitlab-projects'] });
+  };
   const create = useMutation({
     mutationFn: (values: IntegrationFormValues) =>
       apiRequest<Integration>('/api/v1/integrations', {
@@ -247,9 +264,20 @@ function IntegrationSettings() {
     onError: (error: Error) => void messageApi.error(error.message),
   });
   const action = useMutation({
-    mutationFn: ({ row, kind }: { row: Integration; kind: 'test' | 'disable' | 'revoke' }) => {
+    mutationFn: ({
+      row,
+      kind,
+    }: {
+      row: Integration;
+      kind: 'test' | 'sync' | 'disable' | 'revoke';
+    }) => {
       if (kind === 'test')
         return apiRequest(`/api/v1/integrations/${row.id}/test`, { method: 'POST' });
+      if (kind === 'sync')
+        return apiRequest(`/api/v1/integrations/${row.id}/gitlab/sync`, {
+          method: 'POST',
+          body: '{}',
+        });
       if (kind === 'disable')
         return apiRequest(`/api/v1/integrations/${row.id}/disable`, {
           method: 'POST',
@@ -289,6 +317,30 @@ function IntegrationSettings() {
         rowKey="id"
         loading={integrations.isLoading}
         dataSource={integrations.data?.data ?? []}
+        expandable={{
+          expandedRowRender: (row: Integration) => (
+            <Descriptions bordered size="small" column={2}>
+              <Descriptions.Item label="类型">{row.type}</Descriptions.Item>
+              <Descriptions.Item label="版本">{row.version}</Descriptions.Item>
+              <Descriptions.Item label="上次成功">
+                {row.lastSuccessAt ? new Date(row.lastSuccessAt).toLocaleString('zh-CN') : '从未'}
+              </Descriptions.Item>
+              <Descriptions.Item label="启用状态">
+                {row.enabled ? '已启用' : '已禁用'}
+              </Descriptions.Item>
+              <Descriptions.Item label="非秘密配置" span={2}>
+                <pre style={{ margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                  {JSON.stringify(row.config, null, 2)}
+                </pre>
+              </Descriptions.Item>
+              <Descriptions.Item label="能力矩阵" span={2}>
+                <pre style={{ margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                  {JSON.stringify(row.capabilities, null, 2)}
+                </pre>
+              </Descriptions.Item>
+            </Descriptions>
+          ),
+        }}
         columns={[
           {
             title: '连接',
@@ -328,6 +380,24 @@ function IntegrationSettings() {
                 >
                   测试
                 </Button>
+                {row.type === 'gitlab' && (
+                  <>
+                    <Button
+                      size="small"
+                      onClick={() => action.mutate({ row, kind: 'sync' })}
+                      disabled={
+                        !row.enabled ||
+                        !row.credentialMask ||
+                        !['healthy', 'degraded'].includes(row.status)
+                      }
+                    >
+                      同步只读元数据
+                    </Button>
+                    <Button size="small" onClick={() => setCacheConnection(row)}>
+                      查看项目缓存
+                    </Button>
+                  </>
+                )}
                 <Popconfirm
                   title="禁用后定时同步和外部调用都会停止，历史记录仍保留。"
                   onConfirm={() => action.mutate({ row, kind: 'disable' })}
@@ -350,6 +420,63 @@ function IntegrationSettings() {
         ]}
       />
       <Modal
+        title={`${cacheConnection?.name ?? 'GitLab'} · 只读项目缓存`}
+        width={1000}
+        open={Boolean(cacheConnection)}
+        onCancel={() => setCacheConnection(null)}
+        footer={null}
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="这里展示最后一次完整同步缓存；不会在打开弹窗时阻塞调用 GitLab。"
+          style={{ marginBottom: 16 }}
+        />
+        <Table<GitLabProjectCache>
+          rowKey="id"
+          loading={gitlabProjects.isLoading}
+          dataSource={gitlabProjects.data?.data ?? []}
+          pagination={{ pageSize: 10 }}
+          columns={[
+            {
+              title: '项目',
+              render: (_, row) => (
+                <Space direction="vertical" size={0}>
+                  <Typography.Link href={row.webUrl} target="_blank">
+                    {row.pathWithNamespace}
+                  </Typography.Link>
+                  <Typography.Text type="secondary">
+                    #{row.externalId} · {row.visibility} · 默认 {row.defaultBranch ?? '未返回'}
+                  </Typography.Text>
+                </Space>
+              ),
+            },
+            {
+              title: '缓存资源',
+              render: (_, row) => (
+                <Typography.Text>
+                  分支 {row.counts.branches} / 提交 {row.counts.commits} / MR{' '}
+                  {row.counts.mergeRequests} / Pipeline {row.counts.pipelines} / Tag{' '}
+                  {row.counts.tags} / Release {row.counts.releases} / 成员 {row.counts.members}
+                </Typography.Text>
+              ),
+            },
+            {
+              title: '状态',
+              render: (_, row) => (
+                <Space direction="vertical" size={0}>
+                  <StatusTag status={row.syncStatus} />
+                  {row.latestPipeline && <StatusTag status={row.latestPipeline.status} />}
+                  <Typography.Text type="secondary">
+                    {row.syncedAt ? new Date(row.syncedAt).toLocaleString('zh-CN') : '无成功快照'}
+                  </Typography.Text>
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Modal>
+      <Modal
         title="新建外部连接"
         width={680}
         open={open}
@@ -366,6 +493,7 @@ function IntegrationSettings() {
             authScheme: 'bearer',
             protocol: 'openai_compatible',
             templateName: 'uTwin产研创新部周报',
+            gitlabHistoryDays: 120,
           }}
           onFinish={(values) => create.mutate(values)}
         >
@@ -406,6 +534,26 @@ function IntegrationSettings() {
 }
 
 function IntegrationFields({ type }: { type: Integration['type'] }) {
+  if (type === 'gitlab')
+    return (
+      <>
+        <Form.Item
+          name="gitlabProjectRefs"
+          label="项目 ID 或完整 namespace/project（每行一个）"
+          extra="留空时仍会按已确认仓库的同主机、端口和 remote 路径匹配；仅接受搜索结果中的完整路径精确匹配。"
+        >
+          <Input.TextArea rows={4} placeholder={'123\ngroup/team/project'} />
+        </Form.Item>
+        <Form.Item
+          name="gitlabHistoryDays"
+          label="首次同步历史窗口（天）"
+          extra="Commit、MR 和 Pipeline 首次读取该窗口；后续按成功水位重叠增量同步。"
+          rules={[{ required: true }]}
+        >
+          <InputNumber min={1} max={730} precision={0} style={{ width: '100%' }} />
+        </Form.Item>
+      </>
+    );
   if (type === 'jira')
     return (
       <div className="form-grid">
@@ -512,7 +660,18 @@ function toIntegrationPayload(values: IntegrationFormValues) {
     baseUrl: values.type === 'dingtalk_robot' ? undefined : values.baseUrl,
   };
   if (values.type === 'gitlab')
-    return { ...common, config: { projectIds: [] }, credential: { token: values.token } };
+    return {
+      ...common,
+      config: {
+        projectIds: [],
+        projectRefs: (values.gitlabProjectRefs ?? '')
+          .split(/\r?\n/u)
+          .map((value) => value.trim())
+          .filter(Boolean),
+        historyDays: values.gitlabHistoryDays ?? 120,
+      },
+      credential: { token: values.token },
+    };
   if (values.type === 'jira')
     return {
       ...common,

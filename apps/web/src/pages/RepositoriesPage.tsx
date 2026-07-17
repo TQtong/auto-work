@@ -46,6 +46,7 @@ interface ConfirmValues {
   alias?: string;
   projectId?: string;
   remoteName?: string;
+  gitlabProjectRef?: string;
   baselineBranch: string;
 }
 
@@ -107,6 +108,7 @@ export function RepositoriesPage() {
           ...values,
           projectId: values.projectId || null,
           remoteName: values.remoteName || null,
+          gitlabProjectRef: values.gitlabProjectRef || null,
           alias: values.alias || null,
           discoverySnapshotVersion: confirming.version,
         }),
@@ -239,6 +241,70 @@ export function RepositoriesPage() {
                 <Descriptions.Item label="最近提交" span={2}>
                   {record.latestSnapshot?.recentCommit.title ?? '无提交'}
                 </Descriptions.Item>
+                <Descriptions.Item label="GitLab 项目" span={2}>
+                  {record.gitlabSummary ? (
+                    <Typography.Link href={record.gitlabSummary.webUrl} target="_blank">
+                      {record.gitlabSummary.pathWithNamespace}
+                    </Typography.Link>
+                  ) : record.gitlabMatchStatus === 'mismatch' ? (
+                    <Typography.Text type="danger">远端已变化，必须重新确认匹配</Typography.Text>
+                  ) : (
+                    '尚未确认匹配'
+                  )}
+                </Descriptions.Item>
+                {record.gitlabSummary && (
+                  <>
+                    <Descriptions.Item label="GitLab 默认分支">
+                      {record.gitlabSummary.defaultBranch ?? '未返回'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="当前分支开放 MR">
+                      {record.gitlabSummary.currentBranchMergeRequests.length > 0 ? (
+                        <Space direction="vertical" size={0}>
+                          {record.gitlabSummary.currentBranchMergeRequests.map((mergeRequest) => (
+                            <Typography.Link
+                              key={mergeRequest.iid}
+                              href={mergeRequest.webUrl}
+                              target="_blank"
+                            >
+                              !{mergeRequest.iid} {mergeRequest.title}
+                            </Typography.Link>
+                          ))}
+                        </Space>
+                      ) : (
+                        0
+                      )}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="最近远端提交" span={2}>
+                      {record.gitlabSummary.latestCommit ? (
+                        <Space direction="vertical" size={0}>
+                          <Typography.Text>
+                            {record.gitlabSummary.latestCommit.title}
+                          </Typography.Text>
+                          <Typography.Text type="secondary">
+                            {record.gitlabSummary.latestCommit.sha.slice(0, 8)} ·{' '}
+                            {record.gitlabSummary.latestCommit.authorName}
+                          </Typography.Text>
+                        </Space>
+                      ) : (
+                        '当前同步窗口内无提交'
+                      )}
+                    </Descriptions.Item>
+                  </>
+                )}
+                {record.gitlabSummary?.syncError && (
+                  <Descriptions.Item label="GitLab 同步错误" span={2}>
+                    <Typography.Text type="danger">
+                      {record.gitlabSummary.syncError}
+                    </Typography.Text>
+                  </Descriptions.Item>
+                )}
+                {record.gitlabSummary && (
+                  <Descriptions.Item label="GitLab 完整同步时间" span={2}>
+                    {record.gitlabSummary.syncedAt
+                      ? new Date(record.gitlabSummary.syncedAt).toLocaleString('zh-CN')
+                      : '尚无完整成功快照'}
+                  </Descriptions.Item>
+                )}
               </Descriptions>
             ),
           }}
@@ -296,6 +362,40 @@ export function RepositoriesPage() {
               ),
             },
             {
+              title: 'GitLab',
+              key: 'gitlab',
+              render: (_, record) =>
+                record.gitlabSummary ? (
+                  <Space direction="vertical" size={0}>
+                    <Typography.Text>
+                      MR {record.gitlabSummary.openMergeRequestCount} · 当前分支{' '}
+                      {record.gitlabSummary.currentBranchMergeRequests.length}
+                    </Typography.Text>
+                    <StatusTag status={record.gitlabSummary.latestPipeline?.status ?? 'unknown'} />
+                    <StatusTag status={record.gitlabSummary.syncStatus} />
+                    {record.gitlabSummary.latestPipeline && (
+                      <Tag
+                        color={
+                          record.gitlabSummary.latestPipeline.sha === record.latestSnapshot?.headSha
+                            ? 'green'
+                            : 'gold'
+                        }
+                      >
+                        {record.gitlabSummary.latestPipeline.sha === record.latestSnapshot?.headSha
+                          ? 'Pipeline 对应当前 HEAD'
+                          : `Pipeline 对应 ${record.gitlabSummary.latestPipeline.ref ?? '其他 ref'} / ${record.gitlabSummary.latestPipeline.sha.slice(0, 8)}`}
+                      </Tag>
+                    )}
+                  </Space>
+                ) : record.gitlabMatchStatus === 'mismatch' ? (
+                  <Tag color="red">远端变化，需复核</Tag>
+                ) : record.gitlabCandidates.length > 0 ? (
+                  <Tag color="gold">有精确候选待确认</Tag>
+                ) : (
+                  <Typography.Text type="secondary">无缓存匹配</Typography.Text>
+                ),
+            },
+            {
               title: '状态 / 新鲜度',
               key: 'status',
               render: (_, record) => (
@@ -332,6 +432,8 @@ export function RepositoriesPage() {
                           if (record.alias) values.alias = record.alias;
                           if (record.project) values.projectId = record.project.id;
                           if (record.remoteName) values.remoteName = record.remoteName;
+                          if (record.gitlabSummary)
+                            values.gitlabProjectRef = record.gitlabSummary.id;
                           confirmForm.setFieldsValue(values);
                         }}
                       >
@@ -400,6 +502,20 @@ export function RepositoriesPage() {
                 value: remote.name,
                 label: `${remote.name} · ${remote.sanitizedUrl ?? '本地/不支持匹配'}`,
               }))}
+            />
+          </Form.Item>
+          <Form.Item
+            label="GitLab 精确项目匹配"
+            name="gitlabProjectRef"
+            extra="只有主机和完整 namespace/project 路径完全一致的缓存项目可选。"
+          >
+            <Select
+              allowClear
+              options={(confirming?.gitlabCandidates ?? []).map((project) => ({
+                value: project.id,
+                label: `${project.pathWithNamespace} · #${project.externalId}`,
+              }))}
+              placeholder="可在 GitLab 同步后选择"
             />
           </Form.Item>
           <Form.Item label="基线分支" name="baselineBranch" rules={[{ required: true }]}>

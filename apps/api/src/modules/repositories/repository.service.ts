@@ -5,6 +5,7 @@ import { DomainError, errorCodes } from '@auto-work/contracts';
 import { newId } from '@auto-work/domain';
 import type { GitSnapshot, Prisma, Project, Repository } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
+import { deriveGitLabFreshness } from '../gitlab/gitlab-freshness.js';
 import { RepositoryInspectorService } from './repository-inspector.service.js';
 import type { DiscoveryWarning, RepositoryIdentity } from './repository.types.js';
 
@@ -117,7 +118,7 @@ export class RepositoryService {
       },
       orderBy: [{ whitelistStatus: 'asc' }, { displayName: 'asc' }],
     });
-    return repositories.map((repository) => this.toRepositoryView(repository));
+    return this.attachGitLab(repositories.map((repository) => this.toRepositoryView(repository)));
   }
 
   public async get(id: string) {
@@ -129,7 +130,7 @@ export class RepositoryService {
       },
     });
     if (!repository) throw new DomainError(errorCodes.notFound, '仓库不存在', { httpStatus: 404 });
-    return this.toRepositoryView(repository);
+    return (await this.attachGitLab([this.toRepositoryView(repository)]))[0]!;
   }
 
   public async confirm(
@@ -139,6 +140,7 @@ export class RepositoryService {
       alias?: string | null | undefined;
       projectId?: string | null | undefined;
       remoteName?: string | null | undefined;
+      gitlabProjectRef?: string | null | undefined;
       baselineBranch: string;
       discoverySnapshotVersion: number;
     },
@@ -165,6 +167,30 @@ export class RepositoryService {
     if (input.remoteName && !selectedRemote) {
       throw new DomainError('REMOTE_NOT_FOUND', '所选远端已不存在', { httpStatus: 412 });
     }
+    const gitlabProject = input.gitlabProjectRef
+      ? await this.prisma.gitLabProject.findFirst({
+          where: { id: input.gitlabProjectRef, stale: false },
+          include: { connection: true },
+        })
+      : null;
+    if (input.gitlabProjectRef) {
+      const gitlabHost = gitlabProject?.connection.baseUrl
+        ? new URL(gitlabProject.connection.baseUrl).hostname.toLowerCase()
+        : null;
+      const gitlabPort = gitlabProject?.connection.baseUrl
+        ? this.normalizedUrlPort(new URL(gitlabProject.connection.baseUrl))
+        : null;
+      if (
+        !gitlabProject ||
+        gitlabHost !== selectedRemote?.host?.toLowerCase() ||
+        gitlabPort !== (selectedRemote?.port ?? null) ||
+        gitlabProject.pathWithNamespace !== selectedRemote?.path
+      ) {
+        throw new DomainError('GITLAB_PROJECT_MATCH_INVALID', 'GitLab 项目与所选远端不精确匹配', {
+          httpStatus: 422,
+        });
+      }
+    }
     const updated = await this.prisma.repository.updateMany({
       where: { id, version: input.discoverySnapshotVersion },
       data: {
@@ -175,7 +201,10 @@ export class RepositoryService {
         remoteUrl: selectedRemote?.sanitizedUrl ?? null,
         remoteProtocol: selectedRemote?.protocol ?? null,
         remoteHost: selectedRemote?.host ?? null,
+        remotePort: selectedRemote?.port ?? null,
         remotePath: selectedRemote?.path ?? null,
+        gitlabConnectionId: gitlabProject?.connectionId ?? null,
+        gitlabProjectRef: gitlabProject?.externalId ?? null,
         baselineBranch: input.baselineBranch,
         whitelistStatus: 'confirmed',
         statusReason: null,
@@ -280,7 +309,10 @@ export class RepositoryService {
     const existing = await this.prisma.repository.findUnique({
       where: { canonicalPath: identity.canonicalPath },
     });
-    const remote = identity.defaultRemote;
+    const remote = existing
+      ? (identity.remotes.find((item) => item.name === existing.remoteName) ??
+        identity.defaultRemote)
+      : identity.defaultRemote;
     if (!existing) {
       return this.prisma.repository.create({
         data: {
@@ -294,6 +326,7 @@ export class RepositoryService {
           remoteUrl: remote?.sanitizedUrl ?? null,
           remoteProtocol: remote?.protocol ?? null,
           remoteHost: remote?.host ?? null,
+          remotePort: remote?.port ?? null,
           remotePath: remote?.path ?? null,
           baselineBranch: identity.branchName,
           whitelistStatus: 'discovered',
@@ -302,6 +335,18 @@ export class RepositoryService {
       });
     }
     const identityChanged = existing.identityHash !== identity.identityHash;
+    const gitlabRemoteChanged = Boolean(
+      existing.gitlabProjectRef &&
+      (existing.remoteHost?.toLowerCase() !== remote?.host?.toLowerCase() ||
+        existing.remotePort !== (remote?.port ?? null) ||
+        existing.remotePath !== remote?.path),
+    );
+    const needsReview = identityChanged || gitlabRemoteChanged;
+    const statusReason = identityChanged
+      ? '相同路径中的 Git 元数据身份已变化'
+      : gitlabRemoteChanged
+        ? '已确认的远端主机、端口或项目路径发生变化，GitLab 匹配必须重新确认'
+        : existing.statusReason;
     return this.prisma.repository.update({
       where: { id: existing.id },
       data: {
@@ -312,11 +357,12 @@ export class RepositoryService {
         remoteUrl: remote?.sanitizedUrl ?? null,
         remoteProtocol: remote?.protocol ?? null,
         remoteHost: remote?.host ?? null,
+        remotePort: remote?.port ?? null,
         remotePath: remote?.path ?? null,
         lastSeenAt: new Date(),
-        whitelistStatus: identityChanged ? 'needs_review' : existing.whitelistStatus,
-        statusReason: identityChanged ? '相同路径中的 Git 元数据身份已变化' : null,
-        ...(identityChanged ? { version: { increment: 1 } } : {}),
+        whitelistStatus: needsReview ? 'needs_review' : existing.whitelistStatus,
+        statusReason,
+        ...(needsReview ? { version: { increment: 1 } } : {}),
       },
     });
   }
@@ -377,7 +423,10 @@ export class RepositoryService {
       remoteName: repository.remoteName,
       remoteUrl: repository.remoteUrl,
       remoteHost: repository.remoteHost,
+      remotePort: repository.remotePort,
       remotePath: repository.remotePath,
+      gitlabConnectionId: repository.gitlabConnectionId,
+      gitlabProjectRef: repository.gitlabProjectRef,
       baselineBranch: repository.baselineBranch,
       whitelistStatus: repository.whitelistStatus,
       statusReason: repository.statusReason,
@@ -409,5 +458,111 @@ export class RepositoryService {
           }
         : null,
     };
+  }
+
+  private async attachGitLab(
+    repositories: Array<ReturnType<RepositoryService['toRepositoryView']>>,
+  ) {
+    const projects = await this.prisma.gitLabProject.findMany({
+      where: { stale: false },
+      include: {
+        connection: true,
+        mergeRequests: {
+          where: { state: 'opened' },
+          select: {
+            iid: true,
+            title: true,
+            sourceBranch: true,
+            targetBranch: true,
+            webUrl: true,
+          },
+        },
+        pipelines: { orderBy: { updatedExternalAt: 'desc' }, take: 1 },
+        commits: { orderBy: { committedAt: 'desc' }, take: 1 },
+      },
+    });
+    const summarize = (
+      project: (typeof projects)[number],
+      repository: (typeof repositories)[number],
+    ) => ({
+      id: project.id,
+      externalId: project.externalId,
+      connectionId: project.connectionId,
+      pathWithNamespace: project.pathWithNamespace,
+      name: project.name,
+      webUrl: project.webUrl,
+      defaultBranch: project.defaultBranch,
+      openMergeRequestCount: project.mergeRequests.length,
+      currentBranchMergeRequests: project.mergeRequests
+        .filter(
+          (mergeRequest) => mergeRequest.sourceBranch === repository.latestSnapshot?.branchName,
+        )
+        .map((mergeRequest) => ({
+          iid: mergeRequest.iid,
+          title: mergeRequest.title,
+          sourceBranch: mergeRequest.sourceBranch,
+          targetBranch: mergeRequest.targetBranch,
+          webUrl: mergeRequest.webUrl,
+        })),
+      latestCommit: project.commits[0]
+        ? {
+            sha: project.commits[0].sha,
+            title: project.commits[0].title,
+            authorName: project.commits[0].authorName,
+            committedAt: project.commits[0].committedAt.toISOString(),
+            webUrl: project.commits[0].webUrl,
+          }
+        : null,
+      latestPipeline: project.pipelines[0]
+        ? {
+            status: project.pipelines[0].status,
+            sha: project.pipelines[0].sha,
+            ref: project.pipelines[0].ref,
+            updatedAt: project.pipelines[0].updatedExternalAt?.toISOString() ?? null,
+            webUrl: project.pipelines[0].webUrl,
+          }
+        : null,
+      syncStatus: deriveGitLabFreshness(project.syncStatus, project.syncedAt),
+      syncError: project.syncError,
+      syncedAt: project.syncedAt?.toISOString() ?? null,
+    });
+    return repositories.map((repository) => {
+      const candidates = projects.filter((project) => {
+        if (!project.connection.baseUrl || !repository.remoteHost || !repository.remotePath)
+          return false;
+        const connectionUrl = new URL(project.connection.baseUrl);
+        return (
+          connectionUrl.hostname.toLowerCase() === repository.remoteHost.toLowerCase() &&
+          this.normalizedUrlPort(connectionUrl) === repository.remotePort &&
+          project.pathWithNamespace === repository.remotePath
+        );
+      });
+      const selected = candidates.find(
+        (project) =>
+          project.connectionId === repository.gitlabConnectionId &&
+          project.externalId === repository.gitlabProjectRef,
+      );
+      const selectedProjectStillExists = projects.some(
+        (project) =>
+          project.connectionId === repository.gitlabConnectionId &&
+          project.externalId === repository.gitlabProjectRef,
+      );
+      return {
+        ...repository,
+        gitlabMatchStatus: selected
+          ? 'matched'
+          : repository.gitlabProjectRef && selectedProjectStillExists
+            ? 'mismatch'
+            : candidates.length > 0
+              ? 'candidate'
+              : 'unavailable',
+        gitlabCandidates: candidates.map((project) => summarize(project, repository)),
+        gitlabSummary: selected ? summarize(selected, repository) : null,
+      };
+    });
+  }
+
+  private normalizedUrlPort(url: URL): number | null {
+    return url.port ? Number(url.port) : null;
   }
 }

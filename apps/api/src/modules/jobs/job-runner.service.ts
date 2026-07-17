@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
+import { DomainError } from '@auto-work/contracts';
 import { newId } from '@auto-work/domain';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import { InstanceLeaseService } from './instance-lease.service.js';
@@ -136,7 +137,9 @@ export class JobRunnerService implements OnApplicationBootstrap {
       const job = await this.prisma.job.findUnique({ where: { id: jobId } });
       if (!job) return;
       const exhausted = job.attemptCount >= job.maxAttempts;
-      const safeReplay = handler.recovery === 'safe_replay' && !exhausted;
+      const retryable = !(error instanceof DomainError) || error.options.retryable === true;
+      const safeReplay = handler.recovery === 'safe_replay' && retryable && !exhausted;
+      const terminalNonRetryable = handler.recovery === 'safe_replay' && !retryable;
       await this.prisma.job.update({
         where: { id: jobId },
         data: safeReplay
@@ -149,11 +152,15 @@ export class JobRunnerService implements OnApplicationBootstrap {
               lastError: this.safeError(error),
             }
           : {
-              status: exhausted ? 'dead_letter' : 'unknown',
+              status: terminalNonRetryable ? 'failed' : exhausted ? 'dead_letter' : 'unknown',
               completedAt: new Date(),
               leaseOwner: null,
               leaseUntil: null,
-              lastErrorCode: exhausted ? 'MAX_ATTEMPTS_EXCEEDED' : 'RESULT_REQUIRES_REVIEW',
+              lastErrorCode: terminalNonRetryable
+                ? error.code
+                : exhausted
+                  ? 'MAX_ATTEMPTS_EXCEEDED'
+                  : 'RESULT_REQUIRES_REVIEW',
               lastError: this.safeError(error),
             },
       });

@@ -28,6 +28,7 @@ const confirmSchema = z.object({
     .regex(/^[a-z0-9][a-z0-9._/-]{0,100}$/iu)
     .nullable()
     .optional(),
+  gitlabProjectRef: z.string().trim().min(1).max(100).nullable().optional(),
   baselineBranch: z
     .string()
     .trim()

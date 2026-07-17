@@ -3,12 +3,12 @@ import { normalizeGitRemote } from '../src/lib/git-remote.js';
 
 describe('Git 远端规范化', () => {
   it.each([
-    ['https://oauth2:secret@git.example.com/group/team/repo.git', 'https', 'group/team/repo'],
-    ['git@git.example.com:group/team/repo.git', 'ssh', 'group/team/repo'],
-    ['ssh://deploy@git.example.com:2222/group/repo.git', 'ssh', 'group/repo'],
-  ])('解析 %s 且不保留凭证', (value, protocol, path) => {
+    ['https://oauth2:secret@git.example.com/group/team/repo.git', 'https', 'group/team/repo', null],
+    ['git@git.example.com:group/team/repo.git', 'ssh', 'group/team/repo', null],
+    ['ssh://deploy@git.example.com:2222/group/repo.git', 'ssh', 'group/repo', 2222],
+  ])('解析 %s 且不保留凭证', (value, protocol, path, port) => {
     const result = normalizeGitRemote(value);
-    expect(result).toMatchObject({ protocol, host: 'git.example.com', path });
+    expect(result).toMatchObject({ protocol, host: 'git.example.com', port, path });
     expect(result?.sanitizedUrl).not.toMatch(/oauth2|secret|deploy@/u);
   });
 

@@ -15,7 +15,11 @@ import { IntegrationProbeRegistry, type IntegrationType } from './integration-pr
 
 const configSchemas = {
   gitlab: z
-    .object({ projectIds: z.array(z.number().int().positive()).max(100).default([]) })
+    .object({
+      projectIds: z.array(z.number().int().positive()).max(100).default([]),
+      projectRefs: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
+      historyDays: z.number().int().min(1).max(730).default(120),
+    })
     .strict(),
   jira: z
     .object({

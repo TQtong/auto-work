@@ -16,6 +16,7 @@ export interface NormalizedRemoteObservation {
   sanitizedUrl: string | null;
   protocol: 'https' | 'ssh' | null;
   host: string | null;
+  port: number | null;
   path: string | null;
 }
 

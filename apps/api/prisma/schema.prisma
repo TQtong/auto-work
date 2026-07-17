@@ -88,7 +88,9 @@ model Repository {
   remoteUrl          String?       @map("remote_url")
   remoteProtocol     String?       @map("remote_protocol")
   remoteHost         String?       @map("remote_host")
+  remotePort         Int?          @map("remote_port")
   remotePath         String?       @map("remote_path")
+  gitlabConnectionId String?       @map("gitlab_connection_id")
   gitlabProjectRef   String?       @map("gitlab_project_ref")
   baselineBranch     String?       @map("baseline_branch")
   whitelistStatus    String        @default("discovered") @map("whitelist_status")
@@ -104,6 +106,7 @@ model Repository {
   @@index([projectId, whitelistStatus])
   @@index([identityHash])
   @@index([remoteHost, remotePath])
+  @@index([gitlabConnectionId, gitlabProjectRef])
   @@map("repository")
 }
 
@@ -154,9 +157,211 @@ model IntegrationConnection {
   createdAt        DateTime              @default(now()) @map("created_at")
   updatedAt        DateTime              @updatedAt @map("updated_at")
   fieldMappings    FieldMappingVersion[]
+  gitlabProjects   GitLabProject[]
+  gitlabSyncRuns   GitLabSyncRun[]
 
   @@index([type, enabled, status])
   @@map("integration_connection")
+}
+
+model GitLabProject {
+  id                String                @id
+  connectionId      String                @map("connection_id")
+  externalId        String                @map("external_id")
+  pathWithNamespace String                @map("path_with_namespace")
+  name              String
+  webUrl            String                @map("web_url")
+  defaultBranch     String?               @map("default_branch")
+  visibility        String
+  archived          Boolean               @default(false)
+  lastActivityAt    DateTime?             @map("last_activity_at")
+  namespaceJson     String                @default("{}") @map("namespace_json")
+  lastSeenRunId     String                @map("last_seen_run_id")
+  stale             Boolean               @default(false)
+  syncStatus        String                @default("unknown") @map("sync_status")
+  syncError         String?               @map("sync_error")
+  syncedAt          DateTime?             @map("synced_at")
+  createdAt         DateTime              @default(now()) @map("created_at")
+  updatedAt         DateTime              @updatedAt @map("updated_at")
+  connection        IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  branches          GitLabBranch[]
+  commits           GitLabCommit[]
+  mergeRequests     GitLabMergeRequest[]
+  pipelines         GitLabPipeline[]
+  tags              GitLabTag[]
+  releases          GitLabRelease[]
+  members           GitLabProjectMember[]
+
+  @@unique([connectionId, externalId])
+  @@index([connectionId, pathWithNamespace])
+  @@map("gitlab_project")
+}
+
+model GitLabBranch {
+  id              String        @id
+  gitlabProjectId String        @map("gitlab_project_id")
+  name            String
+  sha             String
+  protected       Boolean       @default(false)
+  defaultBranch   Boolean       @default(false) @map("default_branch")
+  merged          Boolean       @default(false)
+  webUrl          String?       @map("web_url")
+  lastSeenRunId   String        @map("last_seen_run_id")
+  stale           Boolean       @default(false)
+  syncedAt        DateTime      @map("synced_at")
+  project         GitLabProject @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([gitlabProjectId, name])
+  @@index([gitlabProjectId, stale])
+  @@map("gitlab_branch")
+}
+
+model GitLabCommit {
+  id              String        @id
+  gitlabProjectId String        @map("gitlab_project_id")
+  sha             String
+  shortSha        String?       @map("short_sha")
+  title           String
+  messageSummary  String?       @map("message_summary")
+  authorName      String        @map("author_name")
+  authorEmail     String        @map("author_email")
+  committerName   String?       @map("committer_name")
+  committerEmail  String?       @map("committer_email")
+  authoredAt      DateTime?     @map("authored_at")
+  committedAt     DateTime      @map("committed_at")
+  webUrl          String?       @map("web_url")
+  lastSeenRunId   String        @map("last_seen_run_id")
+  syncedAt        DateTime      @map("synced_at")
+  project         GitLabProject @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([gitlabProjectId, sha])
+  @@index([gitlabProjectId, committedAt])
+  @@map("gitlab_commit")
+}
+
+model GitLabMergeRequest {
+  id                String        @id
+  gitlabProjectId   String        @map("gitlab_project_id")
+  externalId        String        @map("external_id")
+  iid               Int
+  title             String
+  state             String
+  sourceBranch      String        @map("source_branch")
+  targetBranch      String        @map("target_branch")
+  authorJson        String        @default("{}") @map("author_json")
+  assigneesJson     String        @default("[]") @map("assignees_json")
+  draft             Boolean       @default(false)
+  mergedAt          DateTime?     @map("merged_at")
+  closedAt          DateTime?     @map("closed_at")
+  updatedExternalAt DateTime      @map("updated_external_at")
+  webUrl            String        @map("web_url")
+  lastSeenRunId     String        @map("last_seen_run_id")
+  syncedAt          DateTime      @map("synced_at")
+  project           GitLabProject @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([gitlabProjectId, externalId])
+  @@index([gitlabProjectId, state, updatedExternalAt])
+  @@index([gitlabProjectId, sourceBranch])
+  @@map("gitlab_merge_request")
+}
+
+model GitLabPipeline {
+  id                String        @id
+  gitlabProjectId   String        @map("gitlab_project_id")
+  externalId        String        @map("external_id")
+  iid               Int?
+  sha               String
+  ref               String?
+  status            String
+  source            String?
+  webUrl            String?       @map("web_url")
+  createdExternalAt DateTime?     @map("created_external_at")
+  updatedExternalAt DateTime?     @map("updated_external_at")
+  lastSeenRunId     String        @map("last_seen_run_id")
+  syncedAt          DateTime      @map("synced_at")
+  project           GitLabProject @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([gitlabProjectId, externalId])
+  @@index([gitlabProjectId, updatedExternalAt])
+  @@index([gitlabProjectId, sha])
+  @@map("gitlab_pipeline")
+}
+
+model GitLabTag {
+  id                String        @id
+  gitlabProjectId   String        @map("gitlab_project_id")
+  name              String
+  targetSha         String        @map("target_sha")
+  messageSummary    String?       @map("message_summary")
+  protected         Boolean       @default(false)
+  webUrl            String?       @map("web_url")
+  createdExternalAt DateTime?     @map("created_external_at")
+  lastSeenRunId     String        @map("last_seen_run_id")
+  stale             Boolean       @default(false)
+  syncedAt          DateTime      @map("synced_at")
+  project           GitLabProject @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([gitlabProjectId, name])
+  @@index([gitlabProjectId, stale])
+  @@map("gitlab_tag")
+}
+
+model GitLabRelease {
+  id                 String        @id
+  gitlabProjectId    String        @map("gitlab_project_id")
+  tagName            String        @map("tag_name")
+  name               String?
+  descriptionSummary String?       @map("description_summary")
+  releasedAt         DateTime?     @map("released_at")
+  createdExternalAt  DateTime?     @map("created_external_at")
+  upcomingRelease    Boolean       @default(false) @map("upcoming_release")
+  webUrl             String?       @map("web_url")
+  assetsJson         String        @default("{}") @map("assets_json")
+  lastSeenRunId      String        @map("last_seen_run_id")
+  stale              Boolean       @default(false)
+  syncedAt           DateTime      @map("synced_at")
+  project            GitLabProject @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([gitlabProjectId, tagName])
+  @@index([gitlabProjectId, stale])
+  @@map("gitlab_release")
+}
+
+model GitLabProjectMember {
+  id              String        @id
+  gitlabProjectId String        @map("gitlab_project_id")
+  externalUserId  String        @map("external_user_id")
+  username        String
+  name            String
+  state           String?
+  accessLevel     Int           @map("access_level")
+  webUrl          String?       @map("web_url")
+  avatarUrl       String?       @map("avatar_url")
+  expiresAt       DateTime?     @map("expires_at")
+  lastSeenRunId   String        @map("last_seen_run_id")
+  stale           Boolean       @default(false)
+  syncedAt        DateTime      @map("synced_at")
+  project         GitLabProject @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([gitlabProjectId, externalUserId])
+  @@index([gitlabProjectId, stale])
+  @@map("gitlab_project_member")
+}
+
+model GitLabSyncRun {
+  id           String                @id
+  connectionId String                @map("connection_id")
+  status       String
+  scopeJson    String                @map("scope_json")
+  countsJson   String                @default("{}") @map("counts_json")
+  errorCode    String?               @map("error_code")
+  errorSummary String?               @map("error_summary")
+  startedAt    DateTime              @map("started_at")
+  completedAt  DateTime?             @map("completed_at")
+  connection   IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+
+  @@index([connectionId, startedAt])
+  @@map("gitlab_sync_run")
 }
 
 model FieldMappingVersion {

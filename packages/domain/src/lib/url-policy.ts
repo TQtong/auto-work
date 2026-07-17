@@ -71,9 +71,12 @@ export function isAddressAllowed(address: string, allowPrivateNetwork: boolean):
     return allowPrivateNetwork || !privateV4;
   }
   if (isIP(normalized) === 6) {
+    const mappedIpv4 = mappedIpv4Address(normalized);
+    if (mappedIpv4) return isAddressAllowed(mappedIpv4, allowPrivateNetwork);
     if (
       normalized === '::' ||
       normalized === '::1' ||
+      normalized.startsWith('ff') ||
       normalized.startsWith('fe8') ||
       normalized.startsWith('fe9') ||
       normalized.startsWith('fea') ||
@@ -84,4 +87,16 @@ export function isAddressAllowed(address: string, allowPrivateNetwork: boolean):
     return allowPrivateNetwork || !privateV6;
   }
   return false;
+}
+
+/** IPv4-mapped IPv6 必须回落到 IPv4 规则，避免以另一种字面量绕过 loopback/metadata。 */
+function mappedIpv4Address(address: string): string | null {
+  const match = /^(?:::ffff:|0:0:0:0:0:ffff:)(.+)$/iu.exec(address);
+  if (!match?.[1]) return null;
+  if (isIP(match[1]) === 4) return match[1];
+  const words = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/iu.exec(match[1]);
+  if (!words?.[1] || !words[2]) return null;
+  const high = Number.parseInt(words[1], 16);
+  const low = Number.parseInt(words[2], 16);
+  return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
 }

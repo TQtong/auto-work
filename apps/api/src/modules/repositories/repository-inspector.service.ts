@@ -182,6 +182,7 @@ export class RepositoryInspectorService {
         sanitizedUrl: normalized?.sanitizedUrl ?? null,
         protocol: normalized?.protocol ?? null,
         host: normalized?.host ?? null,
+        port: normalized?.port ?? null,
         path: normalized?.path ?? null,
       });
     }

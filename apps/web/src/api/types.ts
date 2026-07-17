@@ -114,6 +114,7 @@ export interface RepositorySnapshot {
     sanitizedUrl: string | null;
     protocol: string | null;
     host: string | null;
+    port: number | null;
     path: string | null;
   }>;
   status: string;
@@ -131,7 +132,10 @@ export interface RepositoryView {
   remoteName: string | null;
   remoteUrl: string | null;
   remoteHost: string | null;
+  remotePort: number | null;
   remotePath: string | null;
+  gitlabConnectionId: string | null;
+  gitlabProjectRef: string | null;
   baselineBranch: string | null;
   whitelistStatus: string;
   statusReason: string | null;
@@ -140,4 +144,69 @@ export interface RepositoryView {
   freshness: string;
   version: number;
   latestSnapshot: RepositorySnapshot | null;
+  gitlabMatchStatus: 'matched' | 'mismatch' | 'candidate' | 'unavailable';
+  gitlabCandidates: GitLabRepositorySummary[];
+  gitlabSummary: GitLabRepositorySummary | null;
+}
+
+export interface GitLabRepositorySummary {
+  id: string;
+  externalId: string;
+  connectionId: string;
+  pathWithNamespace: string;
+  name: string;
+  webUrl: string;
+  defaultBranch: string | null;
+  openMergeRequestCount: number;
+  currentBranchMergeRequests: Array<{
+    iid: number;
+    title: string;
+    sourceBranch: string;
+    targetBranch: string;
+    webUrl: string;
+  }>;
+  latestCommit: {
+    sha: string;
+    title: string;
+    authorName: string;
+    committedAt: string;
+    webUrl: string | null;
+  } | null;
+  latestPipeline: {
+    status: string;
+    sha: string;
+    ref: string | null;
+    updatedAt: string | null;
+    webUrl: string | null;
+  } | null;
+  syncStatus: 'unknown' | 'refreshing' | 'fresh' | 'stale' | 'error';
+  syncError: string | null;
+  syncedAt: string | null;
+}
+
+export interface GitLabProjectCache {
+  id: string;
+  externalId: string;
+  name: string;
+  pathWithNamespace: string;
+  webUrl: string;
+  defaultBranch: string | null;
+  visibility: string;
+  archived: boolean;
+  syncStatus: 'unknown' | 'refreshing' | 'fresh' | 'stale' | 'error';
+  syncError: string | null;
+  lastActivityAt: string | null;
+  syncedAt: string | null;
+  counts: {
+    branches: number;
+    commits: number;
+    mergeRequests: number;
+    pipelines: number;
+    tags: number;
+    releases: number;
+    members: number;
+  };
+  openMergeRequestCount: number;
+  latestPipeline: GitLabRepositorySummary['latestPipeline'];
+  latestCommit: GitLabRepositorySummary['latestCommit'];
 }
