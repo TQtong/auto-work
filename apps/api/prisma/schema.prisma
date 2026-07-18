@@ -27,15 +27,17 @@ model InstanceLease {
 }
 
 model UserProfile {
-  id           String          @id
-  windowsSid   String          @unique @map("windows_sid")
-  displayName  String          @map("display_name")
-  timezone     String          @default("Asia/Shanghai")
-  workdayHours Int             @default(8) @map("workday_hours")
-  version      Int             @default(1)
-  createdAt    DateTime        @default(now()) @map("created_at")
-  updatedAt    DateTime        @updatedAt @map("updated_at")
-  aliases      IdentityAlias[]
+  id                    String                 @id
+  windowsSid            String                 @unique @map("windows_sid")
+  displayName           String                 @map("display_name")
+  timezone              String                 @default("Asia/Shanghai")
+  workdayHours          Int                    @default(8) @map("workday_hours")
+  version               Int                    @default(1)
+  createdAt             DateTime               @default(now()) @map("created_at")
+  updatedAt             DateTime               @updatedAt @map("updated_at")
+  aliases               IdentityAlias[]
+  reportSourceSnapshots ReportSourceSnapshot[]
+  weeklyReports         WeeklyReport[]
 
   @@map("user_profile")
 }
@@ -519,6 +521,7 @@ model Task {
   committedExcelRows       ExcelImportRow[]        @relation("ExcelCommittedTask")
   fieldProvenances         TaskFieldProvenance[]
   evidenceLinks            EvidenceLink[]
+  reportSourceLinks        ReportSourceLink[]
 
   @@unique([connectionId, issueKey])
   @@index([projectId, normalizedStatus, dueDate])
@@ -707,25 +710,26 @@ model TaskFieldProvenance {
 }
 
 model Evidence {
-  id                String         @id
-  sourceType        String         @map("source_type")
-  sourceInternalId  String         @map("source_internal_id")
-  sourceExternalKey String         @map("source_external_key")
-  gitlabProjectId   String?        @map("gitlab_project_id")
-  projectId         String?        @map("project_id")
-  eventAt           DateTime?      @map("event_at")
+  id                String             @id
+  sourceType        String             @map("source_type")
+  sourceInternalId  String             @map("source_internal_id")
+  sourceExternalKey String             @map("source_external_key")
+  gitlabProjectId   String?            @map("gitlab_project_id")
+  projectId         String?            @map("project_id")
+  eventAt           DateTime?          @map("event_at")
   title             String
   url               String?
-  contentHash       String         @map("content_hash")
-  availabilityState String         @default("available") @map("availability_state")
-  metadataJson      String         @default("{}") @map("metadata_json")
-  sourceSyncedAt    DateTime?      @map("source_synced_at")
-  version           Int            @default(1)
-  createdAt         DateTime       @default(now()) @map("created_at")
-  updatedAt         DateTime       @updatedAt @map("updated_at")
-  gitlabProject     GitLabProject? @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
-  project           Project?       @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  contentHash       String             @map("content_hash")
+  availabilityState String             @default("available") @map("availability_state")
+  metadataJson      String             @default("{}") @map("metadata_json")
+  sourceSyncedAt    DateTime?          @map("source_synced_at")
+  version           Int                @default(1)
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+  gitlabProject     GitLabProject?     @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+  project           Project?           @relation(fields: [projectId], references: [id], onDelete: Restrict)
   links             EvidenceLink[]
+  reportSourceLinks ReportSourceLink[]
 
   @@unique([sourceType, sourceInternalId])
   @@index([projectId, eventAt])
@@ -787,6 +791,164 @@ model EvidenceLinkEvent {
   @@unique([evidenceLinkId, sequence])
   @@index([occurredAt])
   @@map("evidence_link_event")
+}
+
+model WorkCalendar {
+  id               String                @id
+  name             String
+  currentVersionId String?               @unique @map("current_version_id")
+  version          Int                   @default(1)
+  createdAt        DateTime              @default(now()) @map("created_at")
+  updatedAt        DateTime              @updatedAt @map("updated_at")
+  currentVersion   WorkCalendarVersion?  @relation("CurrentWorkCalendarVersion", fields: [currentVersionId], references: [id], onDelete: Restrict)
+  versions         WorkCalendarVersion[] @relation("WorkCalendarVersions")
+
+  @@map("work_calendar")
+}
+
+model WorkCalendarVersion {
+  id                    String                 @id
+  calendarId            String                 @map("calendar_id")
+  versionNo             Int                    @map("version_no")
+  timezone              String                 @default("Asia/Shanghai")
+  workingWeekdaysJson   String                 @map("working_weekdays_json")
+  dateOverridesJson     String                 @default("[]") @map("date_overrides_json")
+  source                String                 @default("manual")
+  contentHash           String                 @map("content_hash")
+  createdBy             String                 @map("created_by")
+  createdAt             DateTime               @default(now()) @map("created_at")
+  calendar              WorkCalendar           @relation("WorkCalendarVersions", fields: [calendarId], references: [id], onDelete: Restrict)
+  activeForCalendar     WorkCalendar?          @relation("CurrentWorkCalendarVersion")
+  reportSourceSnapshots ReportSourceSnapshot[]
+
+  @@unique([calendarId, versionNo])
+  @@map("work_calendar_version")
+}
+
+model WeeklyReport {
+  id                       String                 @id
+  ownerProfileId           String                 @map("owner_profile_id")
+  periodStart              String                 @map("period_start")
+  periodEnd                String                 @map("period_end")
+  reportDate               String                 @map("report_date")
+  timezone                 String                 @default("Asia/Shanghai")
+  templateName             String                 @default("uTwin产研创新部周报") @map("template_name")
+  templateMappingVersionId String?                @map("template_mapping_version_id")
+  status                   String                 @default("collecting")
+  logDeliveryState         String                 @default("not_started") @map("log_delivery_state")
+  robotDeliveryState       String                 @default("not_started") @map("robot_delivery_state")
+  currentVersionId         String?                @unique @map("current_version_id")
+  confirmedVersionId       String?                @unique @map("confirmed_version_id")
+  recipientScopeVersion    Int                    @default(1) @map("recipient_scope_version")
+  scheduleAt               DateTime?              @map("schedule_at")
+  version                  Int                    @default(1)
+  archivedAt               DateTime?              @map("archived_at")
+  createdAt                DateTime               @default(now()) @map("created_at")
+  updatedAt                DateTime               @updatedAt @map("updated_at")
+  ownerProfile             UserProfile            @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  currentVersion           WeeklyReportVersion?   @relation("WeeklyReportCurrentVersion", fields: [currentVersionId], references: [id], onDelete: Restrict)
+  confirmedVersion         WeeklyReportVersion?   @relation("WeeklyReportConfirmedVersion", fields: [confirmedVersionId], references: [id], onDelete: Restrict)
+  versions                 WeeklyReportVersion[]  @relation("WeeklyReportVersions")
+  sourceSnapshots          ReportSourceSnapshot[]
+
+  @@index([ownerProfileId, periodStart, periodEnd])
+  @@index([status, updatedAt])
+  @@map("weekly_report")
+}
+
+model WeeklyReportVersion {
+  id                  String                @id
+  reportId            String                @map("report_id")
+  versionNo           Int                   @map("version_no")
+  origin              String
+  parentVersionId     String?               @map("parent_version_id")
+  reportDateText      String                @map("report_date_text")
+  recentGoalsText     String                @map("recent_goals_text")
+  weeklyWorkText      String                @map("weekly_work_text")
+  nextWeekPlansText   String                @map("next_week_plans_text")
+  problemsText        String                @map("problems_text")
+  otherText           String                @map("other_text")
+  fieldsJson          String                @map("fields_json")
+  warningsJson        String                @default("[]") @map("warnings_json")
+  attachmentsJson     String                @default("[]") @map("attachments_json")
+  recipientScopeJson  String                @default("{}") @map("recipient_scope_json")
+  sourceSnapshotId    String                @map("source_snapshot_id")
+  aiGenerationId      String?               @map("ai_generation_id")
+  contentHash         String                @map("content_hash")
+  changeSummaryJson   String                @default("{}") @map("change_summary_json")
+  createdBy           String                @map("created_by")
+  createdAt           DateTime              @default(now()) @map("created_at")
+  report              WeeklyReport          @relation("WeeklyReportVersions", fields: [reportId], references: [id], onDelete: Restrict)
+  parentVersion       WeeklyReportVersion?  @relation("WeeklyReportVersionHistory", fields: [parentVersionId], references: [id], onDelete: Cascade)
+  childVersions       WeeklyReportVersion[] @relation("WeeklyReportVersionHistory")
+  sourceSnapshot      ReportSourceSnapshot  @relation(fields: [sourceSnapshotId], references: [id], onDelete: Restrict)
+  currentForReports   WeeklyReport[]        @relation("WeeklyReportCurrentVersion")
+  confirmedForReports WeeklyReport[]        @relation("WeeklyReportConfirmedVersion")
+  sourceLinks         ReportSourceLink[]
+
+  @@unique([reportId, versionNo])
+  @@index([reportId, createdAt])
+  @@index([sourceSnapshotId])
+  @@map("weekly_report_version")
+}
+
+model ReportSourceSnapshot {
+  id                        String                @id
+  reportId                  String                @map("report_id")
+  periodStart               String                @map("period_start")
+  periodEnd                 String                @map("period_end")
+  reportDate                String                @map("report_date")
+  timezone                  String
+  calendarVersionId         String?               @map("calendar_version_id")
+  profileId                 String                @map("profile_id")
+  profileVersion            Int                   @map("profile_version")
+  jiraQueryJson             String                @default("{}") @map("jira_query_json")
+  jiraSyncRunIdsJson        String                @default("[]") @map("jira_sync_run_ids_json")
+  taskFactsJson             String                @map("task_facts_json")
+  evidenceFactsJson         String                @map("evidence_facts_json")
+  manualInputsJson          String                @default("[]") @map("manual_inputs_json")
+  freshnessPolicyJson       String                @map("freshness_policy_json")
+  warningsJson              String                @default("[]") @map("warnings_json")
+  ruleVersion               String                @map("rule_version")
+  templateMappingVersionId  String?               @map("template_mapping_version_id")
+  sanitizationPolicyVersion String                @map("sanitization_policy_version")
+  generationHash            String                @map("generation_hash")
+  sourceContentHash         String                @map("source_content_hash")
+  createdBy                 String                @map("created_by")
+  createdAt                 DateTime              @default(now()) @map("created_at")
+  report                    WeeklyReport          @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  calendarVersion           WorkCalendarVersion?  @relation(fields: [calendarVersionId], references: [id], onDelete: Restrict)
+  profile                   UserProfile           @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  versions                  WeeklyReportVersion[]
+  sourceLinks               ReportSourceLink[]
+
+  @@unique([reportId, generationHash])
+  @@index([profileId, periodStart, periodEnd])
+  @@map("report_source_snapshot")
+}
+
+model ReportSourceLink {
+  id                String               @id
+  snapshotId        String               @map("snapshot_id")
+  versionId         String               @map("version_id")
+  fieldName         String               @map("field_name")
+  blockId           String               @map("block_id")
+  sourceType        String               @map("source_type")
+  sourceId          String               @map("source_id")
+  taskId            String?              @map("task_id")
+  evidenceId        String?              @map("evidence_id")
+  sourceContentHash String               @map("source_content_hash")
+  sourceSummaryJson String               @map("source_summary_json")
+  createdAt         DateTime             @default(now()) @map("created_at")
+  snapshot          ReportSourceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  version           WeeklyReportVersion  @relation(fields: [versionId], references: [id], onDelete: Restrict)
+  task              Task?                @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  evidence          Evidence?            @relation(fields: [evidenceId], references: [id], onDelete: Restrict)
+
+  @@unique([versionId, fieldName, blockId, sourceType, sourceId])
+  @@index([snapshotId])
+  @@index([sourceType, sourceId])
+  @@map("report_source_link")
 }
 
 model IdempotencyRecord {

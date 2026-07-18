@@ -21,7 +21,8 @@
 | 03B3  | Excel 导入向导、冲突处理与字段来源 UI             | [阶段三 B3 实现与验证](./phase-3b3-excel-import-ui.md)         | verified    |
 | 03C   | Git/GitLab 证据建议、确认与生命周期               | [阶段三 C 实现与验证](./phase-3c-evidence-lifecycle.md)        | verified    |
 | 04A1  | 六字段周报确定性规则、来源块与黄金样例            | [阶段四 A1 实现与验证](./phase-4a1-weekly-rule-core.md)        | implemented |
-| 04A2+ | 周报快照/版本/确认、AI、钉钉与交付恢复            | 待提交                                                         | planned     |
+| 04A2  | 工作日历、周报来源快照、不可变规则版本与来源链接  | [阶段四 A2 实现与验证](./phase-4a2-weekly-snapshot-core.md)    | implemented |
+| 04A3+ | 周报编辑/恢复/确认/UI、AI、钉钉与交付恢复         | 待提交                                                         | planned     |
 | 05    | 季度绩效、导出、运维与发布门禁                    | 待提交                                                         | planned     |
 
 每次增量必须同步更新本表，并在 PR 中保留对应提交、验证命令和人工检查结果。

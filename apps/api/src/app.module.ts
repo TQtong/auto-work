@@ -20,6 +20,7 @@ import { GitBatchesModule } from './modules/git-batches/git-batches.module.js';
 import { JiraModule } from './modules/jira/jira.module.js';
 import { ExcelImportsModule } from './modules/excel-imports/excel-imports.module.js';
 import { EvidenceModule } from './modules/evidence/evidence.module.js';
+import { WeeklyReportModule } from './modules/weekly-reports/weekly-report.module.js';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { EvidenceModule } from './modules/evidence/evidence.module.js';
     JiraModule,
     ExcelImportsModule,
     EvidenceModule,
+    WeeklyReportModule,
     BackupModule,
     RepositoriesModule,
     HealthModule,
