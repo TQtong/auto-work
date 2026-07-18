@@ -91,6 +91,81 @@ export const updateScoreItemsSchema = z
     }
   });
 
+const narrativeContentSchema = z
+  .object({
+    overallOverview: z.string().trim().min(1).max(30_000),
+    coreAchievements: z
+      .array(
+        z
+          .object({
+            heading: z.string().trim().min(1).max(500),
+            body: z.string().trim().min(1).max(30_000),
+            achievementIds: z.array(z.string().trim().min(1).max(100)).min(1).max(200),
+            metricIds: z.array(z.string().trim().min(1).max(100)).max(100),
+            evidenceIds: z.array(z.string().trim().min(1).max(100)).max(500),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(200),
+    collaborationAndGrowth: z.string().trim().min(1).max(30_000),
+    problemsAndImprovements: z.string().trim().min(1).max(30_000),
+    nextPeriodPlan: z.string().trim().min(1).max(30_000),
+  })
+  .strict();
+
+export const createRuleNarrativeSchema = z
+  .object({ reviewVersion: z.number().int().positive() })
+  .strict();
+
+export const createManualNarrativeSchema = z
+  .object({
+    reviewVersion: z.number().int().positive(),
+    parentVersionId: z.string().trim().min(1).max(100).nullable().default(null),
+    content: narrativeContentSchema,
+    changeReason: z.string().trim().min(2).max(1_000),
+  })
+  .strict();
+
+export const restoreNarrativeSchema = z
+  .object({
+    reviewVersion: z.number().int().positive(),
+    changeReason: z.string().trim().min(2).max(1_000),
+  })
+  .strict();
+
+export const generateQuarterlyAiSchema = z
+  .object({
+    reviewVersion: z.number().int().positive(),
+    providerConnectionId: z.string().trim().min(1).max(100),
+  })
+  .strict();
+
+export const decideQuarterlyAiSchema = z
+  .object({
+    reviewVersion: z.number().int().positive(),
+    decisionReason: z.string().trim().min(2).max(1_000),
+  })
+  .strict();
+
+export const confirmQuarterlyReviewSchema = z
+  .object({
+    reviewVersion: z.number().int().positive(),
+    narrativeVersionId: z.string().trim().min(1).max(100),
+    acknowledgements: z
+      .array(
+        z
+          .object({
+            code: z.string().trim().min(1).max(100),
+            reason: z.string().trim().min(2).max(1_000),
+          })
+          .strict(),
+      )
+      .max(100)
+      .default([]),
+  })
+  .strict();
+
 export const collectQuarterlyReviewSchema = z
   .object({
     reviewVersion: z.number().int().positive(),

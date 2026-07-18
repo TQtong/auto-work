@@ -6,8 +6,12 @@ import { QuarterlyCollectionService } from './quarterly-collection.service.js';
 import { AchievementController } from './achievement.controller.js';
 import { QuarterlyAchievementService } from './quarterly-achievement.service.js';
 import { QuarterlyCompletenessService } from './quarterly-completeness.service.js';
+import { AiModule } from '../ai/ai.module.js';
+import { QuarterlyNarrativeConfirmationService } from './quarterly-narrative-confirmation.service.js';
+import { QuarterlyReviewAiService } from './quarterly-review-ai.service.js';
 
 @Module({
+  imports: [AiModule],
   controllers: [QuarterlyReviewController, AchievementController],
   providers: [
     QuarterlyReviewService,
@@ -15,12 +19,16 @@ import { QuarterlyCompletenessService } from './quarterly-completeness.service.j
     QuarterlyCollectionHandler,
     QuarterlyAchievementService,
     QuarterlyCompletenessService,
+    QuarterlyNarrativeConfirmationService,
+    QuarterlyReviewAiService,
   ],
   exports: [
     QuarterlyReviewService,
     QuarterlyCollectionService,
     QuarterlyAchievementService,
     QuarterlyCompletenessService,
+    QuarterlyNarrativeConfirmationService,
+    QuarterlyReviewAiService,
   ],
 })
 export class QuarterlyReviewModule {}

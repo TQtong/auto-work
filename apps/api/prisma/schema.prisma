@@ -960,9 +960,12 @@ model AiGeneration {
   providerConnectionId      String                @map("provider_connection_id")
   providerConfigVersion     Int                   @map("provider_config_version")
   reportId                  String?               @map("report_id")
+  quarterlyReviewId         String?               @map("quarterly_review_id")
+  baseQuarterlyReviewVersion Int?                 @map("base_quarterly_review_version")
   baseVersionId             String?               @map("base_version_id")
   baseReportVersion         Int?                  @map("base_report_version")
   adoptedVersionId          String?               @unique @map("adopted_version_id")
+  adoptedNarrativeVersionId String?               @unique @map("adopted_narrative_version_id")
   purpose                   String
   promptTemplateVersion     String                @map("prompt_template_version")
   sanitizationPolicyVersion String                @map("sanitization_policy_version")
@@ -993,12 +996,15 @@ model AiGeneration {
   ownerProfile              UserProfile           @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
   providerConnection        IntegrationConnection @relation(fields: [providerConnectionId], references: [id], onDelete: Restrict)
   report                    WeeklyReport?         @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  quarterlyReview           QuarterlyReview?      @relation(fields: [quarterlyReviewId], references: [id], onDelete: Restrict)
   baseVersion               WeeklyReportVersion?  @relation("AiGenerationBaseVersion", fields: [baseVersionId], references: [id], onDelete: Restrict)
   adoptedVersion            WeeklyReportVersion?  @relation("AiGenerationAdoptedVersion", fields: [adoptedVersionId], references: [id], onDelete: Restrict)
+  adoptedNarrativeVersion   ReviewNarrativeVersion? @relation("AiGenerationAdoptedNarrative", fields: [adoptedNarrativeVersionId], references: [id], onDelete: Restrict)
   generatedVersions         WeeklyReportVersion[] @relation("AiGeneratedVersions")
 
   @@index([ownerProfileId, createdAt])
   @@index([reportId, createdAt])
+  @@index([quarterlyReviewId, purpose, createdAt])
   @@index([providerConnectionId, providerConfigVersion])
   @@index([status, adoptionStatus])
   @@map("ai_generation")
@@ -1365,6 +1371,7 @@ model QuarterlyReview {
   scores                    ScoreItem[]
   narrativeVersions         ReviewNarrativeVersion[]          @relation("QuarterlyNarrativeVersions")
   confirmations             QuarterlyReviewConfirmation[]     @relation("QuarterlyConfirmations")
+  aiGenerations             AiGeneration[]
   exportArtifacts           ExportArtifact[]
 
   @@unique([ownerProfileId, periodStart, periodEnd])
@@ -1585,6 +1592,7 @@ model ReviewNarrativeVersion {
   parentVersion      ReviewNarrativeVersion?       @relation("QuarterlyNarrativeHistory", fields: [parentVersionId], references: [id], onDelete: Restrict)
   childVersions      ReviewNarrativeVersion[]      @relation("QuarterlyNarrativeHistory")
   confirmations      QuarterlyReviewConfirmation[]
+  adoptedForAiGeneration AiGeneration?             @relation("AiGenerationAdoptedNarrative")
 
   @@unique([reviewId, versionNo])
   @@index([reviewId, createdAt])
@@ -1602,6 +1610,11 @@ model QuarterlyReviewConfirmation {
   achievementsHash        String                           @map("achievements_hash")
   scoresHash              String                           @map("scores_hash")
   calculationJson         String                           @map("calculation_json")
+  achievementsSnapshotJson String                          @map("achievements_snapshot_json")
+  scoresSnapshotJson       String                          @map("scores_snapshot_json")
+  templateSnapshotJson     String                          @map("template_snapshot_json")
+  narrativeSnapshotJson    String                          @map("narrative_snapshot_json")
+  completenessSnapshotJson String                          @map("completeness_snapshot_json")
   completenessAckJson     String                           @default("[]") @map("completeness_ack_json")
   status                  String                           @default("active")
   confirmedBy             String                           @map("confirmed_by")

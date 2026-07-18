@@ -40,7 +40,7 @@
 | 04C3b3c  | 六字段复制与附件导出降级                          | [阶段四 C3b3c 实现与验证](./phase-4c3b3c-export-copy-fallback.md)            | verified    |
 | 05A1     | 季度周期、绩效数据骨架、指标模板与用户评分公式    | [阶段五 A1 实现与验证](./phase-5a1-quarterly-score-foundation.md)            | verified    |
 | 05A2     | 多来源候选收集、成果编辑、证据与指标映射          | [阶段五 A2 实现与验证](./phase-5a2-quarterly-candidate-evidence-core.md)     | verified    |
-| 05B      | 自评版本、AI 建议、确认失效与冻结快照             | 待提交                                                                       | planned     |
+| 05B      | 自评版本、AI 建议、确认失效与冻结快照             | [阶段五 B 实现与验证](./phase-5b-quarterly-narrative-ai-confirmation.md)     | verified    |
 | 05C      | Excel/Word 导出、文件 QA 与完整绩效工作台         | 待提交                                                                       | planned     |
 | 05D      | 运维、诊断、发布门禁与全量文档终审                | 待提交                                                                       | planned     |
 
