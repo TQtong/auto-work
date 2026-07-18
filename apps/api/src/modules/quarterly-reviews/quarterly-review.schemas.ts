@@ -280,6 +280,13 @@ export const listQuarterlyCollectionSnapshotsSchema = z
   .object({ limit: z.coerce.number().int().min(1).max(100).default(20) })
   .strict();
 
+export const queueQuarterlyExportSchema = z
+  .object({
+    confirmationId: z.string().trim().min(1).max(100),
+    format: z.enum(['xlsx', 'docx']),
+  })
+  .strict();
+
 export const addAchievementEvidenceSchema = z
   .object({
     reviewVersion: z.number().int().positive(),

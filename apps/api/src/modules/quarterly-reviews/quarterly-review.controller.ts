@@ -1,6 +1,19 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Put, Query, Req } from '@nestjs/common';
-import { apiResponse } from '@auto-work/contracts';
-import type { FastifyRequest } from 'fastify';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  HttpCode,
+  Param,
+  Post,
+  Put,
+  Query,
+  Req,
+  Res,
+} from '@nestjs/common';
+import { apiResponse, DomainError } from '@auto-work/contracts';
+import { requestHash } from '@auto-work/domain';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import {
   bindMetricTemplateSchema,
   collectQuarterlyReviewSchema,
@@ -18,12 +31,16 @@ import {
   updateAchievementSelectionSchema,
   updateScoreItemsSchema,
   restoreNarrativeSchema,
+  queueQuarterlyExportSchema,
 } from './quarterly-review.schemas.js';
 import { QuarterlyAchievementService } from './quarterly-achievement.service.js';
 import { QuarterlyCollectionService } from './quarterly-collection.service.js';
 import { QuarterlyReviewService } from './quarterly-review.service.js';
 import { QuarterlyNarrativeConfirmationService } from './quarterly-narrative-confirmation.service.js';
 import { QuarterlyReviewAiService } from './quarterly-review-ai.service.js';
+import { QuarterlyExportService } from './quarterly-export.service.js';
+import { IdempotencyService } from '../idempotency/idempotency.service.js';
+import { SessionService } from '../session/session.service.js';
 
 @Controller('quarterly-reviews')
 export class QuarterlyReviewController {
@@ -33,6 +50,9 @@ export class QuarterlyReviewController {
     private readonly achievements: QuarterlyAchievementService,
     private readonly narratives: QuarterlyNarrativeConfirmationService,
     private readonly ai: QuarterlyReviewAiService,
+    private readonly exports: QuarterlyExportService,
+    private readonly idempotency: IdempotencyService,
+    private readonly sessions: SessionService,
   ) {}
 
   @Get('metric-templates')
@@ -389,6 +409,85 @@ export class QuarterlyReviewController {
       await this.narratives.getConfirmation(id, confirmationId),
       request.autoWork.correlationId,
     );
+  }
+
+  @Post(':id/exports')
+  @HttpCode(202)
+  public async queueExport(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = queueQuarterlyExportSchema.parse(body);
+    if (!key || !/^[A-Za-z0-9._:-]{8,200}$/u.test(key)) {
+      throw new DomainError(
+        'IDEMPOTENCY_KEY_REQUIRED',
+        '季度绩效导出必须提供格式有效的 Idempotency-Key',
+        { httpStatus: 422 },
+      );
+    }
+    const started = await this.idempotency.start({
+      actorId: this.sessions.currentProfileId,
+      route: `/api/v1/quarterly-reviews/${id}/exports`,
+      key,
+      requestHash: requestHash({ reviewId: id, ...input }),
+    });
+    if (started.kind === 'replay') {
+      return apiResponse(started.response, request.autoWork.correlationId);
+    }
+    if (started.kind === 'processing') {
+      throw new DomainError('IDEMPOTENCY_REQUEST_PROCESSING', '相同季度导出请求正在处理中', {
+        httpStatus: 409,
+        retryable: true,
+      });
+    }
+    try {
+      const result = await this.exports.queue(id, input, this.context(request));
+      await this.idempotency.complete(started.recordId, 202, result);
+      return apiResponse(result, request.autoWork.correlationId);
+    } catch (error) {
+      await this.idempotency.fail(
+        started.recordId,
+        error instanceof DomainError ? error.code : 'QUARTERLY_EXPORT_QUEUE_FAILED',
+      );
+      throw error;
+    }
+  }
+
+  @Get(':id/exports')
+  public async listExports(@Param('id') id: string, @Req() request: FastifyRequest) {
+    return apiResponse(await this.exports.list(id), request.autoWork.correlationId, {
+      asOf: new Date().toISOString(),
+    });
+  }
+
+  @Get(':id/exports/:artifactId')
+  public async getExport(
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Req() request: FastifyRequest,
+  ) {
+    return apiResponse(await this.exports.get(id, artifactId), request.autoWork.correlationId);
+  }
+
+  @Get(':id/exports/:artifactId/download')
+  public async downloadExport(
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Req() request: FastifyRequest,
+    @Res() reply: FastifyReply,
+  ) {
+    const file = await this.exports.download(id, artifactId, this.context(request));
+    const asciiName = file.fileName.replace(/[^A-Za-z0-9._-]/gu, '_');
+    reply.type(file.mimeType);
+    reply.header('Content-Length', String(file.buffer.length));
+    reply.header(
+      'Content-Disposition',
+      `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+    );
+    reply.header('X-Content-Type-Options', 'nosniff');
+    return reply.send(file.buffer);
   }
 
   private context(request: FastifyRequest) {

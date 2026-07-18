@@ -9,6 +9,10 @@ import { QuarterlyCompletenessService } from './quarterly-completeness.service.j
 import { AiModule } from '../ai/ai.module.js';
 import { QuarterlyNarrativeConfirmationService } from './quarterly-narrative-confirmation.service.js';
 import { QuarterlyReviewAiService } from './quarterly-review-ai.service.js';
+import { QuarterlyExportDocxService } from './quarterly-export-docx.service.js';
+import { QuarterlyExportHandler } from './quarterly-export.handler.js';
+import { QuarterlyExportService } from './quarterly-export.service.js';
+import { QuarterlyExportXlsxService } from './quarterly-export-xlsx.service.js';
 
 @Module({
   imports: [AiModule],
@@ -21,6 +25,10 @@ import { QuarterlyReviewAiService } from './quarterly-review-ai.service.js';
     QuarterlyCompletenessService,
     QuarterlyNarrativeConfirmationService,
     QuarterlyReviewAiService,
+    QuarterlyExportXlsxService,
+    QuarterlyExportDocxService,
+    QuarterlyExportService,
+    QuarterlyExportHandler,
   ],
   exports: [
     QuarterlyReviewService,
@@ -29,6 +37,7 @@ import { QuarterlyReviewAiService } from './quarterly-review-ai.service.js';
     QuarterlyCompletenessService,
     QuarterlyNarrativeConfirmationService,
     QuarterlyReviewAiService,
+    QuarterlyExportService,
   ],
 })
 export class QuarterlyReviewModule {}

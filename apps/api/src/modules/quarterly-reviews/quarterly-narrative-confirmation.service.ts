@@ -50,6 +50,13 @@ interface FrozenFacts {
     userReason: string | null;
     rawContribution: number | null;
     validationStatus: string;
+    aiSuggestedScore: number | null;
+    aiSuggestedMinimum: number | null;
+    aiSuggestedMaximum: number | null;
+    aiReason: string | null;
+    aiEvidenceGaps: unknown[];
+    aiUncertainty: string | null;
+    aiGenerationId: string | null;
   }>;
   narrative: {
     id: string;
@@ -384,6 +391,7 @@ export class QuarterlyNarrativeConfirmationService {
           achievementsHash,
           scoresHash,
           calculationJson: JSON.stringify(calculation),
+          reviewSnapshotJson: JSON.stringify(facts.review),
           achievementsSnapshotJson: JSON.stringify(facts.achievements),
           scoresSnapshotJson: JSON.stringify(facts.scores),
           templateSnapshotJson: JSON.stringify(facts.template),
@@ -572,8 +580,10 @@ export class QuarterlyNarrativeConfirmationService {
           title: evidence.title,
           externalKey: evidence.externalKey,
           eventAt: evidence.eventAt?.toISOString() ?? null,
+          url: evidence.url,
           availabilityState: evidence.availabilityState,
           sourceContentHash: evidence.sourceContentHash,
+          sourceSummary: this.parse(evidence.sourceSummaryJson, {}),
           contributionAngle: evidence.contributionAngle,
           primaryEvidence: evidence.primaryEvidence,
         })),
@@ -603,6 +613,7 @@ export class QuarterlyNarrativeConfirmationService {
               required: metric.required,
               enabled: metric.enabled,
               order: metric.sortOrder,
+              evidenceRequirement: this.parse(metric.evidenceRequirementJson, {}),
             })),
           }
         : null,
@@ -612,6 +623,13 @@ export class QuarterlyNarrativeConfirmationService {
         userReason: score.userReason,
         rawContribution: score.rawContribution,
         validationStatus: score.validationStatus,
+        aiSuggestedScore: score.aiSuggestedScore,
+        aiSuggestedMinimum: score.aiSuggestedMinimum,
+        aiSuggestedMaximum: score.aiSuggestedMaximum,
+        aiReason: score.aiReason,
+        aiEvidenceGaps: this.parse(score.aiEvidenceGapsJson, []),
+        aiUncertainty: score.aiUncertainty,
+        aiGenerationId: score.aiGenerationId,
       })),
       narrative: narrative
         ? {
@@ -858,6 +876,7 @@ export class QuarterlyNarrativeConfirmationService {
       achievementsHash: string;
       scoresHash: string;
       calculationJson: string;
+      reviewSnapshotJson: string;
       achievementsSnapshotJson: string;
       scoresSnapshotJson: string;
       templateSnapshotJson: string;
@@ -891,6 +910,7 @@ export class QuarterlyNarrativeConfirmationService {
       ...(detailed
         ? {
             achievementsSnapshot: this.parse(row.achievementsSnapshotJson, []),
+            reviewSnapshot: this.parse(row.reviewSnapshotJson, {}),
             scoresSnapshot: this.parse(row.scoresSnapshotJson, []),
             templateSnapshot: this.parse(row.templateSnapshotJson, {}),
             narrativeSnapshot: this.parse(row.narrativeSnapshotJson, {}),

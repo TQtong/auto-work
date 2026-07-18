@@ -41,7 +41,8 @@
 | 05A1     | 季度周期、绩效数据骨架、指标模板与用户评分公式    | [阶段五 A1 实现与验证](./phase-5a1-quarterly-score-foundation.md)            | verified    |
 | 05A2     | 多来源候选收集、成果编辑、证据与指标映射          | [阶段五 A2 实现与验证](./phase-5a2-quarterly-candidate-evidence-core.md)     | verified    |
 | 05B      | 自评版本、AI 建议、确认失效与冻结快照             | [阶段五 B 实现与验证](./phase-5b-quarterly-narrative-ai-confirmation.md)     | verified    |
-| 05C      | Excel/Word 导出、文件 QA 与完整绩效工作台         | 待提交                                                                       | planned     |
+| 05C1     | 确认快照 Excel/Word 制品、作业恢复与文件 QA       | [阶段五 C1 实现与验证](./phase-5c1-quarterly-export-artifacts.md)            | verified    |
+| 05C2     | 完整季度绩效工作台与导出交互                      | 待提交                                                                       | planned     |
 | 05D      | 运维、诊断、发布门禁与全量文档终审                | 待提交                                                                       | planned     |
 
 每次增量必须同步更新本表，并在 PR 中保留对应提交、验证命令和人工检查结果。
