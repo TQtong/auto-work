@@ -40,7 +40,7 @@
 - SQLite 集成测试覆盖机器人创建/替换不探测、成功原子提升与旧凭证删除、失败保留当前健康凭证和待测试引用。
 - 模板映射集成测试覆盖快照伪造、外部字段事实伪造、错序字段、不可变版本和连接类型门禁。
 - 设置页视图模型测试覆盖日志操作用户、固定主机、应用凭证，以及机器人普通配置与一次性秘密分离。
-- 全仓 `pnpm verify` 通过：Contracts 2、Domain 28、API 165、Web 11，共 206 个测试；Prettier、ESLint、TypeScript 类型检查和 API/Web 生产构建全部成功。Prisma schema 有效，13 个迁移已部署且状态一致。
+- 全仓 `pnpm verify` 通过：Contracts 2、Domain 28、API 166、Web 11，共 207 个测试；Prettier、ESLint、TypeScript 类型检查和 API/Web 生产构建全部成功。Prisma schema 有效，13 个迁移已部署且状态一致。
 
 ## 6. 浏览器验收
 

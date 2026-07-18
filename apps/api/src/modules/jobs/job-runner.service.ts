@@ -151,6 +151,7 @@ export class JobRunnerService implements OnApplicationBootstrap {
       const retryable = !(error instanceof DomainError) || error.options.retryable === true;
       const safeReplay = handler.recovery === 'safe_replay' && retryable && !exhausted;
       const terminalNonRetryable = handler.recovery === 'safe_replay' && !retryable;
+      const requiresManualReview = handler.recovery === 'manual_review';
       await this.prisma.job.update({
         where: { id: jobId },
         data: safeReplay
@@ -163,15 +164,23 @@ export class JobRunnerService implements OnApplicationBootstrap {
               lastError: this.safeError(error),
             }
           : {
-              status: terminalNonRetryable ? 'failed' : exhausted ? 'dead_letter' : 'unknown',
+              status: requiresManualReview
+                ? 'unknown'
+                : terminalNonRetryable
+                  ? 'failed'
+                  : exhausted
+                    ? 'dead_letter'
+                    : 'unknown',
               completedAt: new Date(),
               leaseOwner: null,
               leaseUntil: null,
-              lastErrorCode: terminalNonRetryable
-                ? error.code
-                : exhausted
-                  ? 'MAX_ATTEMPTS_EXCEEDED'
-                  : 'RESULT_REQUIRES_REVIEW',
+              lastErrorCode: requiresManualReview
+                ? 'RESULT_REQUIRES_REVIEW'
+                : terminalNonRetryable
+                  ? error.code
+                  : exhausted
+                    ? 'MAX_ATTEMPTS_EXCEEDED'
+                    : 'RESULT_REQUIRES_REVIEW',
               lastError: this.safeError(error),
             },
       });
