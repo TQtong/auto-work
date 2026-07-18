@@ -38,6 +38,10 @@
 | 04C3b3b1 | 提醒策略、工作周、Asia/Shanghai 计划内核与设置页  | [阶段四 C3b3b1 实现与验证](./phase-4c3b3b1-reminder-policy-core.md)          | verified    |
 | 04C3b3b2 | 提醒滚动计划、休眠补发与超时 skipped              | [阶段四 C3b3b2 实现与验证](./phase-4c3b3b2-reminder-scheduler.md)            | verified    |
 | 04C3b3c  | 六字段复制与附件导出降级                          | [阶段四 C3b3c 实现与验证](./phase-4c3b3c-export-copy-fallback.md)            | verified    |
-| 05       | 季度绩效、导出、运维与发布门禁                    | 待提交                                                                       | planned     |
+| 05A1     | 季度周期、绩效数据骨架、指标模板与用户评分公式    | [阶段五 A1 实现与验证](./phase-5a1-quarterly-score-foundation.md)            | verified    |
+| 05A2     | 多来源候选收集、成果编辑、证据与指标映射          | 待提交                                                                       | planned     |
+| 05B      | 自评版本、AI 建议、确认失效与冻结快照             | 待提交                                                                       | planned     |
+| 05C      | Excel/Word 导出、文件 QA 与完整绩效工作台         | 待提交                                                                       | planned     |
+| 05D      | 运维、诊断、发布门禁与全量文档终审                | 待提交                                                                       | planned     |
 
 每次增量必须同步更新本表，并在 PR 中保留对应提交、验证命令和人工检查结果。

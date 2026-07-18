@@ -40,6 +40,8 @@ model UserProfile {
   reportSourceSnapshots ReportSourceSnapshot[]
   weeklyReports         WeeklyReport[]
   weeklyReminderPolicy  WeeklyReportReminderPolicy?
+  quarterlyReviews      QuarterlyReview[]
+  metricTemplates       PerformanceMetricTemplate[]
 
   @@map("user_profile")
 }
@@ -63,20 +65,21 @@ model IdentityAlias {
 }
 
 model Project {
-  id             String       @id
+  id             String        @id
   name           String
   alias          String?
   description    String?
-  jiraProjectKey String?      @unique @map("jira_project_key")
-  enabled        Boolean      @default(true)
-  sortOrder      Int          @default(0) @map("sort_order")
-  version        Int          @default(1)
-  archivedAt     DateTime?    @map("archived_at")
-  createdAt      DateTime     @default(now()) @map("created_at")
-  updatedAt      DateTime     @updatedAt @map("updated_at")
+  jiraProjectKey String?       @unique @map("jira_project_key")
+  enabled        Boolean       @default(true)
+  sortOrder      Int           @default(0) @map("sort_order")
+  version        Int           @default(1)
+  archivedAt     DateTime?     @map("archived_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
   repositories   Repository[]
   tasks          Task[]
   evidences      Evidence[]
+  achievements   Achievement[]
 
   @@index([enabled, archivedAt, sortOrder])
   @@map("project")
@@ -533,6 +536,7 @@ model Task {
   fieldProvenances         TaskFieldProvenance[]
   evidenceLinks            EvidenceLink[]
   reportSourceLinks        ReportSourceLink[]
+  achievementEvidences     AchievementEvidence[]
 
   @@unique([connectionId, issueKey])
   @@index([projectId, normalizedStatus, dueDate])
@@ -721,26 +725,27 @@ model TaskFieldProvenance {
 }
 
 model Evidence {
-  id                String             @id
-  sourceType        String             @map("source_type")
-  sourceInternalId  String             @map("source_internal_id")
-  sourceExternalKey String             @map("source_external_key")
-  gitlabProjectId   String?            @map("gitlab_project_id")
-  projectId         String?            @map("project_id")
-  eventAt           DateTime?          @map("event_at")
-  title             String
-  url               String?
-  contentHash       String             @map("content_hash")
-  availabilityState String             @default("available") @map("availability_state")
-  metadataJson      String             @default("{}") @map("metadata_json")
-  sourceSyncedAt    DateTime?          @map("source_synced_at")
-  version           Int                @default(1)
-  createdAt         DateTime           @default(now()) @map("created_at")
-  updatedAt         DateTime           @updatedAt @map("updated_at")
-  gitlabProject     GitLabProject?     @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
-  project           Project?           @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  links             EvidenceLink[]
-  reportSourceLinks ReportSourceLink[]
+  id                   String                @id
+  sourceType           String                @map("source_type")
+  sourceInternalId     String                @map("source_internal_id")
+  sourceExternalKey    String                @map("source_external_key")
+  gitlabProjectId      String?               @map("gitlab_project_id")
+  projectId            String?               @map("project_id")
+  eventAt              DateTime?             @map("event_at")
+  title                String
+  url                  String?
+  contentHash          String                @map("content_hash")
+  availabilityState    String                @default("available") @map("availability_state")
+  metadataJson         String                @default("{}") @map("metadata_json")
+  sourceSyncedAt       DateTime?             @map("source_synced_at")
+  version              Int                   @default(1)
+  createdAt            DateTime              @default(now()) @map("created_at")
+  updatedAt            DateTime              @updatedAt @map("updated_at")
+  gitlabProject        GitLabProject?        @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+  project              Project?              @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  links                EvidenceLink[]
+  reportSourceLinks    ReportSourceLink[]
+  achievementEvidences AchievementEvidence[]
 
   @@unique([sourceType, sourceInternalId])
   @@index([projectId, eventAt])
@@ -1328,6 +1333,314 @@ model ReportSourceLink {
   @@index([snapshotId])
   @@index([sourceType, sourceId])
   @@map("report_source_link")
+}
+
+/// 季度评审聚合根只保存当前工作状态；周期定义创建后不可原地修改。
+model QuarterlyReview {
+  id                        String                            @id
+  ownerProfileId            String                            @map("owner_profile_id")
+  name                      String
+  periodStart               String                            @map("period_start")
+  periodEnd                 String                            @map("period_end")
+  nextPeriodStart           String                            @map("next_period_start")
+  timezone                  String                            @default("Asia/Shanghai")
+  naturalQuarter            Boolean                           @default(true) @map("natural_quarter")
+  year                      Int?
+  quarter                   Int?
+  status                    String                            @default("draft")
+  completenessJson          String                            @default("{}") @map("completeness_json")
+  metricTemplateVersionId   String?                           @map("metric_template_version_id")
+  currentNarrativeVersionId String?                           @unique @map("current_narrative_version_id")
+  currentConfirmationId     String?                           @unique @map("current_confirmation_id")
+  version                   Int                               @default(1)
+  archivedAt                DateTime?                         @map("archived_at")
+  createdAt                 DateTime                          @default(now()) @map("created_at")
+  updatedAt                 DateTime                          @updatedAt @map("updated_at")
+  ownerProfile              UserProfile                       @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  metricTemplateVersion     PerformanceMetricTemplateVersion? @relation(fields: [metricTemplateVersionId], references: [id], onDelete: Restrict)
+  currentNarrativeVersion   ReviewNarrativeVersion?           @relation("QuarterlyCurrentNarrative", fields: [currentNarrativeVersionId], references: [id], onDelete: Restrict)
+  currentConfirmation       QuarterlyReviewConfirmation?      @relation("QuarterlyCurrentConfirmation", fields: [currentConfirmationId], references: [id], onDelete: Restrict)
+  collectionSnapshots       QuarterlyCollectionSnapshot[]
+  achievements              Achievement[]
+  scores                    ScoreItem[]
+  narrativeVersions         ReviewNarrativeVersion[]          @relation("QuarterlyNarrativeVersions")
+  confirmations             QuarterlyReviewConfirmation[]     @relation("QuarterlyConfirmations")
+  exportArtifacts           ExportArtifact[]
+
+  @@unique([ownerProfileId, periodStart, periodEnd])
+  @@unique([ownerProfileId, name])
+  @@index([ownerProfileId, status, updatedAt])
+  @@map("quarterly_review")
+}
+
+/// 每次收集冻结来源选择、新鲜度和规范化事实，后续源数据更新不改写历史候选依据。
+model QuarterlyCollectionSnapshot {
+  id                    String          @id
+  reviewId              String          @map("review_id")
+  sequenceNo            Int             @map("sequence_no")
+  sourceSelectionJson   String          @map("source_selection_json")
+  freshnessPolicyJson   String          @map("freshness_policy_json")
+  taskFactsJson         String          @default("[]") @map("task_facts_json")
+  evidenceFactsJson     String          @default("[]") @map("evidence_facts_json")
+  weeklyReportFactsJson String          @default("[]") @map("weekly_report_facts_json")
+  warningsJson          String          @default("[]") @map("warnings_json")
+  sourceContentHash     String          @map("source_content_hash")
+  generationHash        String          @map("generation_hash")
+  createdBy             String          @map("created_by")
+  createdAt             DateTime        @default(now()) @map("created_at")
+  review                QuarterlyReview @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  achievements          Achievement[]
+
+  @@unique([reviewId, sequenceNo])
+  @@unique([reviewId, generationHash])
+  @@index([reviewId, createdAt])
+  @@map("quarterly_collection_snapshot")
+}
+
+model Achievement {
+  id                   String                       @id
+  reviewId             String                       @map("review_id")
+  collectionSnapshotId String?                      @map("collection_snapshot_id")
+  projectId            String?                      @map("project_id")
+  sourceType           String                       @map("source_type")
+  sourceKey            String                       @map("source_key")
+  title                String
+  situation            String
+  action               String
+  result               String
+  impact               String
+  contributionBoundary String                       @default("") @map("contribution_boundary")
+  periodStart          String                       @map("period_start")
+  periodEnd            String                       @map("period_end")
+  selectionStatus      String                       @default("candidate") @map("selection_status")
+  exclusionReason      String?                      @map("exclusion_reason")
+  evidenceStatus       String                       @default("needs_evidence") @map("evidence_status")
+  sortOrder            Int                          @default(0) @map("sort_order")
+  version              Int                          @default(1)
+  createdBy            String                       @map("created_by")
+  createdAt            DateTime                     @default(now()) @map("created_at")
+  updatedAt            DateTime                     @updatedAt @map("updated_at")
+  review               QuarterlyReview              @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  collectionSnapshot   QuarterlyCollectionSnapshot? @relation(fields: [collectionSnapshotId], references: [id], onDelete: Restrict)
+  project              Project?                     @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  evidences            AchievementEvidence[]
+  metricLinks          AchievementMetricLink[]
+
+  @@unique([reviewId, sourceKey])
+  @@index([reviewId, selectionStatus, sortOrder])
+  @@index([projectId, periodStart, periodEnd])
+  @@map("achievement")
+}
+
+model AchievementEvidence {
+  id                String      @id
+  achievementId     String      @map("achievement_id")
+  sourceType        String      @map("source_type")
+  sourceId          String      @map("source_id")
+  taskId            String?     @map("task_id")
+  evidenceId        String?     @map("evidence_id")
+  title             String
+  externalKey       String?     @map("external_key")
+  url               String?
+  eventAt           DateTime?   @map("event_at")
+  availabilityState String      @default("available") @map("availability_state")
+  sourceContentHash String      @map("source_content_hash")
+  sourceSummaryJson String      @default("{}") @map("source_summary_json")
+  contributionAngle String      @default("") @map("contribution_angle")
+  primaryEvidence   Boolean     @default(false) @map("primary_evidence")
+  createdAt         DateTime    @default(now()) @map("created_at")
+  achievement       Achievement @relation(fields: [achievementId], references: [id], onDelete: Restrict)
+  task              Task?       @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  evidence          Evidence?   @relation(fields: [evidenceId], references: [id], onDelete: Restrict)
+
+  @@unique([achievementId, sourceType, sourceId])
+  @@index([taskId])
+  @@index([evidenceId])
+  @@map("achievement_evidence")
+}
+
+model PerformanceMetricTemplate {
+  id               String                             @id
+  ownerProfileId   String                             @map("owner_profile_id")
+  name             String
+  currentVersionId String?                            @unique @map("current_version_id")
+  archivedAt       DateTime?                          @map("archived_at")
+  version          Int                                @default(1)
+  createdAt        DateTime                           @default(now()) @map("created_at")
+  updatedAt        DateTime                           @updatedAt @map("updated_at")
+  ownerProfile     UserProfile                        @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  currentVersion   PerformanceMetricTemplateVersion?  @relation("PerformanceCurrentMetricTemplateVersion", fields: [currentVersionId], references: [id], onDelete: Restrict)
+  versions         PerformanceMetricTemplateVersion[] @relation("PerformanceMetricTemplateVersions")
+
+  @@unique([ownerProfileId, name])
+  @@index([ownerProfileId, archivedAt])
+  @@map("performance_metric_template")
+}
+
+/// 指标模板版本不可变；公式只允许领域层明确支持的枚举，不执行自由文本表达式。
+model PerformanceMetricTemplateVersion {
+  id                 String                        @id
+  templateId         String                        @map("template_id")
+  versionNo          Int                           @map("version_no")
+  formulaType        String                        @map("formula_type")
+  roundingRule       String                        @map("rounding_rule")
+  formulaConfigJson  String                        @default("{}") @map("formula_config_json")
+  contentHash        String                        @map("content_hash")
+  createdBy          String                        @map("created_by")
+  createdAt          DateTime                      @default(now()) @map("created_at")
+  template           PerformanceMetricTemplate     @relation("PerformanceMetricTemplateVersions", fields: [templateId], references: [id], onDelete: Restrict)
+  currentForTemplate PerformanceMetricTemplate?    @relation("PerformanceCurrentMetricTemplateVersion")
+  metrics            PerformanceMetric[]
+  reviews            QuarterlyReview[]
+  confirmations      QuarterlyReviewConfirmation[]
+
+  @@unique([templateId, versionNo])
+  @@index([templateId, createdAt])
+  @@map("performance_metric_template_version")
+}
+
+model PerformanceMetric {
+  id                      String                           @id
+  templateVersionId       String                           @map("template_version_id")
+  code                    String
+  name                    String
+  definition              String
+  weight                  Float
+  minimum                 Float
+  maximum                 Float
+  step                    Float
+  required                Boolean                          @default(true)
+  evidenceRequirementJson String                           @default("{}") @map("evidence_requirement_json")
+  sortOrder               Int                              @map("sort_order")
+  enabled                 Boolean                          @default(true)
+  templateVersion         PerformanceMetricTemplateVersion @relation(fields: [templateVersionId], references: [id], onDelete: Restrict)
+  achievementLinks        AchievementMetricLink[]
+  scores                  ScoreItem[]
+
+  @@unique([templateVersionId, code])
+  @@unique([templateVersionId, sortOrder])
+  @@map("performance_metric")
+}
+
+model AchievementMetricLink {
+  id            String            @id
+  achievementId String            @map("achievement_id")
+  metricId      String            @map("metric_id")
+  contribution  String
+  createdBy     String            @map("created_by")
+  createdAt     DateTime          @default(now()) @map("created_at")
+  achievement   Achievement       @relation(fields: [achievementId], references: [id], onDelete: Restrict)
+  metric        PerformanceMetric @relation(fields: [metricId], references: [id], onDelete: Restrict)
+
+  @@unique([achievementId, metricId])
+  @@index([metricId])
+  @@map("achievement_metric_link")
+}
+
+model ScoreItem {
+  id                 String            @id
+  reviewId           String            @map("review_id")
+  metricId           String            @map("metric_id")
+  aiSuggestedScore   Float?            @map("ai_suggested_score")
+  aiSuggestedMinimum Float?            @map("ai_suggested_minimum")
+  aiSuggestedMaximum Float?            @map("ai_suggested_maximum")
+  aiReason           String?           @map("ai_reason")
+  aiEvidenceGapsJson String            @default("[]") @map("ai_evidence_gaps_json")
+  aiUncertainty      String?           @map("ai_uncertainty")
+  aiGenerationId     String?           @map("ai_generation_id")
+  userScore          Float?            @map("user_score")
+  userReason         String?           @map("user_reason")
+  rawContribution    Float?            @map("raw_contribution")
+  validationStatus   String            @default("missing") @map("validation_status")
+  version            Int               @default(1)
+  updatedBy          String            @map("updated_by")
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
+  review             QuarterlyReview   @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  metric             PerformanceMetric @relation(fields: [metricId], references: [id], onDelete: Restrict)
+
+  @@unique([reviewId, metricId])
+  @@index([reviewId, validationStatus])
+  @@map("score_item")
+}
+
+model ReviewNarrativeVersion {
+  id                 String                        @id
+  reviewId           String                        @map("review_id")
+  versionNo          Int                           @map("version_no")
+  origin             String
+  parentVersionId    String?                       @map("parent_version_id")
+  contentJson        String                        @map("content_json")
+  sourceSnapshotHash String                        @map("source_snapshot_hash")
+  aiGenerationId     String?                       @map("ai_generation_id")
+  contentHash        String                        @map("content_hash")
+  changeSummaryJson  String                        @default("{}") @map("change_summary_json")
+  createdBy          String                        @map("created_by")
+  createdAt          DateTime                      @default(now()) @map("created_at")
+  review             QuarterlyReview               @relation("QuarterlyNarrativeVersions", fields: [reviewId], references: [id], onDelete: Restrict)
+  currentForReview   QuarterlyReview?              @relation("QuarterlyCurrentNarrative")
+  parentVersion      ReviewNarrativeVersion?       @relation("QuarterlyNarrativeHistory", fields: [parentVersionId], references: [id], onDelete: Restrict)
+  childVersions      ReviewNarrativeVersion[]      @relation("QuarterlyNarrativeHistory")
+  confirmations      QuarterlyReviewConfirmation[]
+
+  @@unique([reviewId, versionNo])
+  @@index([reviewId, createdAt])
+  @@map("review_narrative_version")
+}
+
+/// 确认冻结成果、证据、指标、用户分、计算明细、自评版本和完整性知悉，不代表对外提交。
+model QuarterlyReviewConfirmation {
+  id                      String                           @id
+  reviewId                String                           @map("review_id")
+  reviewVersion           Int                              @map("review_version")
+  metricTemplateVersionId String                           @map("metric_template_version_id")
+  narrativeVersionId      String                           @map("narrative_version_id")
+  snapshotHash            String                           @map("snapshot_hash")
+  achievementsHash        String                           @map("achievements_hash")
+  scoresHash              String                           @map("scores_hash")
+  calculationJson         String                           @map("calculation_json")
+  completenessAckJson     String                           @default("[]") @map("completeness_ack_json")
+  status                  String                           @default("active")
+  confirmedBy             String                           @map("confirmed_by")
+  confirmedAt             DateTime                         @default(now()) @map("confirmed_at")
+  invalidatedAt           DateTime?                        @map("invalidated_at")
+  invalidationReason      String?                          @map("invalidation_reason")
+  review                  QuarterlyReview                  @relation("QuarterlyConfirmations", fields: [reviewId], references: [id], onDelete: Restrict)
+  currentForReview        QuarterlyReview?                 @relation("QuarterlyCurrentConfirmation")
+  metricTemplateVersion   PerformanceMetricTemplateVersion @relation(fields: [metricTemplateVersionId], references: [id], onDelete: Restrict)
+  narrativeVersion        ReviewNarrativeVersion           @relation(fields: [narrativeVersionId], references: [id], onDelete: Restrict)
+  exportArtifacts         ExportArtifact[]
+
+  @@index([reviewId, status, confirmedAt])
+  @@map("quarterly_review_confirmation")
+}
+
+model ExportArtifact {
+  id                String                      @id
+  reviewId          String                      @map("review_id")
+  confirmationId    String                      @map("confirmation_id")
+  format            String
+  templateVersion   String                      @map("template_version")
+  inputSnapshotHash String                      @map("input_snapshot_hash")
+  status            String                      @default("queued")
+  jobId             String?                     @unique @map("job_id")
+  fileName          String?                     @map("file_name")
+  storedName        String?                     @unique @map("stored_name")
+  mimeType          String?                     @map("mime_type")
+  contentHash       String?                     @map("content_hash")
+  sizeBytes         Int?                        @map("size_bytes")
+  errorCode         String?                     @map("error_code")
+  errorSummary      String?                     @map("error_summary")
+  createdBy         String                      @map("created_by")
+  createdAt         DateTime                    @default(now()) @map("created_at")
+  completedAt       DateTime?                   @map("completed_at")
+  review            QuarterlyReview             @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  confirmation      QuarterlyReviewConfirmation @relation(fields: [confirmationId], references: [id], onDelete: Restrict)
+
+  @@unique([reviewId, inputSnapshotHash, format, templateVersion])
+  @@index([reviewId, status, createdAt])
+  @@index([status, createdAt])
+  @@map("export_artifact")
 }
 
 model IdempotencyRecord {

@@ -14,6 +14,8 @@ export default tseslint.config(
       parserOptions: {
         projectService: {
           allowDefaultProject: ['packages/contracts/test/*.ts', 'packages/domain/test/*.ts'],
+          // 领域与契约测试不参与生产构建，但仍执行类型感知 lint；为完整测试矩阵预留明确上限。
+          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 32,
         },
         tsconfigRootDir: import.meta.dirname,
       },

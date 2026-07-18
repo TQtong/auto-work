@@ -9,3 +9,4 @@ export * from './lib/url-policy.js';
 export * from './lib/evidence-matching.js';
 export * from './lib/weekly-report-rules.js';
 export * from './lib/weekly-reminder-schedule.js';
+export * from './lib/quarterly-performance.js';

@@ -23,6 +23,7 @@ import { EvidenceModule } from './modules/evidence/evidence.module.js';
 import { WeeklyReportModule } from './modules/weekly-reports/weekly-report.module.js';
 import { AiModule } from './modules/ai/ai.module.js';
 import { DingTalkModule } from './modules/dingtalk/dingtalk.module.js';
+import { QuarterlyReviewModule } from './modules/quarterly-reviews/quarterly-review.module.js';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { DingTalkModule } from './modules/dingtalk/dingtalk.module.js';
     ExcelImportsModule,
     EvidenceModule,
     WeeklyReportModule,
+    QuarterlyReviewModule,
     BackupModule,
     RepositoriesModule,
     HealthModule,
