@@ -15,6 +15,7 @@ import type { SessionService } from '../src/modules/session/session.service.js';
 import { WeeklyReportDeliveryHandler } from '../src/modules/weekly-reports/weekly-report-delivery.handler.js';
 import { WeeklyReportDeliveryRecoveryService } from '../src/modules/weekly-reports/weekly-report-delivery-recovery.service.js';
 import { WeeklyReportDeliveryService } from '../src/modules/weekly-reports/weekly-report-delivery.service.js';
+import { WeeklyReportNotificationLedgerService } from '../src/modules/weekly-reports/weekly-report-notification-ledger.service.js';
 
 const capabilityHash = 'a'.repeat(64);
 const recipientHash = 'b'.repeat(64);
@@ -173,6 +174,44 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     expect(JSON.parse(robotAttempt.responseSummaryJson)).toMatchObject({
       providerCallCount: 3,
       retryDelaysMs: [250, 500],
+    });
+    const notificationFact = await prisma.robotNotification.findFirstOrThrow({
+      where: { deliveryIntentId: robotIntentId },
+    });
+    expect(notificationFact).toMatchObject({
+      notificationType: 'submission_success',
+      businessObjectKey: `weekly-report:${fixture.reportId}`,
+      status: 'succeeded',
+      providerRequestId: 'provider-robot-request',
+      coalescedCount: 0,
+    });
+    expect(JSON.stringify(notificationFact)).not.toContain('仅正式日志可见的完整工作正文');
+    expect(
+      await runtime.notificationLedger.reserve({
+        reportId: fixture.reportId,
+        connectionId: fixture.robotConnectionId,
+        notificationType: 'submission_success',
+        businessObjectKey: notificationFact.businessObjectKey,
+        stateVersion: notificationFact.stateVersion,
+        contentHash: notificationFact.contentHash,
+        quietWindowMinutes: 30,
+        scheduledFor: new Date(),
+      }),
+    ).toMatchObject({ disposition: 'duplicate' });
+    const coalesced = await runtime.notificationLedger.reserve({
+      reportId: fixture.reportId,
+      connectionId: fixture.robotConnectionId,
+      notificationType: 'submission_success',
+      businessObjectKey: notificationFact.businessObjectKey,
+      stateVersion: notificationFact.stateVersion + 1,
+      contentHash: notificationFact.contentHash,
+      quietWindowMinutes: 30,
+      scheduledFor: new Date(),
+    });
+    expect(coalesced.disposition).toBe('coalesced');
+    expect(coalesced.notification).toMatchObject({
+      id: notificationFact.id,
+      coalescedCount: 1,
     });
   });
 
@@ -546,7 +585,14 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     const security = {
       sessionHash: () => 'delivery-session-hash',
     } as unknown as LocalSecurityService;
-    const service = new WeeklyReportDeliveryService(prismaService, sessions, audit, security);
+    const notificationLedger = new WeeklyReportNotificationLedgerService(prismaService);
+    const service = new WeeklyReportDeliveryService(
+      prismaService,
+      sessions,
+      audit,
+      security,
+      notificationLedger,
+    );
     const registry = new JobRegistryService();
     const logClient = {
       accessToken: vi
@@ -585,7 +631,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       vault,
     );
     expect(registry.get('weekly-report.delivery')).toBe(handler);
-    return { service, handler, recovery };
+    return { service, handler, recovery, notificationLedger };
   }
 
   function matchingProviderReport(reportId: string) {

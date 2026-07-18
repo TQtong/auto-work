@@ -10,6 +10,10 @@ import { DingTalkRobotClient } from '../dingtalk/dingtalk-robot.client.js';
 import type { JobExecutionContext, JobHandler } from '../jobs/job-registry.service.js';
 import { JobRegistryService } from '../jobs/job-registry.service.js';
 import { buildDingTalkReportContents } from './weekly-report-delivery.payload.js';
+import {
+  buildWeeklyReportRobotNotification,
+  projectNamesFromTaskFacts,
+} from './weekly-report-robot-notification.js';
 
 @Injectable()
 export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
@@ -187,16 +191,14 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
         { httpStatus: 409 },
       );
     }
-    const projects = this.projectNames(intent.confirmedVersion.sourceSnapshot.taskFactsJson);
-    const message = [
-      'Auto Work 周报交付通知',
-      `周期：${intent.report.periodStart} 至 ${intent.report.periodEnd}`,
-      `报告日期：${intent.report.reportDate}`,
-      '状态：已提交钉钉正式日志',
-      ...(projects.length > 0 ? [`主要项目：${projects.join('、')}`] : []),
-      `正式日志 ID：${formalLog.externalId}`,
-      '请在本机 Auto Work 查看交付详情。',
-    ].join('\n');
+    const message = buildWeeklyReportRobotNotification({
+      type: 'submission_success',
+      periodStart: intent.report.periodStart,
+      periodEnd: intent.report.periodEnd,
+      reportDate: intent.report.reportDate,
+      formalLogId: formalLog.externalId,
+      projectNames: projectNamesFromTaskFacts(intent.confirmedVersion.sourceSnapshot.taskFactsJson),
+    });
     const result = await this.robotClient.sendText({
       webhook: credential.webhook,
       secret: credential.secret,
@@ -243,6 +245,18 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
           '交付意图已被其他作业处理，当前作业不会重复调用外部平台',
           { httpStatus: 409, suggestedAction: 'manual_review' },
         );
+      }
+      if (intent.channel === 'dingtalk_robot') {
+        await tx.robotNotification.updateMany({
+          where: { deliveryIntentId: intent.id, status: { in: ['pending', 'queued', 'failed'] } },
+          data: {
+            status: 'sending',
+            lastAttemptAt: new Date(),
+            lastErrorCode: null,
+            lastErrorSummary: null,
+            version: { increment: 1 },
+          },
+        });
       }
       return attempt;
     });
@@ -303,6 +317,19 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
           '交付结果落库时发生并发冲突，必须人工核对外部结果',
           { httpStatus: 409, suggestedAction: 'manual_review' },
         );
+      }
+      if (intent.channel === 'dingtalk_robot') {
+        await tx.robotNotification.updateMany({
+          where: { deliveryIntentId: intent.id, status: 'sending' },
+          data: {
+            status: result.status,
+            providerRequestId: result.providerRequestId,
+            lastErrorCode: result.errorCode,
+            lastErrorSummary: result.errorSummary,
+            sentAt: result.status === 'succeeded' ? new Date() : null,
+            version: { increment: 1 },
+          },
+        });
       }
       const deliveryState =
         intent.channel === 'dingtalk_log'
@@ -396,21 +423,6 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
         httpStatus: 422,
       });
     }
-  }
-
-  private projectNames(taskFactsJson: string): string[] {
-    const names = this.parseArray(taskFactsJson).flatMap((value) => {
-      const task = this.parseObject(value);
-      if (typeof task.projectName !== 'string') return [];
-      const normalized = task.projectName
-        .replace(/[\r\n\t]/gu, ' ')
-        .trim()
-        .slice(0, 80);
-      return normalized ? [normalized] : [];
-    });
-    return [...new Set(names)]
-      .sort((left, right) => left.localeCompare(right, 'zh-CN'))
-      .slice(0, 3);
   }
 
   private result(intent: DeliveryIntent, replayed: boolean) {

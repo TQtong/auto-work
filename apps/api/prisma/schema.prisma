@@ -254,6 +254,7 @@ model IntegrationConnection {
   dingtalkTemplateMapping    DingTalkTemplateMapping?
   dingtalkRecipientSnapshots DingTalkRecipientValidation[]
   deliveryIntents            DeliveryIntent[]
+  robotNotifications         RobotNotification[]
   aiGenerations              AiGeneration[]
 
   @@index([type, enabled, status])
@@ -864,6 +865,7 @@ model WeeklyReport {
   attachments              WeeklyReportAttachment[]
   aiGenerations            AiGeneration[]
   deliveryIntents          DeliveryIntent[]
+  robotNotifications       RobotNotification[]
 
   @@index([ownerProfileId, periodStart, periodEnd])
   @@index([status, updatedAt])
@@ -1102,6 +1104,7 @@ model DeliveryIntent {
   connection          IntegrationConnection    @relation(fields: [connectionId], references: [id], onDelete: Restrict)
   attempts            DeliveryAttempt[]
   recoveryChecks      DeliveryRecoveryCheck[]
+  robotNotification   RobotNotification?
 
   @@unique([reportId, confirmationId, channel, connectionId])
   @@index([reportId, channel, createdAt])
@@ -1153,6 +1156,43 @@ model DeliveryAttempt {
   @@unique([intentId, attemptNo])
   @@index([status, startedAt])
   @@map("delivery_attempt")
+}
+
+/// 机器人业务通知使用独立账本；只保存去重、调度和非敏感结果，不复制完整周报正文或凭证。
+model RobotNotification {
+  id                    String                @id
+  reportId              String                @map("report_id")
+  connectionId          String                @map("connection_id")
+  deliveryIntentId      String?               @unique @map("delivery_intent_id")
+  notificationType      String                @map("notification_type")
+  businessObjectKey     String                @map("business_object_key")
+  stateVersion          Int                   @map("state_version")
+  dedupeKey             String                @unique @map("dedupe_key")
+  contentHash           String                @map("content_hash")
+  status                String                @default("pending")
+  quietWindowStartedAt  DateTime              @map("quiet_window_started_at")
+  quietWindowEndsAt     DateTime              @map("quiet_window_ends_at")
+  coalescedCount        Int                   @default(0) @map("coalesced_count")
+  scheduledFor          DateTime              @map("scheduled_for")
+  jobId                 String?               @unique @map("job_id")
+  lastAttemptAt         DateTime?             @map("last_attempt_at")
+  sentAt                DateTime?             @map("sent_at")
+  skippedAt             DateTime?             @map("skipped_at")
+  skipReason            String?               @map("skip_reason")
+  providerRequestId     String?               @map("provider_request_id")
+  lastErrorCode         String?               @map("last_error_code")
+  lastErrorSummary      String?               @map("last_error_summary")
+  version               Int                   @default(1)
+  createdAt             DateTime              @default(now()) @map("created_at")
+  updatedAt             DateTime              @updatedAt @map("updated_at")
+  report                WeeklyReport          @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  connection            IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  deliveryIntent        DeliveryIntent?       @relation(fields: [deliveryIntentId], references: [id], onDelete: Restrict)
+
+  @@index([reportId, notificationType, createdAt])
+  @@index([status, scheduledFor])
+  @@index([businessObjectKey, notificationType, contentHash, quietWindowEndsAt])
+  @@map("robot_notification")
 }
 
 model ReportSourceSnapshot {

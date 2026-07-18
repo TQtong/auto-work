@@ -6,6 +6,11 @@ import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import { LocalSecurityService } from '../../infrastructure/http/local-security.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { SessionService } from '../session/session.service.js';
+import { WeeklyReportNotificationLedgerService } from './weekly-report-notification-ledger.service.js';
+import {
+  buildWeeklyReportRobotNotification,
+  projectNamesFromTaskFacts,
+} from './weekly-report-robot-notification.js';
 import type {
   NotifyWeeklyReportGroupInput,
   SubmitWeeklyReportLogInput,
@@ -24,6 +29,7 @@ export class WeeklyReportDeliveryService {
     private readonly sessions: SessionService,
     private readonly audit: AuditService,
     private readonly security: LocalSecurityService,
+    private readonly notificationLedger: WeeklyReportNotificationLedgerService,
   ) {}
 
   public async submitLog(
@@ -145,6 +151,21 @@ export class WeeklyReportDeliveryService {
       );
     }
     const robotConfig = this.parseObject(robot.configJson);
+    const message = buildWeeklyReportRobotNotification({
+      type: 'submission_success',
+      periodStart: facts.report.periodStart,
+      periodEnd: facts.report.periodEnd,
+      reportDate: facts.report.reportDate,
+      formalLogId: logIntent.externalId,
+      projectNames: projectNamesFromTaskFacts(facts.confirmedVersion.sourceSnapshot.taskFactsJson),
+    });
+    const quietWindowMinutes =
+      typeof robotConfig.quietWindowMinutes === 'number' &&
+      Number.isInteger(robotConfig.quietWindowMinutes) &&
+      robotConfig.quietWindowMinutes >= 0 &&
+      robotConfig.quietWindowMinutes <= 1_440
+        ? robotConfig.quietWindowMinutes
+        : 30;
     const targetSummary = {
       connectionId: robot.id,
       robotName: robotConfig.robotName ?? robot.name,
@@ -154,6 +175,9 @@ export class WeeklyReportDeliveryService {
       formalLogExternalId: logIntent.externalId,
       fullReportForbidden: true,
       localhostLinkForbidden: true,
+      notificationStateVersion: logIntent.version,
+      notificationContentHash: requestHash({ notificationType: input.notificationType, message }),
+      quietWindowMinutes,
     };
     return this.createIntent({
       reportId,
@@ -167,6 +191,13 @@ export class WeeklyReportDeliveryService {
       jobType: 'weekly-report.delivery',
       deliveryStateField: 'robotDeliveryState',
       deliveryState: 'not_started',
+      robotNotification: {
+        notificationType: input.notificationType,
+        businessObjectKey: `weekly-report:${reportId}`,
+        stateVersion: logIntent.version,
+        contentHash: requestHash({ notificationType: input.notificationType, message }),
+        quietWindowMinutes,
+      },
       context,
     });
   }
@@ -196,6 +227,13 @@ export class WeeklyReportDeliveryService {
     jobType: string;
     deliveryStateField: 'logDeliveryState' | 'robotDeliveryState';
     deliveryState: string;
+    robotNotification?: {
+      notificationType: 'submission_success';
+      businessObjectKey: string;
+      stateVersion: number;
+      contentHash: string;
+      quietWindowMinutes: number;
+    };
     context: DeliveryAuditContext;
   }) {
     const intentId = newId();
@@ -247,6 +285,27 @@ export class WeeklyReportDeliveryService {
             dedupeKey: `weekly-report.delivery:${intent.id}`,
           },
         });
+        if (input.robotNotification) {
+          const reservation = await this.notificationLedger.reserveInTransaction(tx, {
+            reportId: input.reportId,
+            connectionId: input.connectionId,
+            deliveryIntentId: intent.id,
+            notificationType: input.robotNotification.notificationType,
+            businessObjectKey: input.robotNotification.businessObjectKey,
+            stateVersion: input.robotNotification.stateVersion,
+            contentHash: input.robotNotification.contentHash,
+            quietWindowMinutes: input.robotNotification.quietWindowMinutes,
+            scheduledFor: new Date(),
+            jobId,
+          });
+          if (reservation.disposition !== 'created') {
+            throw new DomainError(
+              'ROBOT_NOTIFICATION_RESERVATION_CONFLICT',
+              '机器人通知账本已存在不一致事实，当前交付不会继续排队',
+              { httpStatus: 409, suggestedAction: 'manual_review' },
+            );
+          }
+        }
         const response = { intent: this.serializeIntent(intent), jobId, replayed: false };
         await this.completeIdempotency(tx, input.context.idempotencyRecordId, response);
         await this.audit.recordInTransaction(tx, {
@@ -410,7 +469,7 @@ export class WeeklyReportDeliveryService {
     const report = await this.prisma.weeklyReport.findFirst({
       where: { id: reportId, ownerProfileId: this.sessions.currentProfileId, archivedAt: null },
       include: {
-        confirmedVersion: true,
+        confirmedVersion: { include: { sourceSnapshot: true } },
         currentConfirmation: {
           include: {
             templateMappingVersion: {

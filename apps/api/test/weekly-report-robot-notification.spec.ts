@@ -1,0 +1,67 @@
+import { describe, expect, it } from 'vitest';
+import {
+  buildWeeklyReportRobotNotification,
+  projectNamesFromTaskFacts,
+} from '../src/modules/weekly-reports/weekly-report-robot-notification.js';
+
+describe('周报机器人安全通知模板', () => {
+  it('提交成功摘要只含周期、状态、项目和正式日志 ID，不含六字段全文或本机链接', () => {
+    const message = buildWeeklyReportRobotNotification({
+      type: 'submission_success',
+      periodStart: '2026-07-13',
+      periodEnd: '2026-07-17',
+      reportDate: '2026-07-17',
+      formalLogId: 'report-1001',
+      projectNames: ['项目甲', '项目乙'],
+    });
+    expect(message).toContain('状态：已提交钉钉正式日志');
+    expect(message).toContain('主要项目：项目甲、项目乙');
+    expect(message).not.toContain('本周工作');
+    expect(message).not.toContain('localhost');
+  });
+
+  it('截止、失败和风险通知使用固定边界并清理换行注入', () => {
+    const deadline = buildWeeklyReportRobotNotification({
+      type: 'deadline_reminder',
+      periodStart: '2026-07-13',
+      periodEnd: '2026-07-17',
+      deadlineText: '2026-07-17 17:30 Asia/Shanghai',
+      draftStatus: '待确认',
+    });
+    expect(deadline).toContain('本提醒不会自动正式提交');
+
+    const failure = buildWeeklyReportRobotNotification({
+      type: 'submission_failure',
+      periodStart: '2026-07-13',
+      periodEnd: '2026-07-17',
+      stage: '群摘要\n伪造阶段',
+      safeErrorSummary: '权限不足\r\nAuthorization: 不应扩展为新行',
+    });
+    expect(failure).toContain('失败阶段：群摘要 伪造阶段');
+    expect(failure).not.toContain('\n伪造阶段');
+    expect(failure).toContain('不会盲目重放');
+
+    const risk = buildWeeklyReportRobotNotification({
+      type: 'risk_alert',
+      periodStart: '2026-07-13',
+      periodEnd: '2026-07-17',
+      riskSummaries: ['阻断项甲', '阻断项乙', '阻断项丙', '不得发送的第四项'],
+    });
+    expect(risk).toContain('风险 3：阻断项丙');
+    expect(risk).not.toContain('第四项');
+  });
+
+  it('项目事实去重、排序并限制为三个安全名称', () => {
+    expect(
+      projectNamesFromTaskFacts(
+        JSON.stringify([
+          { projectName: '项目乙' },
+          { projectName: '项目甲\n注入' },
+          { projectName: '项目乙' },
+          { projectName: '项目丙' },
+          { projectName: '项目丁' },
+        ]),
+      ),
+    ).toEqual(['项目丙', '项目丁', '项目甲 注入']);
+  });
+});
