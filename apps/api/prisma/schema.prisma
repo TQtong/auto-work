@@ -225,28 +225,30 @@ model GitSnapshot {
 }
 
 model IntegrationConnection {
-  id               String                @id
-  type             String
-  name             String
-  baseUrl          String?               @map("base_url")
-  credentialRef    String?               @map("credential_ref")
-  credentialMask   String?               @map("credential_mask")
-  enabled          Boolean               @default(true)
-  status           String                @default("unknown")
-  capabilitiesJson String                @default("{}") @map("capabilities_json")
-  configJson       String                @default("{}") @map("config_json")
-  lastTestedAt     DateTime?             @map("last_tested_at")
-  lastSuccessAt    DateTime?             @map("last_success_at")
-  disabledAt       DateTime?             @map("disabled_at")
-  version          Int                   @default(1)
-  createdAt        DateTime              @default(now()) @map("created_at")
-  updatedAt        DateTime              @updatedAt @map("updated_at")
-  fieldMappings    FieldMappingVersion[]
-  gitlabProjects   GitLabProject[]
-  gitlabSyncRuns   GitLabSyncRun[]
-  jiraTasks        Task[]
-  jiraSyncCursors  SyncCursor[]
-  jiraSyncRuns     JiraSyncRun[]
+  id                         String                        @id
+  type                       String
+  name                       String
+  baseUrl                    String?                       @map("base_url")
+  credentialRef              String?                       @map("credential_ref")
+  credentialMask             String?                       @map("credential_mask")
+  enabled                    Boolean                       @default(true)
+  status                     String                        @default("unknown")
+  capabilitiesJson           String                        @default("{}") @map("capabilities_json")
+  configJson                 String                        @default("{}") @map("config_json")
+  lastTestedAt               DateTime?                     @map("last_tested_at")
+  lastSuccessAt              DateTime?                     @map("last_success_at")
+  disabledAt                 DateTime?                     @map("disabled_at")
+  version                    Int                           @default(1)
+  createdAt                  DateTime                      @default(now()) @map("created_at")
+  updatedAt                  DateTime                      @updatedAt @map("updated_at")
+  fieldMappings              FieldMappingVersion[]
+  gitlabProjects             GitLabProject[]
+  gitlabSyncRuns             GitLabSyncRun[]
+  jiraTasks                  Task[]
+  jiraSyncCursors            SyncCursor[]
+  jiraSyncRuns               JiraSyncRun[]
+  dingtalkTemplateMapping    DingTalkTemplateMapping?
+  dingtalkRecipientSnapshots DingTalkRecipientValidation[]
 
   @@index([type, enabled, status])
   @@map("integration_connection")
@@ -826,30 +828,34 @@ model WorkCalendarVersion {
 }
 
 model WeeklyReport {
-  id                       String                 @id
-  ownerProfileId           String                 @map("owner_profile_id")
-  periodStart              String                 @map("period_start")
-  periodEnd                String                 @map("period_end")
-  reportDate               String                 @map("report_date")
-  timezone                 String                 @default("Asia/Shanghai")
-  templateName             String                 @default("uTwin产研创新部周报") @map("template_name")
-  templateMappingVersionId String?                @map("template_mapping_version_id")
-  status                   String                 @default("collecting")
-  logDeliveryState         String                 @default("not_started") @map("log_delivery_state")
-  robotDeliveryState       String                 @default("not_started") @map("robot_delivery_state")
-  currentVersionId         String?                @unique @map("current_version_id")
-  confirmedVersionId       String?                @unique @map("confirmed_version_id")
-  recipientScopeVersion    Int                    @default(1) @map("recipient_scope_version")
-  scheduleAt               DateTime?              @map("schedule_at")
-  version                  Int                    @default(1)
-  archivedAt               DateTime?              @map("archived_at")
-  createdAt                DateTime               @default(now()) @map("created_at")
-  updatedAt                DateTime               @updatedAt @map("updated_at")
-  ownerProfile             UserProfile            @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
-  currentVersion           WeeklyReportVersion?   @relation("WeeklyReportCurrentVersion", fields: [currentVersionId], references: [id], onDelete: Restrict)
-  confirmedVersion         WeeklyReportVersion?   @relation("WeeklyReportConfirmedVersion", fields: [confirmedVersionId], references: [id], onDelete: Restrict)
-  versions                 WeeklyReportVersion[]  @relation("WeeklyReportVersions")
+  id                       String                     @id
+  ownerProfileId           String                     @map("owner_profile_id")
+  periodStart              String                     @map("period_start")
+  periodEnd                String                     @map("period_end")
+  reportDate               String                     @map("report_date")
+  timezone                 String                     @default("Asia/Shanghai")
+  templateName             String                     @default("uTwin产研创新部周报") @map("template_name")
+  templateMappingVersionId String?                    @map("template_mapping_version_id")
+  status                   String                     @default("collecting")
+  logDeliveryState         String                     @default("not_started") @map("log_delivery_state")
+  robotDeliveryState       String                     @default("not_started") @map("robot_delivery_state")
+  currentVersionId         String?                    @unique @map("current_version_id")
+  confirmedVersionId       String?                    @unique @map("confirmed_version_id")
+  currentConfirmationId    String?                    @unique @map("current_confirmation_id")
+  recipientScopeVersion    Int                        @default(1) @map("recipient_scope_version")
+  scheduleAt               DateTime?                  @map("schedule_at")
+  version                  Int                        @default(1)
+  archivedAt               DateTime?                  @map("archived_at")
+  createdAt                DateTime                   @default(now()) @map("created_at")
+  updatedAt                DateTime                   @updatedAt @map("updated_at")
+  ownerProfile             UserProfile                @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  currentVersion           WeeklyReportVersion?       @relation("WeeklyReportCurrentVersion", fields: [currentVersionId], references: [id], onDelete: Restrict)
+  confirmedVersion         WeeklyReportVersion?       @relation("WeeklyReportConfirmedVersion", fields: [confirmedVersionId], references: [id], onDelete: Restrict)
+  currentConfirmation      WeeklyReportConfirmation?  @relation("WeeklyReportCurrentConfirmation", fields: [currentConfirmationId], references: [id], onDelete: Restrict)
+  versions                 WeeklyReportVersion[]      @relation("WeeklyReportVersions")
   sourceSnapshots          ReportSourceSnapshot[]
+  confirmations            WeeklyReportConfirmation[] @relation("WeeklyReportConfirmations")
+  attachments              WeeklyReportAttachment[]
 
   @@index([ownerProfileId, periodStart, periodEnd])
   @@index([status, updatedAt])
@@ -857,39 +863,143 @@ model WeeklyReport {
 }
 
 model WeeklyReportVersion {
-  id                  String                @id
-  reportId            String                @map("report_id")
-  versionNo           Int                   @map("version_no")
-  origin              String
-  parentVersionId     String?               @map("parent_version_id")
-  reportDateText      String                @map("report_date_text")
-  recentGoalsText     String                @map("recent_goals_text")
-  weeklyWorkText      String                @map("weekly_work_text")
-  nextWeekPlansText   String                @map("next_week_plans_text")
-  problemsText        String                @map("problems_text")
-  otherText           String                @map("other_text")
-  fieldsJson          String                @map("fields_json")
-  warningsJson        String                @default("[]") @map("warnings_json")
-  attachmentsJson     String                @default("[]") @map("attachments_json")
-  recipientScopeJson  String                @default("{}") @map("recipient_scope_json")
-  sourceSnapshotId    String                @map("source_snapshot_id")
-  aiGenerationId      String?               @map("ai_generation_id")
-  contentHash         String                @map("content_hash")
-  changeSummaryJson   String                @default("{}") @map("change_summary_json")
-  createdBy           String                @map("created_by")
-  createdAt           DateTime              @default(now()) @map("created_at")
-  report              WeeklyReport          @relation("WeeklyReportVersions", fields: [reportId], references: [id], onDelete: Restrict)
-  parentVersion       WeeklyReportVersion?  @relation("WeeklyReportVersionHistory", fields: [parentVersionId], references: [id], onDelete: Cascade)
-  childVersions       WeeklyReportVersion[] @relation("WeeklyReportVersionHistory")
-  sourceSnapshot      ReportSourceSnapshot  @relation(fields: [sourceSnapshotId], references: [id], onDelete: Restrict)
-  currentForReports   WeeklyReport[]        @relation("WeeklyReportCurrentVersion")
-  confirmedForReports WeeklyReport[]        @relation("WeeklyReportConfirmedVersion")
-  sourceLinks         ReportSourceLink[]
+  id                       String                     @id
+  reportId                 String                     @map("report_id")
+  versionNo                Int                        @map("version_no")
+  origin                   String
+  parentVersionId          String?                    @map("parent_version_id")
+  reportDateText           String                     @map("report_date_text")
+  recentGoalsText          String                     @map("recent_goals_text")
+  weeklyWorkText           String                     @map("weekly_work_text")
+  nextWeekPlansText        String                     @map("next_week_plans_text")
+  problemsText             String                     @map("problems_text")
+  otherText                String                     @map("other_text")
+  fieldsJson               String                     @map("fields_json")
+  warningsJson             String                     @default("[]") @map("warnings_json")
+  attachmentsJson          String                     @default("[]") @map("attachments_json")
+  recipientScopeJson       String                     @default("{}") @map("recipient_scope_json")
+  templateMappingVersionId String?                    @map("template_mapping_version_id")
+  scheduleAt               DateTime?                  @map("schedule_at")
+  sourceSnapshotId         String                     @map("source_snapshot_id")
+  aiGenerationId           String?                    @map("ai_generation_id")
+  contentHash              String                     @map("content_hash")
+  changeSummaryJson        String                     @default("{}") @map("change_summary_json")
+  createdBy                String                     @map("created_by")
+  createdAt                DateTime                   @default(now()) @map("created_at")
+  report                   WeeklyReport               @relation("WeeklyReportVersions", fields: [reportId], references: [id], onDelete: Restrict)
+  parentVersion            WeeklyReportVersion?       @relation("WeeklyReportVersionHistory", fields: [parentVersionId], references: [id], onDelete: Cascade)
+  childVersions            WeeklyReportVersion[]      @relation("WeeklyReportVersionHistory")
+  sourceSnapshot           ReportSourceSnapshot       @relation(fields: [sourceSnapshotId], references: [id], onDelete: Restrict)
+  currentForReports        WeeklyReport[]             @relation("WeeklyReportCurrentVersion")
+  confirmedForReports      WeeklyReport[]             @relation("WeeklyReportConfirmedVersion")
+  sourceLinks              ReportSourceLink[]
+  confirmations            WeeklyReportConfirmation[]
 
   @@unique([reportId, versionNo])
   @@index([reportId, createdAt])
   @@index([sourceSnapshotId])
   @@map("weekly_report_version")
+}
+
+model DingTalkTemplateMapping {
+  id               String                           @id
+  connectionId     String                           @unique @map("connection_id")
+  currentVersionId String?                          @unique @map("current_version_id")
+  version          Int                              @default(1)
+  createdAt        DateTime                         @default(now()) @map("created_at")
+  updatedAt        DateTime                         @updatedAt @map("updated_at")
+  connection       IntegrationConnection            @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  currentVersion   DingTalkTemplateMappingVersion?  @relation("DingTalkCurrentTemplateMappingVersion", fields: [currentVersionId], references: [id], onDelete: Restrict)
+  versions         DingTalkTemplateMappingVersion[] @relation("DingTalkTemplateMappingVersions")
+
+  @@map("dingtalk_template_mapping")
+}
+
+model DingTalkTemplateMappingVersion {
+  id                      String                     @id
+  mappingId               String                     @map("mapping_id")
+  versionNo               Int                        @map("version_no")
+  templateId              String                     @map("template_id")
+  templateName            String                     @map("template_name")
+  externalTemplateVersion String?                    @map("external_template_version")
+  templateHash            String                     @map("template_hash")
+  fieldsJson              String                     @map("fields_json")
+  capabilitySnapshotHash  String                     @map("capability_snapshot_hash")
+  observedAt              DateTime                   @map("observed_at")
+  expiresAt               DateTime                   @map("expires_at")
+  contentHash             String                     @map("content_hash")
+  createdBy               String                     @map("created_by")
+  createdAt               DateTime                   @default(now()) @map("created_at")
+  mapping                 DingTalkTemplateMapping    @relation("DingTalkTemplateMappingVersions", fields: [mappingId], references: [id], onDelete: Restrict)
+  currentForMapping       DingTalkTemplateMapping?   @relation("DingTalkCurrentTemplateMappingVersion")
+  confirmations           WeeklyReportConfirmation[]
+
+  @@unique([mappingId, versionNo])
+  @@index([templateId, observedAt])
+  @@map("dingtalk_template_mapping_version")
+}
+
+model DingTalkRecipientValidation {
+  id                     String                @id
+  connectionId           String                @map("connection_id")
+  subjectType            String                @map("subject_type")
+  externalId             String                @map("external_id")
+  displayName            String                @map("display_name")
+  available              Boolean
+  capabilitySnapshotHash String                @map("capability_snapshot_hash")
+  observedAt             DateTime              @map("observed_at")
+  expiresAt              DateTime              @map("expires_at")
+  contentHash            String                @map("content_hash")
+  createdAt              DateTime              @default(now()) @map("created_at")
+  connection             IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+
+  @@unique([connectionId, subjectType, externalId, contentHash])
+  @@index([connectionId, subjectType, externalId, observedAt])
+  @@map("dingtalk_recipient_validation")
+}
+
+model WeeklyReportAttachment {
+  id           String       @id
+  reportId     String       @map("report_id")
+  originalName String       @map("original_name")
+  storedName   String       @unique @map("stored_name")
+  mimeType     String       @map("mime_type")
+  extension    String
+  sizeBytes    Int          @map("size_bytes")
+  contentHash  String       @map("content_hash")
+  status       String       @default("available")
+  createdBy    String       @map("created_by")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  deletedAt    DateTime?    @map("deleted_at")
+  report       WeeklyReport @relation(fields: [reportId], references: [id], onDelete: Restrict)
+
+  @@index([reportId, status, createdAt])
+  @@map("weekly_report_attachment")
+}
+
+model WeeklyReportConfirmation {
+  id                          String                         @id
+  reportId                    String                         @map("report_id")
+  versionId                   String                         @map("version_id")
+  reportAggregateVersion      Int                            @map("report_aggregate_version")
+  contentHash                 String                         @map("content_hash")
+  templateMappingVersionId    String                         @map("template_mapping_version_id")
+  warningAcknowledgementsJson String                         @map("warning_acknowledgements_json")
+  recipientScopeHash          String                         @map("recipient_scope_hash")
+  attachmentsHash             String                         @map("attachments_hash")
+  status                      String                         @default("active")
+  confirmedBy                 String                         @map("confirmed_by")
+  confirmedAt                 DateTime                       @default(now()) @map("confirmed_at")
+  invalidatedAt               DateTime?                      @map("invalidated_at")
+  invalidationReason          String?                        @map("invalidation_reason")
+  report                      WeeklyReport                   @relation("WeeklyReportConfirmations", fields: [reportId], references: [id], onDelete: Restrict)
+  version                     WeeklyReportVersion            @relation(fields: [versionId], references: [id], onDelete: Restrict)
+  templateMappingVersion      DingTalkTemplateMappingVersion @relation(fields: [templateMappingVersionId], references: [id], onDelete: Restrict)
+  currentForReport            WeeklyReport?                  @relation("WeeklyReportCurrentConfirmation")
+
+  @@unique([reportId, versionId, contentHash, templateMappingVersionId, recipientScopeHash, attachmentsHash])
+  @@index([reportId, status, confirmedAt])
+  @@map("weekly_report_confirmation")
 }
 
 model ReportSourceSnapshot {

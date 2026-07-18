@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { Injectable } from '@nestjs/common';
 import { Prisma, type WorkCalendarVersion } from '@prisma/client';
 import { DomainError, errorCodes } from '@auto-work/contracts';
@@ -16,7 +18,14 @@ import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import { LocalSecurityService } from '../../infrastructure/http/local-security.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { SessionService } from '../session/session.service.js';
-import type { GenerateWeeklyReportInput, ListWeeklyReportsQuery } from './weekly-report.schemas.js';
+import type {
+  ConfirmWeeklyReportInput,
+  EditWeeklyReportInput,
+  GenerateWeeklyReportInput,
+  ListWeeklyReportsQuery,
+  RestoreWeeklyReportVersionInput,
+} from './weekly-report.schemas.js';
+import { WeeklyReportAttachmentService } from './weekly-report-attachment.service.js';
 
 const shanghaiOffsetMilliseconds = 8 * 3_600_000;
 const defaultCalendarId = 'enterprise-work-calendar';
@@ -35,10 +44,32 @@ interface RequestContext {
   sessionId: string;
 }
 
+interface MutationContext extends RequestContext {
+  idempotencyRecordId: string;
+}
+
 interface ResolvedPeriod {
   periodStart: string;
   periodEnd: string;
   reportDate: string;
+}
+
+function fieldsFromVersion(version: {
+  reportDateText: string;
+  recentGoalsText: string;
+  weeklyWorkText: string;
+  nextWeekPlansText: string;
+  problemsText: string;
+  otherText: string;
+}) {
+  return {
+    reportDate: version.reportDateText,
+    recentGoals: version.recentGoalsText,
+    weeklyWork: version.weeklyWorkText,
+    nextWeekPlans: version.nextWeekPlansText,
+    problems: version.problemsText,
+    other: version.otherText,
+  };
 }
 
 @Injectable()
@@ -48,6 +79,7 @@ export class WeeklyReportService {
     private readonly sessions: SessionService,
     private readonly audit: AuditService,
     private readonly security: LocalSecurityService,
+    private readonly attachments: WeeklyReportAttachmentService,
   ) {}
 
   public async generate(
@@ -65,6 +97,9 @@ export class WeeklyReportService {
     const profile = await this.prisma.userProfile.findUniqueOrThrow({
       where: { id: this.sessions.currentProfileId },
     });
+    const selectedMapping = input.templateMappingVersionId
+      ? await this.resolveSelectableMapping(this.prisma, input.templateMappingVersionId)
+      : null;
     if (profile.timezone !== 'Asia/Shanghai' || input.timezone !== 'Asia/Shanghai') {
       throw new DomainError(
         'WEEKLY_REPORT_TIMEZONE_UNSUPPORTED',
@@ -152,7 +187,7 @@ export class WeeklyReportService {
             periodEnd: period.periodEnd,
             archivedAt: null,
           },
-          include: { currentVersion: true },
+          include: { currentVersion: true, currentConfirmation: true },
         });
         if (existingReport && input.existingReportPolicy === 'reject') {
           throw new DomainError(
@@ -231,6 +266,20 @@ export class WeeklyReportService {
           : null;
         const versionId = newId();
         const rendered = this.renderFields(ruleDraft.fields);
+        const initialRecipientScope = {
+          connectionId: selectedMapping?.mapping.connectionId ?? null,
+          recipients: [],
+        };
+        const versionContentHash = requestHash({
+          fields: { reportDate: period.reportDate, ...rendered },
+          structured: ruleDraft.fields,
+          warnings: ruleDraft.warnings,
+          attachments: [],
+          recipientScope: initialRecipientScope,
+          templateMappingVersionId: input.templateMappingVersionId,
+          scheduleAt: null,
+          sourceContentHash,
+        });
         const version = await tx.weeklyReportVersion.create({
           data: {
             id: versionId,
@@ -246,8 +295,12 @@ export class WeeklyReportService {
             otherText: rendered.other,
             fieldsJson: JSON.stringify(ruleDraft.fields),
             warningsJson: JSON.stringify(ruleDraft.warnings),
+            attachmentsJson: '[]',
+            recipientScopeJson: JSON.stringify(initialRecipientScope),
+            templateMappingVersionId: input.templateMappingVersionId,
+            scheduleAt: null,
             sourceSnapshotId: snapshot.id,
-            contentHash: ruleDraft.contentHash,
+            contentHash: versionContentHash,
             changeSummaryJson: JSON.stringify({
               kind: existingReport ? 'regenerated_from_new_snapshot' : 'initial_rule_generation',
               sourceContentHash,
@@ -264,6 +317,11 @@ export class WeeklyReportService {
           manualInputs,
         );
         if (sourceLinks.length > 0) await tx.reportSourceLink.createMany({ data: sourceLinks });
+        await this.invalidateConfirmation(
+          tx,
+          existingReport?.currentConfirmation ?? null,
+          '重新采集来源并生成了新规则版本',
+        );
         const changed = await tx.weeklyReport.updateMany({
           where: { id: report.id, version: report.version },
           data: {
@@ -272,6 +330,7 @@ export class WeeklyReportService {
             status: 'generated',
             currentVersionId: version.id,
             confirmedVersionId: null,
+            currentConfirmationId: null,
             logDeliveryState: 'not_started',
             robotDeliveryState: 'not_started',
             version: { increment: 1 },
@@ -377,6 +436,8 @@ export class WeeklyReportService {
         parentVersionId: true,
         sourceSnapshotId: true,
         contentHash: true,
+        templateMappingVersionId: true,
+        scheduleAt: true,
         changeSummaryJson: true,
         createdBy: true,
         createdAt: true,
@@ -385,6 +446,8 @@ export class WeeklyReportService {
     return versions.map((version) => ({
       ...version,
       changeSummary: JSON.parse(version.changeSummaryJson) as unknown,
+      templateMappingVersionId: version.templateMappingVersionId,
+      scheduleAt: version.scheduleAt?.toISOString() ?? null,
       createdAt: version.createdAt.toISOString(),
       changeSummaryJson: undefined,
     }));
@@ -393,6 +456,953 @@ export class WeeklyReportService {
   public async getVersion(reportId: string, versionId: string) {
     await this.assertOwnedReport(this.prisma, reportId);
     return this.serializeVersion(this.prisma, versionId, reportId);
+  }
+
+  public async edit(reportId: string, input: EditWeeklyReportInput, context: MutationContext) {
+    return this.prisma.$transaction(async (tx) => {
+      const report = await tx.weeklyReport.findFirst({
+        where: { id: reportId, ownerProfileId: this.sessions.currentProfileId, archivedAt: null },
+        include: {
+          currentVersion: { include: { sourceLinks: true } },
+          currentConfirmation: true,
+        },
+      });
+      if (!report?.currentVersion) {
+        throw new DomainError(errorCodes.notFound, '周报或当前版本不存在', { httpStatus: 404 });
+      }
+      this.assertEditBase(report, input.baseVersionId, input.reportVersion);
+
+      const current = report.currentVersion;
+      const fields = {
+        reportDate: input.fields.reportDate ?? current.reportDateText,
+        recentGoals: input.fields.recentGoals ?? current.recentGoalsText,
+        weeklyWork: input.fields.weeklyWork ?? current.weeklyWorkText,
+        nextWeekPlans: input.fields.nextWeekPlans ?? current.nextWeekPlansText,
+        problems: input.fields.problems ?? current.problemsText,
+        other: input.fields.other ?? current.otherText,
+      };
+      if (!fields.problems.trim()) {
+        throw new DomainError(
+          'WEEKLY_REPORT_PROBLEMS_REQUIRED',
+          '问题栏不能为空；没有问题时请明确填写“无”',
+          {
+            httpStatus: 422,
+          },
+        );
+      }
+      const changedFields = Object.entries(input.fields).flatMap(([field, value]) =>
+        value !== undefined &&
+        value !== fieldsFromVersion(current)[field as keyof ReturnType<typeof fieldsFromVersion>]
+          ? [field]
+          : [],
+      );
+      const structured = this.buildManualStructuredFields(current, fields, changedFields);
+      const attachmentFacts =
+        input.attachmentIds === undefined
+          ? this.parseArray(current.attachmentsJson)
+          : await this.resolveAttachmentFacts(tx, reportId, input.attachmentIds);
+      const templateMappingVersionId =
+        input.templateMappingVersionId === undefined
+          ? current.templateMappingVersionId
+          : input.templateMappingVersionId;
+      const mapping = templateMappingVersionId
+        ? await this.resolveSelectableMapping(tx, templateMappingVersionId)
+        : null;
+      const recipientScope =
+        input.recipientValidationIds === undefined
+          ? this.parseObject(current.recipientScopeJson)
+          : await this.resolveRecipientScope(
+              tx,
+              mapping?.mapping.connectionId ?? null,
+              input.recipientValidationIds,
+            );
+      this.assertRecipientMappingCompatibility(
+        recipientScope,
+        mapping?.mapping.connectionId ?? null,
+      );
+      const scheduleAt =
+        input.scheduleAt === undefined
+          ? current.scheduleAt
+          : input.scheduleAt === null
+            ? null
+            : new Date(input.scheduleAt);
+      const warnings = this.parseArray(current.warningsJson);
+      const contentHash = requestHash({
+        fields,
+        structured,
+        warnings,
+        attachments: attachmentFacts,
+        recipientScope,
+        templateMappingVersionId,
+        scheduleAt: scheduleAt?.toISOString() ?? null,
+        sourceSnapshotId: current.sourceSnapshotId,
+      });
+      if (contentHash === current.contentHash) {
+        const response = {
+          replayed: true,
+          report: await this.serializeReport(tx, reportId),
+          version: await this.serializeVersion(tx, current.id, reportId),
+        };
+        await this.completeIdempotency(tx, context.idempotencyRecordId, response);
+        return response;
+      }
+
+      const versionId = newId();
+      const latest = await tx.weeklyReportVersion.aggregate({
+        where: { reportId },
+        _max: { versionNo: true },
+      });
+      const version = await tx.weeklyReportVersion.create({
+        data: {
+          id: versionId,
+          reportId,
+          versionNo: (latest._max.versionNo ?? 0) + 1,
+          origin: 'manual',
+          parentVersionId: current.id,
+          reportDateText: fields.reportDate,
+          recentGoalsText: fields.recentGoals,
+          weeklyWorkText: fields.weeklyWork,
+          nextWeekPlansText: fields.nextWeekPlans,
+          problemsText: fields.problems,
+          otherText: fields.other,
+          fieldsJson: JSON.stringify(structured),
+          warningsJson: JSON.stringify(warnings),
+          attachmentsJson: JSON.stringify(attachmentFacts),
+          recipientScopeJson: JSON.stringify(recipientScope),
+          templateMappingVersionId,
+          scheduleAt,
+          sourceSnapshotId: current.sourceSnapshotId,
+          contentHash,
+          changeSummaryJson: JSON.stringify({
+            kind: 'manual_edit',
+            reason: input.changeReason,
+            changedFields,
+            attachmentsChanged: input.attachmentIds !== undefined,
+            recipientScopeChanged: input.recipientValidationIds !== undefined,
+            templateMappingChanged: input.templateMappingVersionId !== undefined,
+            scheduleChanged: input.scheduleAt !== undefined,
+          }),
+          createdBy: this.sessions.currentProfileId,
+        },
+      });
+      await this.copySourceLinks(tx, current, version.id, structured, changedFields);
+      await this.invalidateConfirmation(
+        tx,
+        report.currentConfirmation,
+        '正文或提交元数据已生成新版本',
+      );
+      const recipientChanged =
+        requestHash(recipientScope) !== requestHash(this.parseObject(current.recipientScopeJson));
+      const changed = await tx.weeklyReport.updateMany({
+        where: { id: reportId, version: report.version, currentVersionId: current.id },
+        data: {
+          reportDate: fields.reportDate,
+          templateMappingVersionId,
+          scheduleAt,
+          currentVersionId: version.id,
+          confirmedVersionId: null,
+          currentConfirmationId: null,
+          status: 'editing',
+          logDeliveryState: 'not_started',
+          robotDeliveryState: 'not_started',
+          ...(recipientChanged ? { recipientScopeVersion: { increment: 1 } } : {}),
+          version: { increment: 1 },
+        },
+      });
+      if (changed.count !== 1) this.throwVersionConflict();
+      await this.audit.recordInTransaction(tx, {
+        actorId: this.sessions.currentProfileId,
+        action: 'weekly_report.version_edited',
+        targetType: 'weekly_report',
+        targetId: reportId,
+        correlationId: context.correlationId,
+        outcome: 'succeeded',
+        before: {
+          aggregateVersion: report.version,
+          versionId: current.id,
+          contentHash: current.contentHash,
+        },
+        after: {
+          aggregateVersion: report.version + 1,
+          versionId: version.id,
+          versionNo: version.versionNo,
+          contentHash,
+          changedFields,
+        },
+        clientSessionHash: this.security.sessionHash(context.sessionId),
+      });
+      const response = {
+        replayed: false,
+        report: await this.serializeReport(tx, reportId),
+        version: await this.serializeVersion(tx, version.id, reportId),
+      };
+      await this.completeIdempotency(tx, context.idempotencyRecordId, response);
+      return response;
+    });
+  }
+
+  public async restore(
+    reportId: string,
+    targetVersionId: string,
+    input: RestoreWeeklyReportVersionInput,
+    context: MutationContext,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const report = await tx.weeklyReport.findFirst({
+        where: { id: reportId, ownerProfileId: this.sessions.currentProfileId, archivedAt: null },
+        include: { currentVersion: true, currentConfirmation: true },
+      });
+      if (!report?.currentVersion) {
+        throw new DomainError(errorCodes.notFound, '周报或当前版本不存在', { httpStatus: 404 });
+      }
+      this.assertEditBase(report, input.baseVersionId, input.reportVersion);
+      const target = await tx.weeklyReportVersion.findFirst({
+        where: { id: targetVersionId, reportId },
+        include: { sourceLinks: true },
+      });
+      if (!target)
+        throw new DomainError(errorCodes.notFound, '待恢复的历史版本不存在', { httpStatus: 404 });
+      if (target.id === report.currentVersion.id) {
+        const response = {
+          replayed: true,
+          report: await this.serializeReport(tx, reportId),
+          version: await this.serializeVersion(tx, target.id, reportId),
+        };
+        await this.completeIdempotency(tx, context.idempotencyRecordId, response);
+        return response;
+      }
+      const latest = await tx.weeklyReportVersion.aggregate({
+        where: { reportId },
+        _max: { versionNo: true },
+      });
+      const version = await tx.weeklyReportVersion.create({
+        data: {
+          id: newId(),
+          reportId,
+          versionNo: (latest._max.versionNo ?? 0) + 1,
+          origin: 'restore',
+          parentVersionId: report.currentVersion.id,
+          reportDateText: target.reportDateText,
+          recentGoalsText: target.recentGoalsText,
+          weeklyWorkText: target.weeklyWorkText,
+          nextWeekPlansText: target.nextWeekPlansText,
+          problemsText: target.problemsText,
+          otherText: target.otherText,
+          fieldsJson: target.fieldsJson,
+          warningsJson: target.warningsJson,
+          attachmentsJson: target.attachmentsJson,
+          recipientScopeJson: target.recipientScopeJson,
+          templateMappingVersionId: target.templateMappingVersionId,
+          scheduleAt: target.scheduleAt,
+          sourceSnapshotId: target.sourceSnapshotId,
+          aiGenerationId: target.aiGenerationId,
+          contentHash: target.contentHash,
+          changeSummaryJson: JSON.stringify({
+            kind: 'history_restore',
+            restoredFromVersionId: target.id,
+            restoredFromVersionNo: target.versionNo,
+            reason: input.changeReason,
+          }),
+          createdBy: this.sessions.currentProfileId,
+        },
+      });
+      if (target.sourceLinks.length > 0) {
+        await tx.reportSourceLink.createMany({
+          data: target.sourceLinks.map((link) => ({
+            id: newId(),
+            snapshotId: link.snapshotId,
+            versionId: version.id,
+            fieldName: link.fieldName,
+            blockId: link.blockId,
+            sourceType: link.sourceType,
+            sourceId: link.sourceId,
+            taskId: link.taskId,
+            evidenceId: link.evidenceId,
+            sourceContentHash: link.sourceContentHash,
+            sourceSummaryJson: link.sourceSummaryJson,
+          })),
+        });
+      }
+      await this.invalidateConfirmation(
+        tx,
+        report.currentConfirmation,
+        '已从历史版本恢复并生成新版本',
+      );
+      const changed = await tx.weeklyReport.updateMany({
+        where: {
+          id: reportId,
+          version: report.version,
+          currentVersionId: report.currentVersion.id,
+        },
+        data: {
+          reportDate: target.reportDateText,
+          templateMappingVersionId: target.templateMappingVersionId,
+          scheduleAt: target.scheduleAt,
+          currentVersionId: version.id,
+          confirmedVersionId: null,
+          currentConfirmationId: null,
+          status: 'editing',
+          logDeliveryState: 'not_started',
+          robotDeliveryState: 'not_started',
+          recipientScopeVersion: { increment: 1 },
+          version: { increment: 1 },
+        },
+      });
+      if (changed.count !== 1) this.throwVersionConflict();
+      await this.audit.recordInTransaction(tx, {
+        actorId: this.sessions.currentProfileId,
+        action: 'weekly_report.version_restored',
+        targetType: 'weekly_report',
+        targetId: reportId,
+        correlationId: context.correlationId,
+        outcome: 'succeeded',
+        before: { aggregateVersion: report.version, versionId: report.currentVersion.id },
+        after: {
+          aggregateVersion: report.version + 1,
+          versionId: version.id,
+          restoredFrom: target.id,
+        },
+        clientSessionHash: this.security.sessionHash(context.sessionId),
+      });
+      const response = {
+        replayed: false,
+        report: await this.serializeReport(tx, reportId),
+        version: await this.serializeVersion(tx, version.id, reportId),
+      };
+      await this.completeIdempotency(tx, context.idempotencyRecordId, response);
+      return response;
+    });
+  }
+
+  public async confirm(
+    reportId: string,
+    input: ConfirmWeeklyReportInput,
+    context: MutationContext,
+  ) {
+    const now = new Date();
+    return this.prisma.$transaction(async (tx) => {
+      const report = await tx.weeklyReport.findFirst({
+        where: { id: reportId, ownerProfileId: this.sessions.currentProfileId, archivedAt: null },
+        include: { currentVersion: true, currentConfirmation: true },
+      });
+      if (!report?.currentVersion) {
+        throw new DomainError(errorCodes.notFound, '周报或当前版本不存在', { httpStatus: 404 });
+      }
+      this.assertEditBase(report, input.versionId, input.reportVersion);
+      const version = report.currentVersion;
+      const fields = fieldsFromVersion(version);
+      const missingFields = Object.entries(fields)
+        .filter(([, value]) => !value.trim())
+        .map(([field]) => field);
+      if (missingFields.length > 0) {
+        throw new DomainError(
+          'WEEKLY_REPORT_FIELDS_INCOMPLETE',
+          '六个周报字段必须全部填写后才能确认',
+          {
+            httpStatus: 422,
+            details: { missingFields },
+          },
+        );
+      }
+      if (fields.reportDate < report.periodStart || fields.reportDate > report.periodEnd) {
+        throw new DomainError(
+          'WEEKLY_REPORT_DATE_OUTSIDE_PERIOD',
+          '报告日期必须位于当前周报周期内',
+          {
+            httpStatus: 422,
+          },
+        );
+      }
+      if (version.scheduleAt && version.scheduleAt <= now) {
+        throw new DomainError(
+          'WEEKLY_REPORT_SCHEDULE_EXPIRED',
+          '计划提交时间已过期，请调整后再确认',
+          {
+            httpStatus: 422,
+          },
+        );
+      }
+      if (
+        version.templateMappingVersionId !== input.templateMappingVersionId ||
+        report.templateMappingVersionId !== input.templateMappingVersionId
+      ) {
+        throw new DomainError(
+          'WEEKLY_REPORT_TEMPLATE_MAPPING_CHANGED',
+          '模板映射已变化，请刷新当前版本',
+          {
+            httpStatus: 409,
+            suggestedAction: 'refresh',
+          },
+        );
+      }
+      const mapping = await tx.dingTalkTemplateMappingVersion.findUnique({
+        where: { id: input.templateMappingVersionId },
+        include: { mapping: { include: { connection: true } } },
+      });
+      if (
+        !mapping ||
+        mapping.mapping.currentVersionId !== mapping.id ||
+        mapping.expiresAt <= now ||
+        !mapping.mapping.connection.enabled ||
+        mapping.mapping.connection.status !== 'healthy'
+      ) {
+        throw new DomainError(
+          'WEEKLY_REPORT_TEMPLATE_MAPPING_INVALID',
+          '当前模板映射不是最新有效探测结果，请重新探测并保存新版本',
+          { httpStatus: 422, suggestedAction: 'reconfigure' },
+        );
+      }
+      const capabilities = this.parseObject(mapping.mapping.connection.capabilitiesJson);
+      const discovery = this.parseObject(capabilities.templateDiscovery);
+      if (discovery.snapshotHash !== mapping.capabilitySnapshotHash) {
+        throw new DomainError(
+          'WEEKLY_REPORT_TEMPLATE_CAPABILITY_CHANGED',
+          '钉钉连接能力快照已变化，请重新确认模板字段',
+          { httpStatus: 422, suggestedAction: 'reconfigure' },
+        );
+      }
+      this.assertTemplateLengths(fields, this.parseArray(mapping.fieldsJson));
+      const warnings = this.warningFacts(version.warningsJson);
+      const blocking = warnings.filter((warning) => warning.blocking);
+      if (blocking.length > 0) {
+        throw new DomainError('WEEKLY_REPORT_BLOCKING_WARNINGS', '存在阻断 warning，不能确认周报', {
+          httpStatus: 422,
+          details: { warnings: blocking },
+        });
+      }
+      const acknowledged = new Set(input.acknowledgedWarningIds);
+      const currentWarningIds = new Set(warnings.map((warning) => warning.id));
+      const unknownAcknowledgements = input.acknowledgedWarningIds.filter(
+        (warningId) => !currentWarningIds.has(warningId),
+      );
+      if (unknownAcknowledgements.length > 0) {
+        throw new DomainError(
+          'WEEKLY_REPORT_WARNING_ACKNOWLEDGEMENT_INVALID',
+          'warning 知悉清单包含不属于当前版本的条目，请刷新后重新确认',
+          { httpStatus: 409, details: { unknownAcknowledgements }, suggestedAction: 'refresh' },
+        );
+      }
+      const missingAcknowledgements = warnings
+        .filter((warning) => !warning.blocking && !acknowledged.has(warning.id))
+        .map((warning) => warning.id);
+      if (missingAcknowledgements.length > 0) {
+        throw new DomainError(
+          'WEEKLY_REPORT_WARNINGS_NOT_ACKNOWLEDGED',
+          '所有非阻断 warning 都必须逐项知悉后才能确认',
+          { httpStatus: 422, details: { missingAcknowledgements } },
+        );
+      }
+      const attachmentFacts = this.parseArray(version.attachmentsJson);
+      await this.verifyAttachments(tx, reportId, attachmentFacts);
+      const recipientScope = this.parseObject(version.recipientScopeJson);
+      await this.verifyRecipientScope(tx, mapping.mapping.connectionId, recipientScope, now);
+      const recipientScopeHash = requestHash(recipientScope);
+      const attachmentsHash = requestHash(attachmentFacts);
+      if (
+        report.currentConfirmation?.status === 'active' &&
+        report.currentConfirmation.versionId === version.id &&
+        report.currentConfirmation.contentHash === version.contentHash &&
+        report.currentConfirmation.templateMappingVersionId === mapping.id &&
+        report.currentConfirmation.recipientScopeHash === recipientScopeHash &&
+        report.currentConfirmation.attachmentsHash === attachmentsHash
+      ) {
+        const response = {
+          replayed: true,
+          confirmation: this.serializeConfirmation(report.currentConfirmation),
+          report: await this.serializeReport(tx, reportId),
+        };
+        await this.completeIdempotency(tx, context.idempotencyRecordId, response);
+        return response;
+      }
+      const confirmation = await tx.weeklyReportConfirmation.create({
+        data: {
+          id: newId(),
+          reportId,
+          versionId: version.id,
+          reportAggregateVersion: report.version,
+          contentHash: version.contentHash,
+          templateMappingVersionId: mapping.id,
+          warningAcknowledgementsJson: JSON.stringify(
+            warnings.map((warning) => ({
+              id: warning.id,
+              code: warning.code,
+              acknowledgedAt: now.toISOString(),
+            })),
+          ),
+          recipientScopeHash,
+          attachmentsHash,
+          confirmedBy: this.sessions.currentProfileId,
+          confirmedAt: now,
+        },
+      });
+      const changed = await tx.weeklyReport.updateMany({
+        where: { id: reportId, version: report.version, currentVersionId: version.id },
+        data: {
+          status: 'confirmed',
+          confirmedVersionId: version.id,
+          currentConfirmationId: confirmation.id,
+          version: { increment: 1 },
+        },
+      });
+      if (changed.count !== 1) this.throwVersionConflict();
+      await this.audit.recordInTransaction(tx, {
+        actorId: this.sessions.currentProfileId,
+        action: 'weekly_report.confirmed',
+        targetType: 'weekly_report',
+        targetId: reportId,
+        correlationId: context.correlationId,
+        outcome: 'succeeded',
+        before: { aggregateVersion: report.version, status: report.status },
+        after: {
+          aggregateVersion: report.version + 1,
+          status: 'confirmed',
+          confirmationId: confirmation.id,
+          versionId: version.id,
+          contentHash: version.contentHash,
+        },
+        clientSessionHash: this.security.sessionHash(context.sessionId),
+      });
+      const response = {
+        replayed: false,
+        confirmation: this.serializeConfirmation(confirmation),
+        report: await this.serializeReport(tx, reportId),
+      };
+      await this.completeIdempotency(tx, context.idempotencyRecordId, response);
+      return response;
+    });
+  }
+
+  private assertEditBase(
+    report: { version: number; currentVersionId: string | null },
+    baseVersionId: string,
+    reportVersion: number,
+  ): void {
+    if (report.currentVersionId !== baseVersionId || report.version !== reportVersion) {
+      throw new DomainError(errorCodes.versionConflict, '周报已被其他页面修改，请刷新后重试', {
+        httpStatus: 409,
+        details: {
+          expectedVersionId: report.currentVersionId,
+          expectedReportVersion: report.version,
+        },
+        suggestedAction: 'refresh',
+      });
+    }
+  }
+
+  private buildManualStructuredFields(
+    current: {
+      id: string;
+      fieldsJson: string;
+      sourceLinks: Array<{ fieldName: string; sourceType: string; sourceId: string }>;
+    },
+    fields: ReturnType<typeof fieldsFromVersion>,
+    changedFields: string[],
+  ): Record<string, unknown> {
+    const existing = this.parseObject(current.fieldsJson);
+    const result: Record<string, unknown> = {};
+    for (const field of weeklyFields) {
+      if (!changedFields.includes(field)) {
+        result[field] = existing[field] ?? [];
+        continue;
+      }
+      const sourceRefs = current.sourceLinks
+        .filter((link) => link.fieldName === field)
+        .map((link) => ({ type: link.sourceType, id: link.sourceId }))
+        .filter(
+          (value, index, all) =>
+            all.findIndex((candidate) => requestHash(candidate) === requestHash(value)) === index,
+        );
+      result[field] = [
+        {
+          id: `manual-${requestHash({ parent: current.id, field, text: fields[field] }).slice(0, 24)}`,
+          body: fields[field],
+          sourceRefs,
+          provenance: { kind: 'manual_edit', parentVersionId: current.id },
+        },
+      ];
+    }
+    return result;
+  }
+
+  private async resolveAttachmentFacts(
+    tx: Prisma.TransactionClient,
+    reportId: string,
+    attachmentIds: string[],
+  ) {
+    if (attachmentIds.length === 0) return [];
+    const rows = await tx.weeklyReportAttachment.findMany({
+      where: { id: { in: attachmentIds }, reportId, status: 'available' },
+    });
+    if (rows.length !== attachmentIds.length) {
+      throw new DomainError(
+        'WEEKLY_REPORT_ATTACHMENT_INVALID',
+        '存在不属于当前周报或已删除的附件',
+        { httpStatus: 422 },
+      );
+    }
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return attachmentIds.map((id) => {
+      const row = byId.get(id);
+      if (!row) throw new Error('附件查询结果不完整');
+      return {
+        id: row.id,
+        originalName: row.originalName,
+        mimeType: row.mimeType,
+        extension: row.extension,
+        sizeBytes: row.sizeBytes,
+        contentHash: row.contentHash,
+      };
+    });
+  }
+
+  private async resolveSelectableMapping(
+    tx: Prisma.TransactionClient | PrismaService,
+    versionId: string,
+  ) {
+    const version = await tx.dingTalkTemplateMappingVersion.findUnique({
+      where: { id: versionId },
+      include: { mapping: { include: { connection: true } } },
+    });
+    if (
+      !version ||
+      version.mapping.currentVersionId !== version.id ||
+      version.expiresAt <= new Date() ||
+      !version.mapping.connection.enabled ||
+      version.mapping.connection.status !== 'healthy'
+    ) {
+      throw new DomainError(
+        'WEEKLY_REPORT_TEMPLATE_MAPPING_NOT_SELECTABLE',
+        '只能选择当前有效且连接健康的钉钉模板映射',
+        { httpStatus: 422, suggestedAction: 'reconfigure' },
+      );
+    }
+    return version;
+  }
+
+  private async resolveRecipientScope(
+    tx: Prisma.TransactionClient,
+    connectionId: string | null,
+    validationIds: string[],
+  ) {
+    if (validationIds.length === 0) return { connectionId, recipients: [] };
+    if (!connectionId) {
+      throw new DomainError(
+        'WEEKLY_REPORT_RECIPIENT_MAPPING_REQUIRED',
+        '选择收件人前必须先选择有效的钉钉模板映射',
+        { httpStatus: 422 },
+      );
+    }
+    const rows = await tx.dingTalkRecipientValidation.findMany({
+      where: { id: { in: validationIds }, connectionId, available: true },
+    });
+    if (rows.length !== validationIds.length) {
+      throw new DomainError(
+        'WEEKLY_REPORT_RECIPIENT_VALIDATION_INVALID',
+        '存在不属于当前连接或不可用的收件人校验快照',
+        { httpStatus: 422 },
+      );
+    }
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return {
+      connectionId,
+      recipients: validationIds.map((id) => {
+        const row = byId.get(id);
+        if (!row) throw new Error('收件人查询结果不完整');
+        return {
+          validationId: row.id,
+          subjectType: row.subjectType,
+          externalId: row.externalId,
+          displayName: row.displayName,
+          observedAt: row.observedAt.toISOString(),
+          expiresAt: row.expiresAt.toISOString(),
+          contentHash: row.contentHash,
+        };
+      }),
+    };
+  }
+
+  private assertRecipientMappingCompatibility(
+    recipientScope: Record<string, unknown>,
+    mappingConnectionId: string | null,
+  ): void {
+    const recipients = Array.isArray(recipientScope.recipients) ? recipientScope.recipients : [];
+    if (recipients.length > 0 && recipientScope.connectionId !== mappingConnectionId) {
+      throw new DomainError(
+        'WEEKLY_REPORT_RECIPIENT_CONNECTION_MISMATCH',
+        '收件人校验快照与模板映射不属于同一个钉钉连接',
+        { httpStatus: 422 },
+      );
+    }
+  }
+
+  private async copySourceLinks(
+    tx: Prisma.TransactionClient,
+    current: {
+      sourceLinks: Array<{
+        snapshotId: string;
+        fieldName: string;
+        blockId: string;
+        sourceType: string;
+        sourceId: string;
+        taskId: string | null;
+        evidenceId: string | null;
+        sourceContentHash: string;
+        sourceSummaryJson: string;
+      }>;
+    },
+    versionId: string,
+    structured: Record<string, unknown>,
+    changedFields: string[],
+  ): Promise<void> {
+    const seen = new Set<string>();
+    const data = current.sourceLinks.flatMap((link) => {
+      const blockId = changedFields.includes(link.fieldName)
+        ? this.firstBlockId(structured[link.fieldName])
+        : link.blockId;
+      if (!blockId) return [];
+      const key = `${link.fieldName}:${blockId}:${link.sourceType}:${link.sourceId}`;
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [
+        {
+          id: newId(),
+          snapshotId: link.snapshotId,
+          versionId,
+          fieldName: link.fieldName,
+          blockId,
+          sourceType: link.sourceType,
+          sourceId: link.sourceId,
+          taskId: link.taskId,
+          evidenceId: link.evidenceId,
+          sourceContentHash: link.sourceContentHash,
+          sourceSummaryJson: link.sourceSummaryJson,
+        },
+      ];
+    });
+    if (data.length > 0) await tx.reportSourceLink.createMany({ data });
+  }
+
+  private firstBlockId(value: unknown): string | null {
+    if (!Array.isArray(value)) return null;
+    const first: unknown = (value as unknown[])[0];
+    if (typeof first !== 'object' || first === null || !('id' in first)) return null;
+    return String(first.id);
+  }
+
+  private async invalidateConfirmation(
+    tx: Prisma.TransactionClient,
+    confirmation: { id: string; status: string } | null,
+    reason: string,
+  ): Promise<void> {
+    if (!confirmation || confirmation.status !== 'active') return;
+    await tx.weeklyReportConfirmation.update({
+      where: { id: confirmation.id },
+      data: { status: 'invalidated', invalidatedAt: new Date(), invalidationReason: reason },
+    });
+  }
+
+  private warningFacts(value: string) {
+    return this.parseArray(value).map((warning) => {
+      const object =
+        typeof warning === 'object' && warning !== null
+          ? (warning as Record<string, unknown>)
+          : { message: String(warning) };
+      return {
+        ...object,
+        id: requestHash(object),
+        code: typeof object.code === 'string' ? object.code : 'WEEKLY_REPORT_WARNING',
+        blocking: object.blocking === true,
+      };
+    });
+  }
+
+  private assertTemplateLengths(
+    fields: ReturnType<typeof fieldsFromVersion>,
+    mappings: unknown[],
+  ): void {
+    const violations = mappings.flatMap((mapping) => {
+      if (typeof mapping !== 'object' || mapping === null) return [];
+      const item = mapping as Record<string, unknown>;
+      const field = item.internalField;
+      const maxLength = item.maxLength;
+      if (
+        typeof field !== 'string' ||
+        !(field in fields) ||
+        typeof maxLength !== 'number' ||
+        fields[field as keyof typeof fields].length <= maxLength
+      ) {
+        return [];
+      }
+      return [{ field, maxLength, actualLength: fields[field as keyof typeof fields].length }];
+    });
+    if (violations.length > 0) {
+      throw new DomainError('WEEKLY_REPORT_TEMPLATE_FIELD_TOO_LONG', '周报字段超过钉钉模板限制', {
+        httpStatus: 422,
+        details: { violations },
+      });
+    }
+  }
+
+  private async verifyAttachments(
+    tx: Prisma.TransactionClient,
+    reportId: string,
+    attachmentFacts: unknown[],
+  ): Promise<void> {
+    const ids = attachmentFacts.flatMap((fact) =>
+      typeof fact === 'object' && fact !== null && 'id' in fact ? [String(fact.id)] : [],
+    );
+    if (ids.length !== attachmentFacts.length || new Set(ids).size !== ids.length) {
+      throw new DomainError('WEEKLY_REPORT_ATTACHMENT_METADATA_INVALID', '附件元数据结构无效', {
+        httpStatus: 422,
+      });
+    }
+    if (ids.length === 0) return;
+    const rows = await tx.weeklyReportAttachment.findMany({
+      where: { id: { in: ids }, reportId, status: 'available' },
+    });
+    if (rows.length !== ids.length) {
+      throw new DomainError(
+        'WEEKLY_REPORT_ATTACHMENT_UNAVAILABLE',
+        '存在已删除或不属于当前周报的附件',
+        {
+          httpStatus: 422,
+        },
+      );
+    }
+    for (const row of rows) {
+      let buffer: Buffer;
+      try {
+        buffer = await readFile(this.attachments.storedPath(reportId, row.storedName));
+      } catch {
+        throw new DomainError(
+          'WEEKLY_REPORT_ATTACHMENT_FILE_MISSING',
+          `附件文件不存在：${row.originalName}`,
+          {
+            httpStatus: 422,
+          },
+        );
+      }
+      const hash = createHash('sha256').update(buffer).digest('hex');
+      if (buffer.length !== row.sizeBytes || hash !== row.contentHash) {
+        throw new DomainError(
+          'WEEKLY_REPORT_ATTACHMENT_FILE_CHANGED',
+          `附件文件校验失败：${row.originalName}`,
+          {
+            httpStatus: 422,
+          },
+        );
+      }
+    }
+  }
+
+  private async verifyRecipientScope(
+    tx: Prisma.TransactionClient,
+    connectionId: string,
+    scope: Record<string, unknown>,
+    now: Date,
+  ): Promise<void> {
+    const recipients = Array.isArray(scope.recipients) ? scope.recipients : [];
+    if (scope.connectionId !== connectionId || recipients.length === 0) {
+      throw new DomainError(
+        'WEEKLY_REPORT_RECIPIENT_SCOPE_INVALID',
+        '确认前必须选择至少一个属于当前钉钉连接的有效收件人',
+        { httpStatus: 422 },
+      );
+    }
+    const validationIds = recipients.flatMap((recipient) =>
+      typeof recipient === 'object' && recipient !== null && 'validationId' in recipient
+        ? [String((recipient as { validationId: unknown }).validationId)]
+        : [],
+    );
+    if (
+      validationIds.length !== recipients.length ||
+      new Set(validationIds).size !== validationIds.length
+    ) {
+      throw new DomainError('WEEKLY_REPORT_RECIPIENT_SCOPE_INVALID', '收件人快照结构无效或重复', {
+        httpStatus: 422,
+      });
+    }
+    const rows = await tx.dingTalkRecipientValidation.findMany({
+      where: { id: { in: validationIds }, connectionId, available: true, expiresAt: { gt: now } },
+    });
+    if (rows.length !== validationIds.length) {
+      throw new DomainError(
+        'WEEKLY_REPORT_RECIPIENT_VALIDATION_EXPIRED',
+        '收件人校验快照已失效，请重新从钉钉验证接收范围',
+        { httpStatus: 422, suggestedAction: 'reconfirm' },
+      );
+    }
+    const factById = new Map(
+      recipients.map((recipient) => {
+        const object = recipient as Record<string, unknown>;
+        return [String(object.validationId), object] as const;
+      }),
+    );
+    for (const row of rows) {
+      const fact = factById.get(row.id);
+      if (!fact || fact.contentHash !== row.contentHash || fact.externalId !== row.externalId) {
+        throw new DomainError(
+          'WEEKLY_REPORT_RECIPIENT_FACT_CHANGED',
+          '收件人事实与保存版本不一致，请重新选择',
+          { httpStatus: 422 },
+        );
+      }
+    }
+  }
+
+  private serializeConfirmation(confirmation: {
+    id: string;
+    versionId: string;
+    reportAggregateVersion: number;
+    contentHash: string;
+    templateMappingVersionId: string;
+    warningAcknowledgementsJson: string;
+    recipientScopeHash: string;
+    attachmentsHash: string;
+    status: string;
+    confirmedBy: string;
+    confirmedAt: Date;
+    invalidatedAt: Date | null;
+    invalidationReason: string | null;
+  }) {
+    return {
+      id: confirmation.id,
+      versionId: confirmation.versionId,
+      reportAggregateVersion: confirmation.reportAggregateVersion,
+      contentHash: confirmation.contentHash,
+      templateMappingVersionId: confirmation.templateMappingVersionId,
+      warningAcknowledgements: JSON.parse(confirmation.warningAcknowledgementsJson) as unknown,
+      recipientScopeHash: confirmation.recipientScopeHash,
+      attachmentsHash: confirmation.attachmentsHash,
+      status: confirmation.status,
+      confirmedBy: confirmation.confirmedBy,
+      confirmedAt: confirmation.confirmedAt.toISOString(),
+      invalidatedAt: confirmation.invalidatedAt?.toISOString() ?? null,
+      invalidationReason: confirmation.invalidationReason,
+    };
+  }
+
+  private async completeIdempotency(
+    tx: Prisma.TransactionClient,
+    recordId: string,
+    response: unknown,
+  ): Promise<void> {
+    await tx.idempotencyRecord.update({
+      where: { id: recordId },
+      data: {
+        state: 'completed',
+        httpStatus: 200,
+        responseJson: JSON.stringify(response),
+        errorCode: null,
+      },
+    });
+  }
+
+  private throwVersionConflict(): never {
+    throw new DomainError(errorCodes.versionConflict, '周报发生并发修改，请刷新后重试', {
+      httpStatus: 409,
+      suggestedAction: 'refresh',
+    });
   }
 
   private async collectSources(
@@ -721,7 +1731,10 @@ export class WeeklyReportService {
       include: {
         currentVersion: true,
         confirmedVersion: true,
-        _count: { select: { versions: true, sourceSnapshots: true } },
+        currentConfirmation: true,
+        _count: {
+          select: { versions: true, sourceSnapshots: true, confirmations: true, attachments: true },
+        },
       },
     });
     if (!report) throw new DomainError(errorCodes.notFound, '周报不存在', { httpStatus: 404 });
@@ -729,6 +1742,9 @@ export class WeeklyReportService {
       ...this.serializeReportSummary(report),
       confirmedVersion: report.confirmedVersion
         ? this.serializeVersionSummary(report.confirmedVersion)
+        : null,
+      currentConfirmation: report.currentConfirmation
+        ? this.serializeConfirmation(report.currentConfirmation)
         : null,
       delivery: {
         log: report.logDeliveryState,
@@ -738,6 +1754,8 @@ export class WeeklyReportService {
           !['notified', 'skipped'].includes(report.robotDeliveryState),
       },
       sourceSnapshotCount: report._count.sourceSnapshots,
+      confirmationCount: report._count.confirmations,
+      attachmentCount: report._count.attachments,
     };
   }
 
@@ -839,9 +1857,11 @@ export class WeeklyReportService {
         other: version.otherText,
       },
       structuredFields: JSON.parse(version.fieldsJson) as unknown,
-      warnings: JSON.parse(version.warningsJson) as unknown,
+      warnings: this.warningFacts(version.warningsJson),
       attachments: JSON.parse(version.attachmentsJson) as unknown,
       recipientScope: JSON.parse(version.recipientScopeJson) as unknown,
+      templateMappingVersionId: version.templateMappingVersionId,
+      scheduleAt: version.scheduleAt?.toISOString() ?? null,
       sourceSnapshot: this.serializeSnapshot(version.sourceSnapshot),
       sourceLinks: version.sourceLinks.map((link) => ({
         id: link.id,
@@ -957,14 +1977,23 @@ export class WeeklyReportService {
     );
   }
 
-  private parseObject(value: string): Record<string, unknown> {
+  private parseObject(value: unknown): Record<string, unknown> {
     try {
-      const parsed = JSON.parse(value) as unknown;
+      const parsed = typeof value === 'string' ? (JSON.parse(value) as unknown) : value;
       return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>)
         : {};
     } catch {
       return {};
+    }
+  }
+
+  private parseArray(value: string): unknown[] {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
     }
   }
 

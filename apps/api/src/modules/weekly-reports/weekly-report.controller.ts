@@ -1,15 +1,45 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Query, Req } from '@nestjs/common';
-import { apiResponse } from '@auto-work/contracts';
-import type { FastifyRequest } from 'fastify';
 import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Headers,
+  HttpCode,
+  Param,
+  Post,
+  Put,
+  Query,
+  Req,
+} from '@nestjs/common';
+import { apiResponse, DomainError } from '@auto-work/contracts';
+import { requestHash } from '@auto-work/domain';
+import type { FastifyRequest } from 'fastify';
+import { LocalSecurityService } from '../../infrastructure/http/local-security.service.js';
+import { AuditService } from '../audit/audit.service.js';
+import { IdempotencyService } from '../idempotency/idempotency.service.js';
+import { SessionService } from '../session/session.service.js';
+import {
+  confirmWeeklyReportSchema,
+  editWeeklyReportSchema,
   generateWeeklyReportSchema,
   listWeeklyReportsQuerySchema,
+  restoreWeeklyReportVersionSchema,
 } from './weekly-report.schemas.js';
+import { WeeklyReportAttachmentService } from './weekly-report-attachment.service.js';
 import { WeeklyReportService } from './weekly-report.service.js';
+
+const maxAttachmentBytes = 8 * 1024 * 1024;
 
 @Controller('weekly-reports')
 export class WeeklyReportController {
-  public constructor(private readonly reports: WeeklyReportService) {}
+  public constructor(
+    private readonly reports: WeeklyReportService,
+    private readonly attachments: WeeklyReportAttachmentService,
+    private readonly idempotency: IdempotencyService,
+    private readonly audit: AuditService,
+    private readonly sessions: SessionService,
+    private readonly security: LocalSecurityService,
+  ) {}
 
   @Post('generate')
   @HttpCode(202)
@@ -52,5 +82,170 @@ export class WeeklyReportController {
       await this.reports.getVersion(id, versionId),
       request.autoWork.correlationId,
     );
+  }
+
+  @Put(':id')
+  public async edit(
+    @Param('id') id: string,
+    @Body() rawBody: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = editWeeklyReportSchema.parse(rawBody);
+    return this.mutate(`/api/v1/weekly-reports/${id}`, key, { id, ...input }, request, (recordId) =>
+      this.reports.edit(id, input, this.context(request, recordId)),
+    );
+  }
+
+  @Post(':id/versions/:versionId/restore')
+  public async restore(
+    @Param('id') id: string,
+    @Param('versionId') versionId: string,
+    @Body() rawBody: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = restoreWeeklyReportVersionSchema.parse(rawBody);
+    return this.mutate(
+      `/api/v1/weekly-reports/${id}/versions/${versionId}/restore`,
+      key,
+      { id, versionId, ...input },
+      request,
+      (recordId) => this.reports.restore(id, versionId, input, this.context(request, recordId)),
+    );
+  }
+
+  @Post(':id/confirm')
+  public async confirm(
+    @Param('id') id: string,
+    @Body() rawBody: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = confirmWeeklyReportSchema.parse(rawBody);
+    return this.mutate(
+      `/api/v1/weekly-reports/${id}/confirm`,
+      key,
+      { id, ...input },
+      request,
+      (recordId) => this.reports.confirm(id, input, this.context(request, recordId)),
+    );
+  }
+
+  @Get(':id/attachments')
+  public async listAttachments(@Param('id') id: string, @Req() request: FastifyRequest) {
+    return apiResponse(await this.attachments.list(id), request.autoWork.correlationId);
+  }
+
+  @Post(':id/attachments')
+  public async uploadAttachment(@Param('id') id: string, @Req() request: FastifyRequest) {
+    if (!request.isMultipart()) {
+      throw new DomainError(
+        'WEEKLY_REPORT_ATTACHMENT_MULTIPART_REQUIRED',
+        '请使用 multipart/form-data 上传周报附件',
+        { httpStatus: 415 },
+      );
+    }
+    let part;
+    let buffer: Buffer;
+    try {
+      part = await request.file({
+        limits: { files: 1, fileSize: maxAttachmentBytes, fields: 0, parts: 1 },
+      });
+      if (!part) {
+        throw new DomainError('WEEKLY_REPORT_ATTACHMENT_REQUIRED', '必须上传一个附件', {
+          httpStatus: 422,
+        });
+      }
+      buffer = await part.toBuffer();
+    } catch (error) {
+      if (error instanceof DomainError) throw error;
+      throw new DomainError(
+        'WEEKLY_REPORT_ATTACHMENT_UPLOAD_REJECTED',
+        '附件超过 8 MiB 或 multipart 结构无效',
+        { httpStatus: 413 },
+      );
+    }
+    const attachment = await this.attachments.upload(
+      id,
+      { buffer, fileName: part.filename, mimeType: part.mimetype },
+      {
+        correlationId: request.autoWork.correlationId,
+        sessionId: request.autoWork.sessionId,
+      },
+    );
+    return apiResponse(attachment, request.autoWork.correlationId);
+  }
+
+  @Delete(':id/attachments/:attachmentId')
+  public async removeAttachment(
+    @Param('id') id: string,
+    @Param('attachmentId') attachmentId: string,
+    @Req() request: FastifyRequest,
+  ) {
+    return apiResponse(
+      await this.attachments.remove(id, attachmentId, {
+        correlationId: request.autoWork.correlationId,
+        sessionId: request.autoWork.sessionId,
+      }),
+      request.autoWork.correlationId,
+    );
+  }
+
+  private async mutate(
+    route: string,
+    key: string | undefined,
+    input: unknown,
+    request: FastifyRequest,
+    operation: (recordId: string) => Promise<unknown>,
+  ) {
+    if (!key || !/^[A-Za-z0-9._:-]{8,200}$/u.test(key)) {
+      throw new DomainError(
+        'IDEMPOTENCY_KEY_REQUIRED',
+        '周报版本与确认写操作必须提供格式有效的 Idempotency-Key',
+        { httpStatus: 422 },
+      );
+    }
+    const started = await this.idempotency.start({
+      actorId: this.sessions.currentProfileId,
+      route,
+      key,
+      requestHash: requestHash(input),
+    });
+    if (started.kind === 'replay') {
+      return apiResponse(started.response, request.autoWork.correlationId);
+    }
+    if (started.kind === 'processing') {
+      throw new DomainError('IDEMPOTENCY_REQUEST_PROCESSING', '相同周报请求正在处理', {
+        httpStatus: 409,
+        retryable: true,
+      });
+    }
+    try {
+      return apiResponse(await operation(started.recordId), request.autoWork.correlationId);
+    } catch (error) {
+      const errorCode = error instanceof DomainError ? error.code : 'WEEKLY_REPORT_MUTATION_FAILED';
+      await this.idempotency.fail(started.recordId, errorCode);
+      await this.audit.record({
+        actorId: this.sessions.currentProfileId,
+        action: 'weekly_report.mutation_rejected',
+        targetType: 'weekly_report_mutation',
+        targetId: route,
+        correlationId: request.autoWork.correlationId,
+        outcome: error instanceof DomainError ? 'rejected' : 'failed',
+        after: { requestHash: requestHash(input) },
+        errorCode,
+        clientSessionHash: this.security.sessionHash(request.autoWork.sessionId),
+      });
+      throw error;
+    }
+  }
+
+  private context(request: FastifyRequest, idempotencyRecordId: string) {
+    return {
+      correlationId: request.autoWork.correlationId,
+      sessionId: request.autoWork.sessionId,
+      idempotencyRecordId,
+    };
   }
 }

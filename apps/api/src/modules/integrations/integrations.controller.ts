@@ -3,6 +3,8 @@ import { apiResponse } from '@auto-work/contracts';
 import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { IntegrationsService } from './integrations.service.js';
+import { DingTalkTemplateMappingService } from './dingtalk-template-mapping.service.js';
+import { saveDingTalkTemplateMappingSchema } from './dingtalk-template-mapping.schemas.js';
 
 const integrationTypeSchema = z.enum(['gitlab', 'jira', 'dingtalk_log', 'dingtalk_robot', 'ai']);
 const credentialSchema = z.record(z.string().min(1).max(100), z.string().min(1).max(4_096));
@@ -28,7 +30,10 @@ const versionSchema = z.object({ version: z.number().int().positive() }).strict(
 
 @Controller('integrations')
 export class IntegrationsController {
-  public constructor(private readonly integrations: IntegrationsService) {}
+  public constructor(
+    private readonly integrations: IntegrationsService,
+    private readonly dingtalkMappings: DingTalkTemplateMappingService,
+  ) {}
 
   @Get()
   public async list(@Req() request: FastifyRequest) {
@@ -61,6 +66,36 @@ export class IntegrationsController {
     return apiResponse(
       { operationId: job.id, status: job.status, statusUrl: `/api/v1/operations/${job.id}` },
       request.autoWork.correlationId,
+    );
+  }
+
+  @Get(':id/dingtalk/template-mappings')
+  public async listDingTalkTemplateMappings(
+    @Param('id') id: string,
+    @Req() request: FastifyRequest,
+  ) {
+    return apiResponse(await this.dingtalkMappings.list(id), request.autoWork.correlationId);
+  }
+
+  @Post(':id/dingtalk/template-mappings')
+  public async saveDingTalkTemplateMapping(
+    @Param('id') id: string,
+    @Body() rawBody: unknown,
+    @Req() request: FastifyRequest,
+  ) {
+    const body = saveDingTalkTemplateMappingSchema.parse(rawBody);
+    return apiResponse(
+      await this.dingtalkMappings.save(id, body, this.context(request)),
+      request.autoWork.correlationId,
+    );
+  }
+
+  @Get(':id/dingtalk/recipients')
+  public async listDingTalkRecipients(@Param('id') id: string, @Req() request: FastifyRequest) {
+    return apiResponse(
+      await this.dingtalkMappings.listRecipientCache(id),
+      request.autoWork.correlationId,
+      { asOf: new Date().toISOString() },
     );
   }
 

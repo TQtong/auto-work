@@ -75,5 +75,77 @@ export const listWeeklyReportsQuerySchema = z
   })
   .strict();
 
+const editableFieldsSchema = z
+  .object({
+    reportDate: businessDateSchema.optional(),
+    recentGoals: z.string().max(50_000).optional(),
+    weeklyWork: z.string().max(50_000).optional(),
+    nextWeekPlans: z.string().max(50_000).optional(),
+    problems: z.string().max(50_000).optional(),
+    other: z.string().max(50_000).optional(),
+  })
+  .strict();
+
+export const editWeeklyReportSchema = z
+  .object({
+    baseVersionId: z.string().trim().min(1).max(100),
+    reportVersion: z.number().int().positive(),
+    fields: editableFieldsSchema.default({}),
+    attachmentIds: z.array(z.string().trim().min(1).max(100)).max(20).optional(),
+    recipientValidationIds: z.array(z.string().trim().min(1).max(100)).max(200).optional(),
+    templateMappingVersionId: z.string().trim().min(1).max(100).nullable().optional(),
+    scheduleAt: z.iso.datetime({ offset: true }).nullable().optional(),
+    changeReason: z.string().trim().min(1).max(500),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      Object.keys(value.fields).length === 0 &&
+      value.attachmentIds === undefined &&
+      value.recipientValidationIds === undefined &&
+      value.templateMappingVersionId === undefined &&
+      value.scheduleAt === undefined
+    ) {
+      context.addIssue({ code: 'custom', message: '至少修改一个正文或提交元数据字段' });
+    }
+    if (value.attachmentIds && new Set(value.attachmentIds).size !== value.attachmentIds.length) {
+      context.addIssue({ code: 'custom', message: '附件 ID 不得重复' });
+    }
+    if (
+      value.recipientValidationIds &&
+      new Set(value.recipientValidationIds).size !== value.recipientValidationIds.length
+    ) {
+      context.addIssue({ code: 'custom', message: '收件人校验快照 ID 不得重复' });
+    }
+  });
+
+export const restoreWeeklyReportVersionSchema = z
+  .object({
+    baseVersionId: z.string().trim().min(1).max(100),
+    reportVersion: z.number().int().positive(),
+    changeReason: z.string().trim().min(1).max(500),
+  })
+  .strict();
+
+export const confirmWeeklyReportSchema = z
+  .object({
+    versionId: z.string().trim().min(1).max(100),
+    reportVersion: z.number().int().positive(),
+    templateMappingVersionId: z.string().trim().min(1).max(100),
+    acknowledgedWarningIds: z
+      .array(z.string().regex(/^[a-f0-9]{64}$/u))
+      .max(200)
+      .default([]),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.acknowledgedWarningIds).size !== value.acknowledgedWarningIds.length) {
+      context.addIssue({ code: 'custom', message: 'warning 知悉 ID 不得重复' });
+    }
+  });
+
 export type GenerateWeeklyReportInput = z.infer<typeof generateWeeklyReportSchema>;
 export type ListWeeklyReportsQuery = z.infer<typeof listWeeklyReportsQuerySchema>;
+export type EditWeeklyReportInput = z.infer<typeof editWeeklyReportSchema>;
+export type RestoreWeeklyReportVersionInput = z.infer<typeof restoreWeeklyReportVersionSchema>;
+export type ConfirmWeeklyReportInput = z.infer<typeof confirmWeeklyReportSchema>;
