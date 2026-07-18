@@ -36,6 +36,7 @@ model UserProfile {
   createdAt             DateTime               @default(now()) @map("created_at")
   updatedAt             DateTime               @updatedAt @map("updated_at")
   aliases               IdentityAlias[]
+  aiGenerations         AiGeneration[]
   reportSourceSnapshots ReportSourceSnapshot[]
   weeklyReports         WeeklyReport[]
 
@@ -249,6 +250,7 @@ model IntegrationConnection {
   jiraSyncRuns               JiraSyncRun[]
   dingtalkTemplateMapping    DingTalkTemplateMapping?
   dingtalkRecipientSnapshots DingTalkRecipientValidation[]
+  aiGenerations              AiGeneration[]
 
   @@index([type, enabled, status])
   @@map("integration_connection")
@@ -856,6 +858,7 @@ model WeeklyReport {
   sourceSnapshots          ReportSourceSnapshot[]
   confirmations            WeeklyReportConfirmation[] @relation("WeeklyReportConfirmations")
   attachments              WeeklyReportAttachment[]
+  aiGenerations            AiGeneration[]
 
   @@index([ownerProfileId, periodStart, periodEnd])
   @@index([status, updatedAt])
@@ -894,11 +897,66 @@ model WeeklyReportVersion {
   confirmedForReports      WeeklyReport[]             @relation("WeeklyReportConfirmedVersion")
   sourceLinks              ReportSourceLink[]
   confirmations            WeeklyReportConfirmation[]
+  aiGeneration             AiGeneration?              @relation("AiGeneratedVersions", fields: [aiGenerationId], references: [id], onDelete: Restrict)
+  baseForAiGenerations     AiGeneration[]             @relation("AiGenerationBaseVersion")
+  adoptedForAiGenerations  AiGeneration[]             @relation("AiGenerationAdoptedVersion")
 
   @@unique([reportId, versionNo])
   @@index([reportId, createdAt])
   @@index([sourceSnapshotId])
   @@map("weekly_report_version")
+}
+
+/// AI 生成记录只保存白名单输入的摘要/哈希与供应商输出，不保存凭证、源码、diff 或附件正文。
+/// 成功生成的建议版本仍是不可变周报版本；是否采纳由独立状态显式记录。
+model AiGeneration {
+  id                        String                @id
+  ownerProfileId            String                @map("owner_profile_id")
+  providerConnectionId      String                @map("provider_connection_id")
+  providerConfigVersion     Int                   @map("provider_config_version")
+  reportId                  String?               @map("report_id")
+  baseVersionId             String?               @map("base_version_id")
+  baseReportVersion         Int?                  @map("base_report_version")
+  adoptedVersionId          String?               @unique @map("adopted_version_id")
+  purpose                   String
+  promptTemplateVersion     String                @map("prompt_template_version")
+  sanitizationPolicyVersion String                @map("sanitization_policy_version")
+  retentionMode             String                @default("hash_only") @map("retention_mode")
+  requestedFieldsJson       String                @default("[]") @map("requested_fields_json")
+  inputRefsJson             String                @default("[]") @map("input_refs_json")
+  inputCategoriesJson       String                @default("[]") @map("input_categories_json")
+  removedCategoriesJson     String                @default("[]") @map("removed_categories_json")
+  sanitizedInputHash        String?               @map("sanitized_input_hash")
+  sanitizedInputJson        String?               @map("sanitized_input_json")
+  rawOutput                 String?               @map("raw_output")
+  parsedOutputJson          String?               @map("parsed_output_json")
+  protocol                  String
+  model                     String
+  providerRequestId         String?               @map("provider_request_id")
+  stopReason                String?               @map("stop_reason")
+  usageJson                 String                @default("{}") @map("usage_json")
+  durationMs                Int?                  @map("duration_ms")
+  status                    String
+  errorCode                 String?               @map("error_code")
+  securityBlocksJson        String                @default("[]") @map("security_blocks_json")
+  adoptionStatus            String                @default("not_applicable") @map("adoption_status")
+  decisionReason            String?               @map("decision_reason")
+  decidedAt                 DateTime?             @map("decided_at")
+  createdBy                 String                @map("created_by")
+  createdAt                 DateTime              @default(now()) @map("created_at")
+  completedAt               DateTime?             @map("completed_at")
+  ownerProfile              UserProfile           @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  providerConnection        IntegrationConnection @relation(fields: [providerConnectionId], references: [id], onDelete: Restrict)
+  report                    WeeklyReport?         @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  baseVersion               WeeklyReportVersion?  @relation("AiGenerationBaseVersion", fields: [baseVersionId], references: [id], onDelete: Restrict)
+  adoptedVersion            WeeklyReportVersion?  @relation("AiGenerationAdoptedVersion", fields: [adoptedVersionId], references: [id], onDelete: Restrict)
+  generatedVersions         WeeklyReportVersion[] @relation("AiGeneratedVersions")
+
+  @@index([ownerProfileId, createdAt])
+  @@index([reportId, createdAt])
+  @@index([providerConnectionId, providerConfigVersion])
+  @@index([status, adoptionStatus])
+  @@map("ai_generation")
 }
 
 model DingTalkTemplateMapping {
