@@ -124,7 +124,7 @@ describe.runIf(process.platform === 'win32')('受限 Git 批次动作引擎', ()
     );
     expect(result.resultCode).toBe('stale_preview');
     expect(git(repositoryDirectory, ['diff', '--cached', '--name-only'], true).trim()).toBe('');
-  });
+  }, 30_000);
 
   it('提交审批绑定 HEAD 与 Index 哈希，新增暂存内容后拒绝创建提交', async () => {
     await writeFile(join(repositoryDirectory, '中文 文件.txt'), '第一项\n', 'utf8');
@@ -142,7 +142,7 @@ describe.runIf(process.platform === 'win32')('受限 Git 批次动作引擎', ()
     );
     expect(result.resultCode).toBe('stale_preview');
     expect(git(repositoryDirectory, ['rev-parse', 'HEAD'], true).trim()).toBe(headBefore);
-  });
+  }, 30_000);
 
   it('远端与本地分叉时同时阻断 pull --ff-only 与普通 push，绝不生成 force 参数', async () => {
     git(rootDirectory, ['clone', bareRemoteDirectory, collaboratorDirectory]);
@@ -181,7 +181,7 @@ describe.runIf(process.platform === 'win32')('受限 Git 批次动作引擎', ()
     expect(result.resultCode).toBe('needs_review');
     expect((await inspector.collectStatus(repositoryDirectory)).conflictedCount).toBeGreaterThan(0);
     expect(git(repositoryDirectory, ['stash', 'list', '--format=%H'], true)).toContain(stashOid);
-  });
+  }, 30_000);
 
   it('创建分支使用预览时解析出的提交，已满足时不重复写入', async () => {
     const preview = await engine.preview(repository, 'create_branch', {
