@@ -8,6 +8,7 @@ import { WeeklyReportAiService } from './weekly-report-ai.service.js';
 import { WeeklyReportDeliveryHandler } from './weekly-report-delivery.handler.js';
 import { WeeklyReportDeliveryRecoveryService } from './weekly-report-delivery-recovery.service.js';
 import { WeeklyReportDeliveryService } from './weekly-report-delivery.service.js';
+import { WeeklyReportExportCopyService } from './weekly-report-export-copy.service.js';
 import { WeeklyReportNotificationLedgerService } from './weekly-report-notification-ledger.service.js';
 import { WeeklyReportNotificationHandler } from './weekly-report-notification.handler.js';
 import { WeeklyReportNotificationService } from './weekly-report-notification.service.js';
@@ -22,6 +23,7 @@ import { WeeklyReportReminderSchedulerService } from './weekly-report-reminder-s
     WeeklyReportAttachmentService,
     WeeklyReportAiService,
     WeeklyReportDeliveryService,
+    WeeklyReportExportCopyService,
     WeeklyReportDeliveryRecoveryService,
     WeeklyReportNotificationLedgerService,
     WeeklyReportNotificationHandler,

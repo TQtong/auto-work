@@ -221,6 +221,13 @@ export const submitWeeklyReportLogSchema = z
   })
   .strict();
 
+export const exportWeeklyReportCopySchema = z
+  .object({
+    versionId: z.string().trim().min(1).max(100),
+    reportVersion: z.number().int().positive(),
+  })
+  .strict();
+
 export const notifyWeeklyReportGroupSchema = z
   .object({
     confirmationId: z.string().trim().min(1).max(100),

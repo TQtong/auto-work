@@ -2,10 +2,12 @@ import {
   CheckCircleOutlined,
   CloudSyncOutlined,
   DiffOutlined,
+  DownloadOutlined,
   ExclamationCircleOutlined,
   FileAddOutlined,
   HistoryOutlined,
   PaperClipOutlined,
+  CopyOutlined,
   RedoOutlined,
   ReloadOutlined,
   RobotOutlined,
@@ -53,6 +55,7 @@ import type {
   Integration,
   WeeklyReport,
   WeeklyReportDeliveryIntent,
+  WeeklyReportExportCopy,
   WeeklyReportRobotNotification,
   WeeklyAiGeneration,
   WeeklyAiGenerationList,
@@ -218,6 +221,7 @@ export function WeeklyReportsPage() {
   const [selectedSchedule, setSelectedSchedule] = useState<Dayjs | null>(null);
   const [selectedRobotConnectionId, setSelectedRobotConnectionId] = useState<string | null>(null);
   const [riskNotificationOpen, setRiskNotificationOpen] = useState(false);
+  const [exportCopyPreview, setExportCopyPreview] = useState<WeeklyReportExportCopy | null>(null);
   const [selectedRiskWarningIds, setSelectedRiskWarningIds] = useState<string[]>([]);
   const [manualResolutionIntent, setManualResolutionIntent] =
     useState<WeeklyReportDeliveryIntent | null>(null);
@@ -545,6 +549,19 @@ export function WeeklyReportsPage() {
             : '正式日志交付已进入受控队列',
       );
     },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+
+  const exportCopyMutation = useMutation({
+    mutationFn: (input: { reportId: string; versionId: string; reportVersion: number }) =>
+      apiRequest<WeeklyReportExportCopy>(`/api/v1/weekly-reports/${input.reportId}/export-copy`, {
+        method: 'POST',
+        body: JSON.stringify({
+          versionId: input.versionId,
+          reportVersion: input.reportVersion,
+        }),
+      }),
+    onSuccess: (response) => setExportCopyPreview(response.data),
     onError: (error: Error) => void messageApi.error(error.message),
   });
 
@@ -1500,7 +1517,7 @@ export function WeeklyReportsPage() {
                   type="warning"
                   showIcon
                   message="当前确认包含附件，正式日志提交已阻断"
-                  description="当前已批准的钉钉正式日志适配器不能可靠上传附件。请开始新版本、移除附件并重新确认，或使用后续降级导出。"
+                  description="当前已批准的钉钉正式日志适配器不能可靠上传附件。请开始新版本、移除附件并重新确认，或使用下方复制/附件导出人工兜底。"
                 />
               )}
               {logResultUnknown && (
@@ -1601,6 +1618,29 @@ export function WeeklyReportsPage() {
                 >
                   发送严重风险提醒
                 </Button>
+                <Tooltip
+                  title={
+                    dirty || autosaveState === 'saving'
+                      ? '请先保存当前编辑，导出只读取服务端不可变版本'
+                      : undefined
+                  }
+                >
+                  <Button
+                    icon={<CopyOutlined />}
+                    disabled={dirty || autosaveState === 'saving'}
+                    loading={exportCopyMutation.isPending}
+                    onClick={() => {
+                      if (!report || !version) return;
+                      exportCopyMutation.mutate({
+                        reportId: report.id,
+                        versionId: version.id,
+                        reportVersion: report.version,
+                      });
+                    }}
+                  >
+                    复制/导出人工兜底
+                  </Button>
+                </Tooltip>
               </Space>
 
               {deliveryItems.length === 0 ? (
@@ -2236,6 +2276,81 @@ export function WeeklyReportsPage() {
       ) : (
         <Card loading />
       )}
+
+      <Modal
+        title="六字段复制与附件导出"
+        width={920}
+        open={Boolean(exportCopyPreview)}
+        footer={
+          exportCopyPreview
+            ? [
+                <Button key="close" onClick={() => setExportCopyPreview(null)}>
+                  关闭
+                </Button>,
+                <Button
+                  key="copy"
+                  icon={<CopyOutlined />}
+                  onClick={() => {
+                    void copyToClipboard(exportCopyPreview.copyText).then((copied) => {
+                      void (copied
+                        ? messageApi.success('六字段模板文本已复制；仍需在钉钉人工提交')
+                        : messageApi.error('浏览器拒绝剪贴板访问，请在预览框中手工复制'));
+                    });
+                  }}
+                >
+                  复制模板文本
+                </Button>,
+                <Button
+                  key="download"
+                  type="primary"
+                  icon={<DownloadOutlined />}
+                  onClick={() => downloadBase64Attachment(exportCopyPreview.attachment)}
+                >
+                  导出 UTF-8 附件
+                </Button>,
+              ]
+            : null
+        }
+        onCancel={() => setExportCopyPreview(null)}
+      >
+        {exportCopyPreview && (
+          <Space direction="vertical" size={14} style={{ width: '100%' }}>
+            <Alert
+              type="warning"
+              showIcon
+              message="未正式提交"
+              description="本次操作只生成供人工复制或上传的本地材料；不会调用钉钉日志、机器人或网页自动化，也不能作为正式提交成功证明。"
+            />
+            <Descriptions size="small" bordered column={{ xs: 1, md: 2 }}>
+              <Descriptions.Item label="冻结版本">
+                v{exportCopyPreview.versionNo} · {exportCopyPreview.contentHash.slice(0, 16)}…
+              </Descriptions.Item>
+              <Descriptions.Item label="模板字段来源">
+                {exportCopyPreview.mappingSource === 'frozen_mapping'
+                  ? '冻结钉钉模板映射'
+                  : '标准六字段降级映射'}
+              </Descriptions.Item>
+              <Descriptions.Item label="当前正式日志事实">
+                {deliveryStatusLabel(exportCopyPreview.formalLogState)}
+              </Descriptions.Item>
+              <Descriptions.Item label="附件 SHA-256">
+                <Typography.Text code copyable>
+                  {exportCopyPreview.attachment.sha256}
+                </Typography.Text>
+              </Descriptions.Item>
+            </Descriptions>
+            {exportCopyPreview.warnings.map((warning) => (
+              <Alert key={warning} type="warning" showIcon message={warning} />
+            ))}
+            <Input.TextArea
+              readOnly
+              rows={22}
+              value={exportCopyPreview.copyText}
+              aria-label="未正式提交的六字段模板文本预览"
+            />
+          </Space>
+        )}
+      </Modal>
 
       <Modal
         title="人工裁决钉钉交付结果"
@@ -3173,6 +3288,39 @@ function editorFields(values: EditorValues): WeeklyReportVersion['fields'] {
 
 function idempotencyKey(prefix: string): string {
   return `${prefix}:${crypto.randomUUID()}`;
+}
+
+async function copyToClipboard(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    // 兼容禁用 Clipboard API 的受限浏览器；临时文本框只存在于本次用户点击期间。
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.append(textarea);
+    textarea.select();
+    try {
+      return document.execCommand('copy');
+    } finally {
+      textarea.remove();
+    }
+  }
+}
+
+function downloadBase64Attachment(attachment: WeeklyReportExportCopy['attachment']): void {
+  const binary = atob(attachment.contentBase64);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const url = URL.createObjectURL(new Blob([bytes], { type: attachment.mimeType }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = attachment.fileName;
+  anchor.click();
+  // 下载启动后再回收对象 URL，避免长期保留完整周报正文的浏览器内存副本。
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function statusLabel(status: WeeklyReport['status']): string {

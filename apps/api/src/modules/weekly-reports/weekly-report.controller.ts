@@ -23,6 +23,7 @@ import {
   confirmWeeklyReportSchema,
   createWeeklyAiSuggestionSchema,
   editWeeklyReportSchema,
+  exportWeeklyReportCopySchema,
   generateWeeklyReportSchema,
   listWeeklyReportsQuerySchema,
   notifyWeeklyReportGroupSchema,
@@ -39,6 +40,7 @@ import {
 import { WeeklyReportAttachmentService } from './weekly-report-attachment.service.js';
 import { WeeklyReportAiService } from './weekly-report-ai.service.js';
 import { WeeklyReportDeliveryService } from './weekly-report-delivery.service.js';
+import { WeeklyReportExportCopyService } from './weekly-report-export-copy.service.js';
 import { WeeklyReportDeliveryRecoveryService } from './weekly-report-delivery-recovery.service.js';
 import { WeeklyReportNotificationService } from './weekly-report-notification.service.js';
 import { WeeklyReportReminderPolicyService } from './weekly-report-reminder-policy.service.js';
@@ -53,6 +55,7 @@ export class WeeklyReportController {
     private readonly ai: WeeklyReportAiService,
     private readonly attachments: WeeklyReportAttachmentService,
     private readonly delivery: WeeklyReportDeliveryService,
+    private readonly exportCopyService: WeeklyReportExportCopyService,
     private readonly deliveryRecovery: WeeklyReportDeliveryRecoveryService,
     private readonly notifications: WeeklyReportNotificationService,
     private readonly reminderPolicy: WeeklyReportReminderPolicyService,
@@ -280,6 +283,22 @@ export class WeeklyReportController {
       { id, ...input },
       request,
       (recordId) => this.delivery.submitLog(id, input, this.context(request, recordId)),
+    );
+  }
+
+  @Post(':id/export-copy')
+  public async exportCopy(
+    @Param('id') id: string,
+    @Body() rawBody: unknown,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = exportWeeklyReportCopySchema.parse(rawBody);
+    return apiResponse(
+      await this.exportCopyService.generate(id, input, {
+        correlationId: request.autoWork.correlationId,
+        sessionId: request.autoWork.sessionId,
+      }),
+      request.autoWork.correlationId,
     );
   }
 

@@ -37,7 +37,7 @@
 | 04C3b3a  | 预约正式提交显式批准、准确调度与失效取消门禁      | [阶段四 C3b3a 实现与验证](./phase-4c3b3a-scheduled-delivery-guard.md)        | verified    |
 | 04C3b3b1 | 提醒策略、工作周、Asia/Shanghai 计划内核与设置页  | [阶段四 C3b3b1 实现与验证](./phase-4c3b3b1-reminder-policy-core.md)          | verified    |
 | 04C3b3b2 | 提醒滚动计划、休眠补发与超时 skipped              | [阶段四 C3b3b2 实现与验证](./phase-4c3b3b2-reminder-scheduler.md)            | verified    |
-| 04C3b3c  | 六字段复制与附件导出降级                          | 待提交                                                                       | planned     |
+| 04C3b3c  | 六字段复制与附件导出降级                          | [阶段四 C3b3c 实现与验证](./phase-4c3b3c-export-copy-fallback.md)            | verified    |
 | 05       | 季度绩效、导出、运维与发布门禁                    | 待提交                                                                       | planned     |
 
 每次增量必须同步更新本表，并在 PR 中保留对应提交、验证命令和人工检查结果。

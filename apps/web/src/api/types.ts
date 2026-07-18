@@ -933,6 +933,38 @@ export interface WeeklyReportVersion extends WeeklyReportVersionSummary {
   createdBy: string;
 }
 
+export interface WeeklyReportExportCopy {
+  reportId: string;
+  versionId: string;
+  versionNo: number;
+  reportVersion: number;
+  contentHash: string;
+  periodStart: string;
+  periodEnd: string;
+  templateName: string;
+  templateMappingVersionId: string | null;
+  mappingSource: 'frozen_mapping' | 'canonical_fallback';
+  submitted: false;
+  formalLogState: string;
+  generatedAt: string;
+  warnings: string[];
+  fields: Array<{
+    internalField: keyof WeeklyReportVersion['fields'];
+    label: string;
+    order: number;
+    content: string;
+  }>;
+  copyText: string;
+  attachment: {
+    fileName: string;
+    mimeType: 'text/plain;charset=utf-8';
+    encoding: 'base64';
+    contentBase64: string;
+    sizeBytes: number;
+    sha256: string;
+  };
+}
+
 export interface WeeklyAiGeneration {
   id: string;
   reportId: string;
