@@ -132,9 +132,29 @@ export interface Backup {
   sha256: string | null;
   sizeBytes: string | null;
   status: string;
+  schemaChecksum: string | null;
   verifiedAt: string | null;
   errorCode: string | null;
   createdAt: string;
+}
+
+export interface BackupRestorePreflight {
+  artifactId: string;
+  fileName: string | null;
+  status: string;
+  sha256: string | null;
+  schemaChecksum: string | null;
+  currentSchemaChecksum: string | null;
+  compatible: boolean;
+  confirmationText: string | null;
+  pendingRestore: PendingRestore | null;
+}
+
+export interface PendingRestore {
+  restoreId: string;
+  artifactId: string;
+  requestedAt: string;
+  restartRequired: true;
 }
 
 export interface DiagnosticFacts {

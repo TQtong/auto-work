@@ -11,7 +11,9 @@ import {
   Card,
   Checkbox,
   Descriptions,
+  Input,
   InputNumber,
+  Modal,
   Progress,
   Space,
   Statistic,
@@ -25,10 +27,12 @@ import { apiDownload, apiRequest } from '../api/client.js';
 import type {
   AuditEvent,
   Backup,
+  BackupRestorePreflight,
   DiagnosticBundle,
   DiagnosticBundlePreview,
   DiagnosticFacts,
   Job,
+  PendingRestore,
   RetentionPolicy,
   RetentionPreview,
   RetentionResult,
@@ -520,6 +524,9 @@ function AuditPanel() {
 function BackupPanel() {
   const queryClient = useQueryClient();
   const [messageApi, holder] = message.useMessage();
+  const [restorePreflight, setRestorePreflight] = useState<BackupRestorePreflight | null>(null);
+  const [restoreText, setRestoreText] = useState('');
+  const [restoreAcknowledged, setRestoreAcknowledged] = useState(false);
   const query = useQuery({
     queryKey: ['backups'],
     queryFn: () => apiRequest<Backup[]>('/api/v1/backups'),
@@ -535,6 +542,49 @@ function BackupPanel() {
       await queryClient.invalidateQueries({ queryKey: ['backups'] });
       await queryClient.invalidateQueries({ queryKey: ['jobs'] });
       void messageApi.success('备份作业已进入持久化队列');
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+  const pendingRestore = useQuery({
+    queryKey: ['pending-restore'],
+    queryFn: () => apiRequest<PendingRestore | null>('/api/v1/maintenance/pending-restore'),
+    refetchInterval: 2_000,
+  });
+  const loadRestorePreflight = useMutation({
+    mutationFn: (id: string) =>
+      apiRequest<BackupRestorePreflight>(`/api/v1/backups/${id}/restore-preflight`),
+    onSuccess: (response) => {
+      setRestorePreflight(response.data);
+      setRestoreText('');
+      setRestoreAcknowledged(false);
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+  const prepareRestore = useMutation({
+    mutationFn: () => {
+      if (!restorePreflight?.sha256) throw new Error('恢复预检缺少备份哈希');
+      return apiRequest(`/api/v1/backups/${restorePreflight.artifactId}/restore`, {
+        method: 'POST',
+        body: JSON.stringify({
+          expectedSha256: restorePreflight.sha256,
+          confirmationText: restoreText,
+          acknowledgedRestart: true,
+        }),
+      });
+    },
+    onSuccess: async () => {
+      setRestorePreflight(null);
+      await queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      await queryClient.invalidateQueries({ queryKey: ['pending-restore'] });
+      void messageApi.success('恢复准备作业已排队；完成后必须重启应用才会原子切换数据库');
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+  const cancelRestore = useMutation({
+    mutationFn: () => apiRequest('/api/v1/maintenance/pending-restore', { method: 'DELETE' }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['pending-restore'] });
+      void messageApi.success('待恢复清单已取消；备份文件和安全备份均保留');
     },
     onError: (error: Error) => void messageApi.error(error.message),
   });
@@ -558,6 +608,30 @@ function BackupPanel() {
       }
     >
       {holder}
+      {pendingRestore.data?.data ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="恢复已准备完成，等待重启应用"
+          description={
+            <Space direction="vertical" size={6}>
+              <Typography.Text>
+                恢复 ID {pendingRestore.data.data.restoreId}；请求时间{' '}
+                {new Date(pendingRestore.data.data.requestedAt).toLocaleString()}
+                。下次启动会在数据库连接前校验并原子切换。
+              </Typography.Text>
+              <Button
+                danger
+                size="small"
+                loading={cancelRestore.isPending}
+                onClick={() => cancelRestore.mutate()}
+              >
+                重启前取消恢复
+              </Button>
+            </Space>
+          }
+        />
+      ) : null}
       <Typography.Paragraph type="secondary">
         使用 SQLite VACUUM INTO 生成一致快照；校验同时核对 SHA-256 和隔离数据库
         quick_check，不复制活动 WAL 文件组合。
@@ -590,25 +664,89 @@ function BackupPanel() {
               value ? <Typography.Text code>{value.slice(0, 16)}…</Typography.Text> : '—',
           },
           {
+            title: 'Schema',
+            dataIndex: 'schemaChecksum',
+            render: (value: string | null) =>
+              value ? <Typography.Text code>{value}</Typography.Text> : '未校验',
+          },
+          {
             title: '生成时间',
             dataIndex: 'createdAt',
             render: (value: string) => new Date(value).toLocaleString(),
           },
           {
-            title: '校验',
+            title: '校验与恢复',
             render: (_: unknown, row: Backup) => (
-              <Button
-                size="small"
-                disabled={!row.sha256}
-                loading={action.isPending}
-                onClick={() => action.mutate({ kind: 'verify', id: row.id })}
-              >
-                隔离校验
-              </Button>
+              <Space>
+                <Button
+                  size="small"
+                  disabled={!row.sha256}
+                  loading={action.isPending}
+                  onClick={() => action.mutate({ kind: 'verify', id: row.id })}
+                >
+                  隔离校验
+                </Button>
+                <Button
+                  size="small"
+                  danger
+                  disabled={row.status !== 'verified' || Boolean(pendingRestore.data?.data)}
+                  loading={loadRestorePreflight.isPending}
+                  onClick={() => loadRestorePreflight.mutate(row.id)}
+                >
+                  恢复
+                </Button>
+              </Space>
             ),
           },
         ]}
       />
+      <Modal
+        open={Boolean(restorePreflight)}
+        title="恢复数据库前置确认"
+        okText="准备恢复并等待重启"
+        okButtonProps={{
+          danger: true,
+          disabled:
+            !restorePreflight?.compatible ||
+            !restoreAcknowledged ||
+            restoreText !== restorePreflight.confirmationText,
+          loading: prepareRestore.isPending,
+        }}
+        onOk={() => prepareRestore.mutate()}
+        onCancel={() => setRestorePreflight(null)}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Alert
+            type={restorePreflight?.compatible ? 'warning' : 'error'}
+            showIcon
+            message={
+              restorePreflight?.compatible
+                ? '将先生成当前数据库安全备份，再创建待恢复清单'
+                : '备份状态、哈希或 Schema 与当前应用不兼容'
+            }
+            description="当前进程不会覆盖已打开的 SQLite；下次重启会在 Prisma 连接前再次校验 SHA-256，切换失败会回滚当前数据库。凭证引用若在旧备份中失效，恢复后需重新配置。"
+          />
+          <Descriptions size="small" bordered column={1}>
+            <Descriptions.Item label="备份文件">{restorePreflight?.fileName}</Descriptions.Item>
+            <Descriptions.Item label="SHA-256">
+              <Typography.Text code>{restorePreflight?.sha256}</Typography.Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="备份 / 当前 Schema">
+              {restorePreflight?.schemaChecksum} / {restorePreflight?.currentSchemaChecksum}
+            </Descriptions.Item>
+          </Descriptions>
+          <Typography.Text>
+            请输入 <Typography.Text code>{restorePreflight?.confirmationText}</Typography.Text>
+          </Typography.Text>
+          <Input value={restoreText} onChange={(event) => setRestoreText(event.target.value)} />
+          <Checkbox
+            checked={restoreAcknowledged}
+            onChange={(event) => setRestoreAcknowledged(event.target.checked)}
+          >
+            我已知悉恢复需要重启，恢复后应先只读核对数据库、作业、审计和凭证引用
+          </Checkbox>
+        </Space>
+      </Modal>
     </Card>
   );
 }
