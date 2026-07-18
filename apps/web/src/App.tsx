@@ -19,8 +19,8 @@ import { StatusTag } from './components/StatusTag.js';
 const DashboardPage = lazy(async () => ({
   default: (await import('./pages/DashboardPage.js')).DashboardPage,
 }));
-const FeatureStagePage = lazy(async () => ({
-  default: (await import('./pages/FeatureStagePage.js')).FeatureStagePage,
+const QuarterlyReviewsPage = lazy(async () => ({
+  default: (await import('./pages/QuarterlyReviewsPage.js')).QuarterlyReviewsPage,
 }));
 const RepositoriesPage = lazy(async () => ({
   default: (await import('./pages/RepositoriesPage.js')).RepositoriesPage,
@@ -157,21 +157,7 @@ export function App() {
               <Route path="/git-batches" element={<GitBatchesPage />} />
               <Route path="/tasks" element={<TasksPage />} />
               <Route path="/weekly-reports" element={<WeeklyReportsPage />} />
-              <Route
-                path="/quarterly-reviews"
-                element={
-                  <FeatureStagePage
-                    title="季度绩效"
-                    description="成果池、指标公式、自评版本和 Excel/Word 导出将在证据与周报稳定后接入。"
-                    dependencies={[
-                      '多来源成果候选',
-                      '指标模板版本',
-                      '评分公式与取整',
-                      '导出渲染 QA',
-                    ]}
-                  />
-                }
-              />
+              <Route path="/quarterly-reviews" element={<QuarterlyReviewsPage />} />
               <Route path="/operations" element={<OperationsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
