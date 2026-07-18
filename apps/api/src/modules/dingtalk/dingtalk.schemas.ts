@@ -84,3 +84,45 @@ export const dingTalkCreateReportResponseSchema = z
     ]),
   })
   .passthrough();
+
+export const dingTalkReportListResponseSchema = z
+  .object({
+    errcode: z.number().int(),
+    errmsg: z.string().max(1_000).optional(),
+    request_id: z.string().max(500).optional(),
+    result: z
+      .object({
+        data_list: z
+          .array(
+            z
+              .object({
+                report_id: z.string().min(1).max(500),
+                creator_id: z.string().min(1).max(500),
+                creator_name: z.string().max(200).optional(),
+                template_name: z.string().min(1).max(200),
+                create_time: dingTalkIntegerSchema,
+                modified_time: dingTalkIntegerSchema.optional(),
+                contents: z
+                  .array(
+                    z
+                      .object({
+                        key: z.string().min(1).max(200),
+                        sort: z.union([z.string(), z.number()]).transform(String),
+                        type: z.union([z.string(), z.number()]).transform(String),
+                        value: z.string().max(100_000),
+                      })
+                      .passthrough(),
+                  )
+                  .max(100),
+              })
+              .passthrough(),
+          )
+          .max(20),
+        size: dingTalkIntegerSchema,
+        next_cursor: dingTalkIntegerSchema,
+        has_more: z.boolean(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();

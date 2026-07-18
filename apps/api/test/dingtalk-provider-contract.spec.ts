@@ -150,6 +150,69 @@ describe('钉钉官方接口适配契约', () => {
     ).rejects.toMatchObject({ code: 'DINGTALK_REPORT_CONTENTS_INVALID' });
   });
 
+  it('按官方日志列表协议分页查询操作用户的窄时间窗口并保留字段值', async () => {
+    const postJson = vi.fn<SecureHttpService['postJson']>().mockResolvedValue({
+      status: 200,
+      headers: {},
+      body: {
+        errcode: 0,
+        request_id: 'list-request',
+        result: {
+          data_list: [
+            {
+              report_id: 'report-query-1',
+              creator_id: 'operator-1',
+              creator_name: '操作用户',
+              template_name: '研发周报',
+              create_time: 1_752_816_000_000,
+              modified_time: '1752816000000',
+              contents: [{ key: '日期', sort: 0, type: '1', value: '2026-07-18' }],
+            },
+          ],
+          size: 20,
+          next_cursor: '200',
+          has_more: true,
+        },
+      },
+    });
+    const client = new DingTalkLogClient({ postJson } as unknown as SecureHttpService);
+    const result = await client.listReports({
+      baseUrl: 'https://oapi.dingtalk.com/',
+      accessToken: 'access-token',
+      operatorUserId: 'operator-1',
+      templateName: '研发周报',
+      startTime: 1_752_815_880_000,
+      endTime: 1_752_816_120_000,
+      cursor: 0,
+      size: 20,
+    });
+
+    expect(result).toEqual({
+      reports: [
+        {
+          reportId: 'report-query-1',
+          creatorId: 'operator-1',
+          templateName: '研发周报',
+          createTime: 1_752_816_000_000,
+          contents: [{ key: '日期', sort: '0', type: '1', value: '2026-07-18' }],
+        },
+      ],
+      nextCursor: 200,
+      hasMore: true,
+      requestId: 'list-request',
+    });
+    const request = postJson.mock.calls[0]![0];
+    expect(request.url.pathname).toBe('/topapi/report/list');
+    expect(request.body).toEqual({
+      start_time: 1_752_815_880_000,
+      end_time: 1_752_816_120_000,
+      template_name: '研发周报',
+      userid: 'operator-1',
+      cursor: 0,
+      size: 20,
+    });
+  });
+
   it('按 timestamp 换行 secret 生成 HMAC-SHA256 加签并发送固定文本结构', async () => {
     const postJson = vi.fn<SecureHttpService['postJson']>().mockResolvedValue({
       status: 200,

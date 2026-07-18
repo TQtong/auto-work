@@ -26,13 +26,17 @@ import {
   generateWeeklyReportSchema,
   listWeeklyReportsQuerySchema,
   notifyWeeklyReportGroupSchema,
+  reconcileWeeklyReportDeliverySchema,
   rejectWeeklyAiSuggestionSchema,
+  resolveWeeklyReportDeliverySchema,
   restoreWeeklyReportVersionSchema,
+  retryWeeklyReportDeliverySchema,
   submitWeeklyReportLogSchema,
 } from './weekly-report.schemas.js';
 import { WeeklyReportAttachmentService } from './weekly-report-attachment.service.js';
 import { WeeklyReportAiService } from './weekly-report-ai.service.js';
 import { WeeklyReportDeliveryService } from './weekly-report-delivery.service.js';
+import { WeeklyReportDeliveryRecoveryService } from './weekly-report-delivery-recovery.service.js';
 import { WeeklyReportService } from './weekly-report.service.js';
 
 const maxAttachmentBytes = 8 * 1024 * 1024;
@@ -44,6 +48,7 @@ export class WeeklyReportController {
     private readonly ai: WeeklyReportAiService,
     private readonly attachments: WeeklyReportAttachmentService,
     private readonly delivery: WeeklyReportDeliveryService,
+    private readonly deliveryRecovery: WeeklyReportDeliveryRecoveryService,
     private readonly idempotency: IdempotencyService,
     private readonly audit: AuditService,
     private readonly sessions: SessionService,
@@ -246,6 +251,64 @@ export class WeeklyReportController {
       { id, ...input },
       request,
       (recordId) => this.delivery.notifyGroup(id, input, this.context(request, recordId)),
+    );
+  }
+
+  @Post(':id/deliveries/:intentId/reconcile')
+  public async reconcileDelivery(
+    @Param('id') id: string,
+    @Param('intentId') intentId: string,
+    @Body() rawBody: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = reconcileWeeklyReportDeliverySchema.parse(rawBody);
+    return this.mutate(
+      `/api/v1/weekly-reports/${id}/deliveries/${intentId}/reconcile`,
+      key,
+      { id, intentId, ...input },
+      request,
+      (recordId) =>
+        this.deliveryRecovery.reconcile(id, intentId, input, this.context(request, recordId)),
+    );
+  }
+
+  @Post(':id/deliveries/:intentId/resolve')
+  public async resolveDelivery(
+    @Param('id') id: string,
+    @Param('intentId') intentId: string,
+    @Body() rawBody: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = resolveWeeklyReportDeliverySchema.parse(rawBody);
+    return this.mutate(
+      `/api/v1/weekly-reports/${id}/deliveries/${intentId}/resolve`,
+      key,
+      { id, intentId, ...input },
+      request,
+      (recordId) =>
+        this.deliveryRecovery.resolve(id, intentId, input, this.context(request, recordId)),
+    );
+  }
+
+  @Post(':id/deliveries/:intentId/retry')
+  @HttpCode(202)
+  public async retryDelivery(
+    @Param('id') id: string,
+    @Param('intentId') intentId: string,
+    @Body() rawBody: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = retryWeeklyReportDeliverySchema.parse(rawBody);
+    return this.mutate(
+      `/api/v1/weekly-reports/${id}/deliveries/${intentId}/retry`,
+      key,
+      { id, intentId, ...input },
+      request,
+      (recordId) =>
+        this.deliveryRecovery.retry(id, intentId, input, this.context(request, recordId)),
     );
   }
 

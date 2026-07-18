@@ -1087,6 +1087,11 @@ model DeliveryIntent {
   lastAttemptAt       DateTime?                @map("last_attempt_at")
   lastErrorCode       String?                  @map("last_error_code")
   lastErrorSummary    String?                  @map("last_error_summary")
+  recoveryStatus      String                   @default("not_required") @map("recovery_status")
+  lastRecoveryAt      DateTime?                @map("last_recovery_at")
+  resolvedBy          String?                  @map("resolved_by")
+  resolvedAt          DateTime?                @map("resolved_at")
+  resolutionReason    String?                  @map("resolution_reason")
   completedAt         DateTime?                @map("completed_at")
   version             Int                      @default(1)
   createdAt           DateTime                 @default(now()) @map("created_at")
@@ -1096,11 +1101,35 @@ model DeliveryIntent {
   confirmedVersion    WeeklyReportVersion      @relation(fields: [confirmedVersionId], references: [id], onDelete: Restrict)
   connection          IntegrationConnection    @relation(fields: [connectionId], references: [id], onDelete: Restrict)
   attempts            DeliveryAttempt[]
+  recoveryChecks      DeliveryRecoveryCheck[]
 
   @@unique([reportId, confirmationId, channel, connectionId])
   @@index([reportId, channel, createdAt])
   @@index([status, updatedAt])
   @@map("delivery_intent")
+}
+
+/// 每一次外部查询和人工裁决都单独留痕；只保存匹配摘要与哈希，不复制周报正文或凭证。
+model DeliveryRecoveryCheck {
+  id                String         @id
+  intentId          String         @map("intent_id")
+  sequenceNo        Int            @map("sequence_no")
+  mode              String
+  outcome           String
+  queryWindowStart  DateTime?      @map("query_window_start")
+  queryWindowEnd    DateTime?      @map("query_window_end")
+  candidateCount    Int            @default(0) @map("candidate_count")
+  exactMatchCount   Int            @default(0) @map("exact_match_count")
+  matchedExternalId String?        @map("matched_external_id")
+  evidenceHash      String         @map("evidence_hash")
+  summaryJson       String         @default("{}") @map("summary_json")
+  actorId           String         @map("actor_id")
+  createdAt         DateTime       @default(now()) @map("created_at")
+  intent            DeliveryIntent @relation(fields: [intentId], references: [id], onDelete: Restrict)
+
+  @@unique([intentId, sequenceNo])
+  @@index([intentId, createdAt])
+  @@map("delivery_recovery_check")
 }
 
 /// attempt 只记录请求/响应摘要、错误分类和外部标识，不复制秘密或六字段正文。

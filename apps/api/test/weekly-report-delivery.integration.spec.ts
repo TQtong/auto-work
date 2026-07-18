@@ -13,6 +13,7 @@ import type { DingTalkRobotClient } from '../src/modules/dingtalk/dingtalk-robot
 import { JobRegistryService } from '../src/modules/jobs/job-registry.service.js';
 import type { SessionService } from '../src/modules/session/session.service.js';
 import { WeeklyReportDeliveryHandler } from '../src/modules/weekly-reports/weekly-report-delivery.handler.js';
+import { WeeklyReportDeliveryRecoveryService } from '../src/modules/weekly-reports/weekly-report-delivery-recovery.service.js';
 import { WeeklyReportDeliveryService } from '../src/modules/weekly-reports/weekly-report-delivery.service.js';
 
 const capabilityHash = 'a'.repeat(64);
@@ -266,6 +267,217 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     );
   });
 
+  it('未知结果只在六字段唯一匹配时恢复成功，并保留原尝试的 unknown 事实', async () => {
+    const fixture = await seedConfirmedReport();
+    const createReport = vi.fn().mockRejectedValue(
+      new DomainError('EXTERNAL_REQUEST_TIMEOUT', '钉钉响应超时，结果未知', {
+        httpStatus: 503,
+        retryable: true,
+      }),
+    );
+    const listReports = vi.fn().mockResolvedValue({
+      reports: [matchingProviderReport('recovered-report-3003')],
+      nextCursor: 0,
+      hasMore: false,
+      requestId: 'recovery-query-1',
+    });
+    const runtime = createRuntime(createReport, vi.fn(), listReports);
+    const submitIdempotency = await seedIdempotency(fixture.suffix, 'recover-submit');
+    const requested = await runtime.service.submitLog(
+      fixture.reportId,
+      {
+        confirmationId: fixture.confirmationId,
+        confirmedVersionId: fixture.versionId,
+        recipientScopeHash: recipientHash,
+        reportVersion: fixture.reportVersion,
+      },
+      context(submitIdempotency),
+    );
+    await expect(execute(runtime.handler, requested.intent.id)).rejects.toMatchObject({
+      code: 'DINGTALK_DELIVERY_RESULT_UNKNOWN',
+    });
+    const unknown = await prisma.deliveryIntent.findUniqueOrThrow({
+      where: { id: requested.intent.id },
+    });
+    const reconcileIdempotency = await seedIdempotency(fixture.suffix, 'recover-query');
+    const recovered = await runtime.recovery.reconcile(
+      fixture.reportId,
+      requested.intent.id,
+      { intentVersion: unknown.version },
+      context(reconcileIdempotency),
+    );
+
+    expect(recovered).toMatchObject({
+      status: 'succeeded',
+      recoveryStatus: 'matched',
+      externalId: 'recovered-report-3003',
+      exactMatchCount: 1,
+    });
+    expect(createReport).toHaveBeenCalledOnce();
+    expect(listReports).toHaveBeenCalledOnce();
+    expect(
+      await prisma.deliveryAttempt.findFirstOrThrow({ where: { intentId: requested.intent.id } }),
+    ).toMatchObject({ status: 'unknown' });
+    expect(
+      await prisma.deliveryRecoveryCheck.findFirstOrThrow({
+        where: { intentId: requested.intent.id },
+      }),
+    ).toMatchObject({ outcome: 'matched', matchedExternalId: 'recovered-report-3003' });
+  });
+
+  it('连续两次零匹配并满足可见性宽限后才允许显式重试', async () => {
+    vi.useFakeTimers();
+    const base = new Date();
+    vi.setSystemTime(base);
+    try {
+      const fixture = await seedConfirmedReport();
+      const createReport = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new DomainError('EXTERNAL_REQUEST_TIMEOUT', '第一次创建响应超时', {
+            httpStatus: 503,
+            retryable: true,
+          }),
+        )
+        .mockResolvedValueOnce({ reportId: 'retry-created-4004', requestId: 'retry-request' });
+      const listReports = vi.fn().mockResolvedValue({
+        reports: [],
+        nextCursor: 0,
+        hasMore: false,
+        requestId: 'absence-query',
+      });
+      const runtime = createRuntime(createReport, vi.fn(), listReports);
+      const submitIdempotency = await seedIdempotency(fixture.suffix, 'absence-submit');
+      const requested = await runtime.service.submitLog(
+        fixture.reportId,
+        {
+          confirmationId: fixture.confirmationId,
+          confirmedVersionId: fixture.versionId,
+          recipientScopeHash: recipientHash,
+          reportVersion: fixture.reportVersion,
+        },
+        context(submitIdempotency),
+      );
+      await expect(execute(runtime.handler, requested.intent.id)).rejects.toMatchObject({
+        code: 'DINGTALK_DELIVERY_RESULT_UNKNOWN',
+      });
+
+      vi.setSystemTime(new Date(base.getTime() + 121_000));
+      const firstUnknown = await prisma.deliveryIntent.findUniqueOrThrow({
+        where: { id: requested.intent.id },
+      });
+      const firstQueryIdempotency = await seedIdempotency(fixture.suffix, 'absence-query-1');
+      const firstQuery = await runtime.recovery.reconcile(
+        fixture.reportId,
+        requested.intent.id,
+        { intentVersion: firstUnknown.version },
+        context(firstQueryIdempotency),
+      );
+      expect(firstQuery).toMatchObject({
+        status: 'unknown',
+        recoveryStatus: 'not_found',
+        retryAllowed: false,
+      });
+
+      vi.setSystemTime(new Date(base.getTime() + 152_000));
+      const secondUnknown = await prisma.deliveryIntent.findUniqueOrThrow({
+        where: { id: requested.intent.id },
+      });
+      const secondQueryIdempotency = await seedIdempotency(fixture.suffix, 'absence-query-2');
+      const secondQuery = await runtime.recovery.reconcile(
+        fixture.reportId,
+        requested.intent.id,
+        { intentVersion: secondUnknown.version },
+        context(secondQueryIdempotency),
+      );
+      expect(secondQuery).toMatchObject({
+        status: 'failed',
+        recoveryStatus: 'absence_confirmed',
+        retryAllowed: true,
+      });
+
+      const retryable = await prisma.deliveryIntent.findUniqueOrThrow({
+        where: { id: requested.intent.id },
+      });
+      const retryIdempotency = await seedIdempotency(fixture.suffix, 'absence-retry');
+      const retry = await runtime.recovery.retry(
+        fixture.reportId,
+        requested.intent.id,
+        { intentVersion: retryable.version, reason: '已连续查询确认钉钉中不存在该日志' },
+        context(retryIdempotency),
+      );
+      expect(retry).toMatchObject({ status: 'pending', nextAttemptNo: 2 });
+      await execute(runtime.handler, requested.intent.id);
+      expect(createReport).toHaveBeenCalledTimes(2);
+      expect(
+        await prisma.deliveryIntent.findUniqueOrThrow({ where: { id: requested.intent.id } }),
+      ).toMatchObject({ status: 'succeeded', externalId: 'retry-created-4004', attemptCount: 2 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('多条精确命中转待复核，并要求确认短语和外部 ID 才能人工裁决成功', async () => {
+    const fixture = await seedConfirmedReport();
+    const createReport = vi.fn().mockRejectedValue(
+      new DomainError('EXTERNAL_REQUEST_TIMEOUT', '创建结果未知', {
+        httpStatus: 503,
+        retryable: true,
+      }),
+    );
+    const runtime = createRuntime(
+      createReport,
+      vi.fn(),
+      vi.fn().mockResolvedValue({
+        reports: [matchingProviderReport('ambiguous-a'), matchingProviderReport('ambiguous-b')],
+        nextCursor: 0,
+        hasMore: false,
+        requestId: null,
+      }),
+    );
+    const submitIdempotency = await seedIdempotency(fixture.suffix, 'manual-submit');
+    const requested = await runtime.service.submitLog(
+      fixture.reportId,
+      {
+        confirmationId: fixture.confirmationId,
+        confirmedVersionId: fixture.versionId,
+        recipientScopeHash: recipientHash,
+        reportVersion: fixture.reportVersion,
+      },
+      context(submitIdempotency),
+    );
+    await expect(execute(runtime.handler, requested.intent.id)).rejects.toBeInstanceOf(DomainError);
+    const unknown = await prisma.deliveryIntent.findUniqueOrThrow({
+      where: { id: requested.intent.id },
+    });
+    const queryIdempotency = await seedIdempotency(fixture.suffix, 'manual-query');
+    await runtime.recovery.reconcile(
+      fixture.reportId,
+      requested.intent.id,
+      { intentVersion: unknown.version },
+      context(queryIdempotency),
+    );
+    const review = await prisma.deliveryIntent.findUniqueOrThrow({
+      where: { id: requested.intent.id },
+    });
+    expect(review).toMatchObject({ status: 'needs_review', recoveryStatus: 'ambiguous' });
+    const resolveIdempotency = await seedIdempotency(fixture.suffix, 'manual-resolve');
+    const resolved = await runtime.recovery.resolve(
+      fixture.reportId,
+      requested.intent.id,
+      {
+        intentVersion: review.version,
+        resolution: 'delivered',
+        externalId: 'ambiguous-a',
+        externalUrl: null,
+        reason: '已在钉钉客户端逐项核对并确认第一条为本次周报',
+        confirmationPhrase: '我已在钉钉人工核对交付结果',
+      },
+      context(resolveIdempotency),
+    );
+    expect(resolved).toMatchObject({ status: 'succeeded', recoveryStatus: 'manual_succeeded' });
+  });
+
   it('拒绝带附件或已过期模板事实的正式提交', async () => {
     const withAttachment = await seedConfirmedReport({ hasAttachment: true });
     const runtime = createRuntime(vi.fn(), vi.fn());
@@ -302,6 +514,12 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
   function createRuntime(
     createReport: ReturnType<typeof vi.fn>,
     sendText: ReturnType<typeof vi.fn>,
+    listReports: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue({
+      reports: [],
+      nextCursor: 0,
+      hasMore: false,
+      requestId: null,
+    }),
   ) {
     const prismaService = prisma as unknown as PrismaService;
     const sessions = { currentProfileId: 'local-user' } as SessionService;
@@ -316,6 +534,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
         .fn()
         .mockResolvedValue({ value: 'access-token', source: 'oauth2', expiresAt: null }),
       createReport,
+      listReports,
     } as unknown as DingTalkLogClient;
     const robotClient = { sendText } as unknown as DingTalkRobotClient;
     const vault = {
@@ -338,8 +557,39 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       vault,
     );
     handler.onModuleInit();
+    const recovery = new WeeklyReportDeliveryRecoveryService(
+      prismaService,
+      sessions,
+      audit,
+      security,
+      logClient,
+      vault,
+    );
     expect(registry.get('weekly-report.delivery')).toBe(handler);
-    return { service, handler };
+    return { service, handler, recovery };
+  }
+
+  function matchingProviderReport(reportId: string) {
+    const values = [
+      '2026-07-18',
+      '完成迭代目标',
+      '仅正式日志可见的完整工作正文',
+      '继续交付',
+      '暂无',
+      '无',
+    ];
+    return {
+      reportId,
+      creatorId: 'operator-user',
+      templateName: '研发周报',
+      createTime: Date.now(),
+      contents: values.map((value, index) => ({
+        key: `钉钉字段 ${index + 1}`,
+        sort: String(index),
+        type: '1',
+        value,
+      })),
+    };
   }
 
   async function seedConfirmedReport(options?: {

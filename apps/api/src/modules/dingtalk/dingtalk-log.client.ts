@@ -5,6 +5,7 @@ import { SecureHttpService } from '../../infrastructure/http/secure-http.service
 import {
   dingTalkAccessTokenSchema,
   dingTalkCreateReportResponseSchema,
+  dingTalkReportListResponseSchema,
   dingTalkTemplateResponseSchema,
 } from './dingtalk.schemas.js';
 
@@ -155,6 +156,81 @@ export class DingTalkLogClient {
     return {
       reportId:
         typeof parsed.data.result === 'string' ? parsed.data.result : parsed.data.result.report_id,
+      requestId: parsed.data.request_id ?? null,
+    };
+  }
+
+  /**
+   * 查询操作用户在窄时间窗口内发出的日志，用于创建超时后的事实核对。
+   * 该接口是只读调用，调用方仍必须用冻结六字段做唯一匹配，不能只凭时间或模板猜测成功。
+   */
+  public async listReports(input: {
+    baseUrl: string;
+    accessToken: string;
+    operatorUserId: string;
+    templateName: string;
+    startTime: number;
+    endTime: number;
+    cursor: number;
+    size: number;
+  }): Promise<{
+    reports: Array<{
+      reportId: string;
+      creatorId: string;
+      templateName: string;
+      createTime: number;
+      contents: Array<{ key: string; sort: string; type: string; value: string }>;
+    }>;
+    nextCursor: number;
+    hasMore: boolean;
+    requestId: string | null;
+  }> {
+    if (input.startTime > input.endTime || input.size < 1 || input.size > 20 || input.cursor < 0) {
+      throw new DomainError('DINGTALK_REPORT_QUERY_INVALID', '钉钉日志恢复查询参数无效', {
+        httpStatus: 422,
+      });
+    }
+    const response = await this.legacyPost(
+      input.baseUrl,
+      input.accessToken,
+      '/topapi/report/list',
+      {
+        start_time: input.startTime,
+        end_time: input.endTime,
+        template_name: input.templateName,
+        userid: input.operatorUserId,
+        cursor: input.cursor,
+        size: input.size,
+      },
+    );
+    const parsed = dingTalkReportListResponseSchema.safeParse(response.body);
+    if (!parsed.success) {
+      throw new DomainError(
+        'DINGTALK_REPORT_LIST_RESPONSE_INVALID',
+        '钉钉日志恢复查询返回结构无效',
+        { httpStatus: 502 },
+      );
+    }
+    if (parsed.data.errcode !== 0) {
+      throw this.apiError(parsed.data.errcode, parsed.data.request_id);
+    }
+    if (!parsed.data.result) {
+      throw new DomainError(
+        'DINGTALK_REPORT_LIST_RESPONSE_INVALID',
+        '钉钉日志恢复查询成功响应缺少结果页',
+        { httpStatus: 502 },
+      );
+    }
+    return {
+      reports: parsed.data.result.data_list.map((report) => ({
+        reportId: report.report_id,
+        creatorId: report.creator_id,
+        templateName: report.template_name,
+        createTime: report.create_time,
+        contents: report.contents,
+      })),
+      nextCursor: parsed.data.result.next_cursor,
+      hasMore: parsed.data.result.has_more,
       requestId: parsed.data.request_id ?? null,
     };
   }

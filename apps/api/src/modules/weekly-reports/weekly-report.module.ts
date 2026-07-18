@@ -6,6 +6,7 @@ import { WeeklyReportService } from './weekly-report.service.js';
 import { WeeklyReportAttachmentService } from './weekly-report-attachment.service.js';
 import { WeeklyReportAiService } from './weekly-report-ai.service.js';
 import { WeeklyReportDeliveryHandler } from './weekly-report-delivery.handler.js';
+import { WeeklyReportDeliveryRecoveryService } from './weekly-report-delivery-recovery.service.js';
 import { WeeklyReportDeliveryService } from './weekly-report-delivery.service.js';
 
 @Module({
@@ -16,6 +17,7 @@ import { WeeklyReportDeliveryService } from './weekly-report-delivery.service.js
     WeeklyReportAttachmentService,
     WeeklyReportAiService,
     WeeklyReportDeliveryService,
+    WeeklyReportDeliveryRecoveryService,
     WeeklyReportDeliveryHandler,
   ],
   exports: [WeeklyReportService],

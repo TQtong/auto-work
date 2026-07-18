@@ -223,6 +223,46 @@ export const notifyWeeklyReportGroupSchema = z
   })
   .strict();
 
+export const reconcileWeeklyReportDeliverySchema = z
+  .object({
+    intentVersion: z.number().int().positive(),
+  })
+  .strict();
+
+export const retryWeeklyReportDeliverySchema = z
+  .object({
+    intentVersion: z.number().int().positive(),
+    reason: z.string().trim().min(3).max(500),
+  })
+  .strict();
+
+export const resolveWeeklyReportDeliverySchema = z
+  .object({
+    intentVersion: z.number().int().positive(),
+    resolution: z.enum(['delivered', 'not_delivered']),
+    externalId: z.string().trim().min(1).max(500).nullable().default(null),
+    externalUrl: z.url().max(2_000).nullable().default(null),
+    reason: z.string().trim().min(5).max(500),
+    confirmationPhrase: z.literal('我已在钉钉人工核对交付结果'),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.resolution === 'delivered' && !value.externalId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['externalId'],
+        message: '确认已交付时必须填写钉钉日志 ID',
+      });
+    }
+    if (value.resolution === 'not_delivered' && (value.externalId || value.externalUrl)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['externalId'],
+        message: '确认未交付时不得填写外部 ID 或链接',
+      });
+    }
+  });
+
 export type GenerateWeeklyReportInput = z.infer<typeof generateWeeklyReportSchema>;
 export type ListWeeklyReportsQuery = z.infer<typeof listWeeklyReportsQuerySchema>;
 export type EditWeeklyReportInput = z.infer<typeof editWeeklyReportSchema>;
@@ -233,3 +273,8 @@ export type AdoptWeeklyAiSuggestionInput = z.infer<typeof adoptWeeklyAiSuggestio
 export type RejectWeeklyAiSuggestionInput = z.infer<typeof rejectWeeklyAiSuggestionSchema>;
 export type SubmitWeeklyReportLogInput = z.infer<typeof submitWeeklyReportLogSchema>;
 export type NotifyWeeklyReportGroupInput = z.infer<typeof notifyWeeklyReportGroupSchema>;
+export type ReconcileWeeklyReportDeliveryInput = z.infer<
+  typeof reconcileWeeklyReportDeliverySchema
+>;
+export type RetryWeeklyReportDeliveryInput = z.infer<typeof retryWeeklyReportDeliverySchema>;
+export type ResolveWeeklyReportDeliveryInput = z.infer<typeof resolveWeeklyReportDeliverySchema>;

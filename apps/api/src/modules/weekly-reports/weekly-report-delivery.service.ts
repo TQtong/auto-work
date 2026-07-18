@@ -175,7 +175,10 @@ export class WeeklyReportDeliveryService {
     await this.requireOwnedReport(reportId);
     const intents = await this.prisma.deliveryIntent.findMany({
       where: { reportId },
-      include: { attempts: { orderBy: { attemptNo: 'desc' } } },
+      include: {
+        attempts: { orderBy: { attemptNo: 'desc' } },
+        recoveryChecks: { orderBy: { sequenceNo: 'desc' } },
+      },
       orderBy: { createdAt: 'desc' },
     });
     return intents.map((intent) => this.serializeIntent(intent));
@@ -299,6 +302,7 @@ export class WeeklyReportDeliveryService {
       lastErrorSummary: string | null;
       createdAt: Date;
       updatedAt: Date;
+      version: number;
     },
     idempotencyRecordId: string,
   ) {
@@ -473,8 +477,14 @@ export class WeeklyReportDeliveryService {
     attemptCount: number;
     lastErrorCode: string | null;
     lastErrorSummary: string | null;
+    recoveryStatus?: string;
+    lastRecoveryAt?: Date | null;
+    resolvedBy?: string | null;
+    resolvedAt?: Date | null;
+    resolutionReason?: string | null;
     createdAt: Date;
     updatedAt: Date;
+    version?: number;
     attempts?: Array<{
       id: string;
       attemptNo: number;
@@ -487,6 +497,21 @@ export class WeeklyReportDeliveryService {
       startedAt: Date;
       completedAt: Date | null;
     }>;
+    recoveryChecks?: Array<{
+      id: string;
+      sequenceNo: number;
+      mode: string;
+      outcome: string;
+      queryWindowStart: Date | null;
+      queryWindowEnd: Date | null;
+      candidateCount: number;
+      exactMatchCount: number;
+      matchedExternalId: string | null;
+      evidenceHash: string;
+      actorId: string;
+      summaryJson: string;
+      createdAt: Date;
+    }>;
   }) {
     return {
       id: intent.id,
@@ -496,12 +521,18 @@ export class WeeklyReportDeliveryService {
       connectionId: intent.connectionId,
       channel: intent.channel,
       status: intent.status,
+      version: intent.version ?? 1,
       jobId: intent.jobId,
       externalId: intent.externalId,
       externalUrl: intent.externalUrl,
       attemptCount: intent.attemptCount,
       lastErrorCode: intent.lastErrorCode,
       lastErrorSummary: intent.lastErrorSummary,
+      recoveryStatus: intent.recoveryStatus ?? 'not_required',
+      lastRecoveryAt: intent.lastRecoveryAt?.toISOString() ?? null,
+      resolvedBy: intent.resolvedBy ?? null,
+      resolvedAt: intent.resolvedAt?.toISOString() ?? null,
+      resolutionReason: intent.resolutionReason ?? null,
       createdAt: intent.createdAt.toISOString(),
       updatedAt: intent.updatedAt.toISOString(),
       ...(intent.attempts
@@ -511,6 +542,18 @@ export class WeeklyReportDeliveryService {
               retryAt: attempt.retryAt?.toISOString() ?? null,
               startedAt: attempt.startedAt.toISOString(),
               completedAt: attempt.completedAt?.toISOString() ?? null,
+            })),
+          }
+        : {}),
+      ...(intent.recoveryChecks
+        ? {
+            recoveryChecks: intent.recoveryChecks.map((check) => ({
+              ...check,
+              summary: this.parseObject(check.summaryJson),
+              summaryJson: undefined,
+              queryWindowStart: check.queryWindowStart?.toISOString() ?? null,
+              queryWindowEnd: check.queryWindowEnd?.toISOString() ?? null,
+              createdAt: check.createdAt.toISOString(),
             })),
           }
         : {}),
