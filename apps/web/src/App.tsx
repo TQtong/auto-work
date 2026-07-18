@@ -31,6 +31,9 @@ const GitBatchesPage = lazy(async () => ({
 const TasksPage = lazy(async () => ({
   default: (await import('./pages/TasksPage.js')).TasksPage,
 }));
+const WeeklyReportsPage = lazy(async () => ({
+  default: (await import('./pages/WeeklyReportsPage.js')).WeeklyReportsPage,
+}));
 const OperationsPage = lazy(async () => ({
   default: (await import('./pages/OperationsPage.js')).OperationsPage,
 }));
@@ -153,21 +156,7 @@ export function App() {
               <Route path="/repositories" element={<RepositoriesPage />} />
               <Route path="/git-batches" element={<GitBatchesPage />} />
               <Route path="/tasks" element={<TasksPage />} />
-              <Route
-                path="/weekly-reports"
-                element={
-                  <FeatureStagePage
-                    title="六字段周报"
-                    description="规则先行、AI 后置；确认版本后才能进入钉钉正式日志交付。"
-                    dependencies={[
-                      '任务与证据快照',
-                      '六字段模板映射',
-                      'AI 数据净化',
-                      '钉钉能力探测与幂等意图',
-                    ]}
-                  />
-                }
-              />
+              <Route path="/weekly-reports" element={<WeeklyReportsPage />} />
               <Route
                 path="/quarterly-reviews"
                 element={

@@ -33,11 +33,13 @@ export class DingTalkTemplateMappingService {
       where: { connectionId },
       include: { versions: { orderBy: { versionNo: 'desc' } } },
     });
-    if (!mapping) return { currentVersionId: null, aggregateVersion: null, versions: [] };
+    if (!mapping)
+      return { connectionId, currentVersionId: null, aggregateVersion: null, versions: [] };
     return {
+      connectionId,
       currentVersionId: mapping.currentVersionId,
       aggregateVersion: mapping.version,
-      versions: mapping.versions.map((version) => this.serializeVersion(version)),
+      versions: mapping.versions.map((version) => this.serializeVersion(version, connectionId)),
     };
   }
 
@@ -107,7 +109,10 @@ export class DingTalkTemplateMappingService {
           include: { currentVersion: true },
         });
         if (mapping?.currentVersion?.contentHash === contentHash) {
-          return { replayed: true, version: this.serializeVersion(mapping.currentVersion) };
+          return {
+            replayed: true,
+            version: this.serializeVersion(mapping.currentVersion, connectionId),
+          };
         }
         if (!mapping) {
           mapping = await tx.dingTalkTemplateMapping.create({
@@ -162,7 +167,7 @@ export class DingTalkTemplateMappingService {
           },
           clientSessionHash: this.security.sessionHash(context.sessionId),
         });
-        return { replayed: false, version: this.serializeVersion(version) };
+        return { replayed: false, version: this.serializeVersion(version, connectionId) };
       });
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
@@ -224,23 +229,27 @@ export class DingTalkTemplateMappingService {
     }
   }
 
-  private serializeVersion(version: {
-    id: string;
-    versionNo: number;
-    templateId: string;
-    templateName: string;
-    externalTemplateVersion: string | null;
-    templateHash: string;
-    fieldsJson: string;
-    capabilitySnapshotHash: string;
-    observedAt: Date;
-    expiresAt: Date;
-    contentHash: string;
-    createdBy: string;
-    createdAt: Date;
-  }) {
+  private serializeVersion(
+    version: {
+      id: string;
+      versionNo: number;
+      templateId: string;
+      templateName: string;
+      externalTemplateVersion: string | null;
+      templateHash: string;
+      fieldsJson: string;
+      capabilitySnapshotHash: string;
+      observedAt: Date;
+      expiresAt: Date;
+      contentHash: string;
+      createdBy: string;
+      createdAt: Date;
+    },
+    connectionId: string,
+  ) {
     return {
       id: version.id,
+      connectionId,
       versionNo: version.versionNo,
       templateId: version.templateId,
       templateName: version.templateName,

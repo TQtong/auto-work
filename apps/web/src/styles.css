@@ -155,6 +155,66 @@ body {
 .ant-card {
   box-shadow: 0 4px 16px rgb(28 50 87 / 5%);
 }
+.weekly-workbench-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.8fr);
+  gap: 18px;
+  align-items: start;
+}
+.weekly-context-card {
+  position: sticky;
+  top: 92px;
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+}
+.weekly-metadata-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+.weekly-attachment-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #e7ecf3;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.weekly-gate-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.weekly-gate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  padding: 10px 12px;
+  border: 1px solid #e7ecf3;
+  border-radius: 9px;
+}
+.weekly-gate > .ant-typography:last-child {
+  grid-column: 1 / -1;
+}
+.weekly-gate.passed {
+  border-color: #b7eb8f;
+  background: #f6ffed;
+}
+.weekly-gate.blocked {
+  border-color: #ffd591;
+  background: #fff7e6;
+}
+.weekly-diff-text {
+  min-height: 44px;
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+}
 @media (max-width: 1280px) {
   .app-content {
     padding: 20px;

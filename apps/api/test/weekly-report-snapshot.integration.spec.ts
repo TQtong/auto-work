@@ -338,6 +338,18 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
 
   it('请求结构拒绝半套周期、重复人工来源和未启用 AI，不产生任何报告', async () => {
     expect(() => generateWeeklyReportSchema.parse({ periodStart: '2026-07-13' })).toThrow();
+    expect(() =>
+      generateWeeklyReportSchema.parse(baseInput({ periodStart: '2026-02-30' })),
+    ).toThrow();
+    expect(() =>
+      generateWeeklyReportSchema.parse(
+        baseInput({
+          periodStart: '2026-07-13',
+          periodEnd: '2026-07-17',
+          reportDate: '2026-07-18',
+        }),
+      ),
+    ).toThrow();
     await expect(
       reports.generate(
         baseInput({

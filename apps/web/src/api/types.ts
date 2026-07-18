@@ -610,3 +610,209 @@ export interface GitBatchSummary {
   createdAt: string;
   updatedAt: string;
 }
+
+export type WeeklyReportStatus = 'collecting' | 'generated' | 'editing' | 'confirmed';
+
+export interface WeeklyReportVersionSummary {
+  id: string;
+  versionNo: number;
+  origin: 'rule' | 'ai' | 'manual' | 'restore';
+  parentVersionId?: string | null;
+  sourceSnapshotId?: string;
+  contentHash: string;
+  templateMappingVersionId?: string | null;
+  scheduleAt?: string | null;
+  changeSummary?: Record<string, unknown>;
+  createdBy?: string;
+  createdAt: string;
+}
+
+export interface WeeklyReportConfirmation {
+  id: string;
+  versionId: string;
+  reportAggregateVersion: number;
+  contentHash: string;
+  templateMappingVersionId: string;
+  warningAcknowledgements: Array<{ id: string; code: string; acknowledgedAt: string }>;
+  recipientScopeHash: string;
+  attachmentsHash: string;
+  status: 'active' | 'invalidated';
+  confirmedBy: string;
+  confirmedAt: string;
+  invalidatedAt: string | null;
+  invalidationReason: string | null;
+}
+
+export interface WeeklyReport {
+  id: string;
+  periodStart: string;
+  periodEnd: string;
+  reportDate: string;
+  timezone: 'Asia/Shanghai';
+  templateName: string;
+  templateMappingVersionId: string | null;
+  status: WeeklyReportStatus;
+  logDeliveryState: string;
+  robotDeliveryState: string;
+  currentVersionId: string | null;
+  confirmedVersionId: string | null;
+  currentVersion: WeeklyReportVersionSummary | null;
+  confirmedVersion?: WeeklyReportVersionSummary | null;
+  currentConfirmation?: WeeklyReportConfirmation | null;
+  recipientScopeVersion: number;
+  scheduleAt: string | null;
+  versionCount: number | null;
+  sourceSnapshotCount?: number;
+  confirmationCount?: number;
+  attachmentCount?: number;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  delivery?: { log: string; robot: string; partial: boolean };
+}
+
+export interface WeeklyReportList {
+  items: WeeklyReport[];
+  total: number;
+  page: { cursor?: string; nextCursor?: string; hasMore: boolean; limit: number };
+}
+
+export interface WeeklyReportWarning {
+  id: string;
+  code: string;
+  message?: string;
+  blocking: boolean;
+  sourceRefs?: Array<{ type: string; id: string }>;
+  [key: string]: unknown;
+}
+
+export interface WeeklyReportAttachmentFact {
+  id: string;
+  originalName: string;
+  mimeType: string;
+  extension: string;
+  sizeBytes: number;
+  contentHash: string;
+}
+
+export interface WeeklyReportAttachment extends WeeklyReportAttachmentFact {
+  status: 'available' | 'deleted';
+  createdAt: string;
+  deletedAt: string | null;
+}
+
+export interface WeeklyReportRecipientFact {
+  validationId: string;
+  subjectType: 'user' | 'department' | 'group';
+  externalId: string;
+  displayName: string;
+  observedAt: string;
+  expiresAt: string;
+  contentHash: string;
+}
+
+export interface WeeklyReportSourceSnapshot {
+  id: string;
+  periodStart: string;
+  periodEnd: string;
+  reportDate: string;
+  timezone: string;
+  calendarVersionId: string | null;
+  profile: { id: string; version: number };
+  jiraQuery: Record<string, unknown>;
+  jiraSyncRunIds: string[];
+  sources: {
+    tasks: Array<Record<string, unknown>>;
+    evidence: Array<Record<string, unknown>>;
+    manualInputs: Array<Record<string, unknown>>;
+  };
+  freshnessPolicy: Record<string, unknown>;
+  warnings: unknown[];
+  ruleVersion: string;
+  templateMappingVersionId: string | null;
+  sanitizationPolicyVersion: string;
+  generationHash: string;
+  sourceContentHash: string;
+  createdAt: string;
+}
+
+export interface WeeklyReportVersion extends WeeklyReportVersionSummary {
+  reportId: string;
+  parentVersionId: string | null;
+  fields: {
+    reportDate: string;
+    recentGoals: string;
+    weeklyWork: string;
+    nextWeekPlans: string;
+    problems: string;
+    other: string;
+  };
+  structuredFields: Record<string, unknown>;
+  warnings: WeeklyReportWarning[];
+  attachments: WeeklyReportAttachmentFact[];
+  recipientScope: {
+    connectionId?: string | null;
+    recipients?: WeeklyReportRecipientFact[];
+  };
+  templateMappingVersionId: string | null;
+  scheduleAt: string | null;
+  sourceSnapshot: WeeklyReportSourceSnapshot;
+  sourceLinks: Array<{
+    id: string;
+    field: string;
+    blockId: string;
+    sourceType: string;
+    sourceId: string;
+    sourceContentHash: string;
+    sourceSummary: Record<string, unknown>;
+  }>;
+  changeSummary: Record<string, unknown>;
+  createdBy: string;
+}
+
+export interface DingTalkTemplateFieldMapping {
+  internalField: string;
+  externalFieldId: string;
+  externalFieldName: string;
+  externalType: string;
+  order: number;
+  required: boolean;
+  maxLength: number | null;
+}
+
+export interface DingTalkTemplateMappingVersion {
+  id: string;
+  connectionId: string;
+  versionNo: number;
+  templateId: string;
+  templateName: string;
+  externalTemplateVersion: string | null;
+  templateHash: string;
+  fields: DingTalkTemplateFieldMapping[];
+  capabilitySnapshotHash: string;
+  observedAt: string;
+  expiresAt: string;
+  expired: boolean;
+  contentHash: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface DingTalkTemplateMappingHistory {
+  connectionId: string;
+  currentVersionId: string | null;
+  aggregateVersion: number | null;
+  versions: DingTalkTemplateMappingVersion[];
+}
+
+export interface DingTalkRecipientValidation {
+  id: string;
+  subjectType: 'user' | 'department' | 'group';
+  externalId: string;
+  displayName: string;
+  available: boolean;
+  expired: boolean;
+  observedAt: string;
+  expiresAt: string;
+  contentHash: string;
+}

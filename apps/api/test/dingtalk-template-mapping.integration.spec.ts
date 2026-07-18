@@ -72,9 +72,10 @@ describe('钉钉模板映射不可变版本与能力快照约束', () => {
     const first = await mappings.save('dingtalk-log-1', firstInput, context);
     expect(first).toMatchObject({ replayed: false, version: { versionNo: 1 } });
     expect(await mappings.list('dingtalk-log-1')).toMatchObject({
+      connectionId: 'dingtalk-log-1',
       currentVersionId: first.version.id,
       aggregateVersion: 2,
-      versions: [{ id: first.version.id, versionNo: 1 }],
+      versions: [{ id: first.version.id, connectionId: 'dingtalk-log-1', versionNo: 1 }],
     });
 
     const replay = await mappings.save('dingtalk-log-1', firstInput, context);

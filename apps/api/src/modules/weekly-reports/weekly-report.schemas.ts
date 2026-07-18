@@ -1,6 +1,13 @@
 import { z } from 'zod';
 
-const businessDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/u);
+const businessDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/u)
+  .refine((value) => {
+    // 不能只校验字符串格式，否则 2026-02-30 会被 JavaScript 自动滚动到三月。
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  }, '业务日期不是有效公历日期');
 const weeklyFieldSchema = z.enum([
   'recentGoals',
   'weeklyWork',
@@ -61,6 +68,19 @@ export const generateWeeklyReportSchema = z
       context.addIssue({
         code: 'custom',
         message: 'periodStart、periodEnd 和 reportDate 必须同时提供或同时省略',
+      });
+    }
+    if (
+      value.periodStart &&
+      value.periodEnd &&
+      value.reportDate &&
+      (value.periodStart > value.periodEnd ||
+        value.reportDate < value.periodStart ||
+        value.reportDate > value.periodEnd)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: '周报周期起止必须有序，填写日期必须位于周期内',
       });
     }
   });

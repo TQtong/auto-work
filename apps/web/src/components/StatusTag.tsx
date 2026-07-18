@@ -10,6 +10,8 @@ const colors: Record<string, string> = {
   passed: 'success',
   fresh: 'success',
   confirmed: 'success',
+  submitted: 'success',
+  notified: 'success',
   verified: 'success',
   running: 'processing',
   previewing: 'processing',
@@ -38,6 +40,9 @@ const colors: Record<string, string> = {
   mapping_invalid: 'warning',
   planned: 'default',
   in_progress: 'processing',
+  generated: 'processing',
+  editing: 'processing',
+  collecting: 'processing',
   done: 'success',
   other: 'warning',
   failed: 'error',
@@ -49,6 +54,8 @@ const colors: Record<string, string> = {
   dead_letter: 'error',
   disabled: 'default',
   cancelled: 'default',
+  invalidated: 'default',
+  not_started: 'default',
 };
 
 const labels: Record<string, string> = {
@@ -61,6 +68,8 @@ const labels: Record<string, string> = {
   passed: '通过',
   fresh: '新鲜',
   confirmed: '已确认',
+  submitted: '已正式提交',
+  notified: '已通知',
   verified: '已校验',
   running: '运行中',
   previewing: '预览中',
@@ -89,6 +98,9 @@ const labels: Record<string, string> = {
   mapping_invalid: '映射失效',
   planned: '计划中',
   in_progress: '进行中',
+  generated: '已生成',
+  editing: '编辑中',
+  collecting: '采集中',
   done: '已完成',
   other: '其他',
   failed: '失败',
@@ -100,6 +112,8 @@ const labels: Record<string, string> = {
   dead_letter: '需人工处理',
   disabled: '已禁用',
   cancelled: '已取消',
+  invalidated: '已失效',
+  not_started: '未开始',
 };
 
 export function StatusTag({ status }: { status: string }) {
