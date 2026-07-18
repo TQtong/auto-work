@@ -43,6 +43,31 @@ describe('DiagnosticsService', () => {
     await expect(service.createBundle(true)).rejects.toThrow('诊断包脱敏自检失败');
     await expect(service.listBundles()).resolves.toEqual([]);
   });
+
+  it('磁盘余量低于绝对或百分比阈值时阻断增长型操作', async () => {
+    const { service } = await createService();
+    vi.spyOn(service, 'capacity').mockResolvedValue({
+      totalBytes: 100 * 1024 ** 3,
+      availableBytes: 4 * 1024 ** 3,
+      minimumAvailableBytes: 5 * 1024 ** 3,
+      growthAllowed: false,
+    });
+
+    await expect(service.assertGrowthAllowed('quarterly_export.queue')).rejects.toMatchObject({
+      code: 'DISK_SPACE_LOW',
+      options: {
+        httpStatus: 507,
+        retryable: false,
+        suggestedAction: 'manual_review',
+        details: {
+          operation: 'quarterly_export.queue',
+          availableBytes: 4 * 1024 ** 3,
+          requestedBytes: 0,
+          minimumAvailableBytes: 5 * 1024 ** 3,
+        },
+      },
+    });
+  });
 });
 
 async function createService() {
@@ -86,6 +111,8 @@ function safeFacts(): Awaited<ReturnType<DiagnosticsService['facts']>> {
     storage: {
       totalBytes: 1_000_000,
       availableBytes: 800_000,
+      minimumAvailableBytes: 50_000,
+      growthAllowed: true,
       databaseBytes: 20_000,
       categories: { backups: 10_000, diagnostics: 0 },
       dataDirectoryHash: 'data-hash',

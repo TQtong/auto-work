@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, resolve, sep } from 'node:path';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { DomainError, errorCodes } from '@auto-work/contracts';
 import { newId, requestHash } from '@auto-work/domain';
 import { APP_CONFIG, type AppConfig } from '../../config/config.module.js';
@@ -10,6 +10,7 @@ import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import { LocalSecurityService } from '../../infrastructure/http/local-security.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { SessionService } from '../session/session.service.js';
+import { DiagnosticsService } from '../diagnostics/diagnostics.service.js';
 import { QuarterlyExportDocxService } from './quarterly-export-docx.service.js';
 import {
   QUARTERLY_EXPORT_TEMPLATE_VERSION,
@@ -36,6 +37,7 @@ export class QuarterlyExportService {
     private readonly xlsx: QuarterlyExportXlsxService,
     private readonly docx: QuarterlyExportDocxService,
     @Inject(APP_CONFIG) config: AppConfig,
+    @Optional() private readonly diagnostics?: DiagnosticsService,
   ) {
     this.exportRoot = resolve(config.dataDir, 'quarterly-exports');
   }
@@ -45,6 +47,7 @@ export class QuarterlyExportService {
     input: { confirmationId: string; format: QuarterlyExportFormat },
     context: MutationContext,
   ) {
+    await this.diagnostics?.assertGrowthAllowed('quarterly_export.queue');
     // 制品唯一键绑定确认快照和模板版本；重复请求只重放，失败/取消才递增尝试重新排队。
     return this.prisma.$transaction(async (tx) => {
       const review = await tx.quarterlyReview.findFirst({

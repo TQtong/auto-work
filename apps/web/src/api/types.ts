@@ -160,6 +160,8 @@ export interface DiagnosticFacts {
   storage: {
     totalBytes: number;
     availableBytes: number;
+    minimumAvailableBytes: number;
+    growthAllowed: boolean;
     databaseBytes: number;
     categories: Record<string, number>;
     dataDirectoryHash: string;

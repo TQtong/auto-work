@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { DomainError, errorCodes } from '@auto-work/contracts';
 import { newId, sha256 } from '@auto-work/domain';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import { SessionService } from '../session/session.service.js';
+import { DiagnosticsService } from '../diagnostics/diagnostics.service.js';
 import { ExcelContainerGuardService } from './excel-container-guard.service.js';
 import type { ExcelDiagnostic, ParsedExcelRow } from './excel-import.types.js';
 import { ExcelWorkbookParserService, normalizeMatchText } from './excel-workbook-parser.service.js';
@@ -17,9 +18,11 @@ export class ExcelImportPreviewService {
     private readonly sessions: SessionService,
     private readonly guard: ExcelContainerGuardService,
     private readonly parser: ExcelWorkbookParserService,
+    @Optional() private readonly diagnostics?: DiagnosticsService,
   ) {}
 
   public async preview(input: { buffer: Buffer; fileName: string; mimeType: string }) {
+    await this.diagnostics?.assertGrowthAllowed('excel_import.preview', input.buffer.byteLength);
     const fileSha256 = sha256(input.buffer);
     const existing = await this.prisma.excelImport.findUnique({
       where: {

@@ -126,6 +126,14 @@ function DiagnosticsPanel() {
                 suffix={data.backups.verificationAgeHours === null ? undefined : '小时'}
               />
             </div>
+            {!data.storage.growthAllowed ? (
+              <Alert
+                type="error"
+                showIcon
+                message="磁盘空间低于安全阈值，增长型操作已停止"
+                description={`至少需要保留 ${formatBytes(data.storage.minimumAvailableBytes)}；导入、备份、季度导出和诊断包会返回明确错误，已有数据仍可只读。`}
+              />
+            ) : null}
             <Descriptions bordered size="small" column={2}>
               <Descriptions.Item label="应用 / Node">
                 {data.runtime.applicationVersion} · {data.runtime.nodeVersion}

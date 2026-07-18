@@ -9,6 +9,7 @@ import { APP_CONFIG, type AppConfig } from '../../config/config.module.js';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import type { JobExecutionContext, JobHandler } from '../jobs/job-registry.service.js';
 import { JobRegistryService } from '../jobs/job-registry.service.js';
+import { DiagnosticsService } from '../diagnostics/diagnostics.service.js';
 
 @Injectable()
 export class BackupHandlers implements OnModuleInit {
@@ -17,6 +18,7 @@ export class BackupHandlers implements OnModuleInit {
   public constructor(
     private readonly prisma: PrismaService,
     private readonly registry: JobRegistryService,
+    private readonly diagnostics: DiagnosticsService,
     @Inject(APP_CONFIG) config: AppConfig,
   ) {
     this.backupDirectory = join(config.dataDir, 'backups');
@@ -46,6 +48,7 @@ export class BackupHandlers implements OnModuleInit {
   }
 
   private async createBackup(context: JobExecutionContext): Promise<unknown> {
+    await this.diagnostics.assertGrowthAllowed('backup.create');
     await mkdir(this.backupDirectory, { recursive: true, mode: 0o700 });
     const artifactId = newId();
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');

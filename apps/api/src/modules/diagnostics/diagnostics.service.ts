@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import { mkdir, readdir, readFile, rename, stat, statfs, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Inject, Injectable } from '@nestjs/common';
+import { DomainError } from '@auto-work/contracts';
 import { newId, requestHash } from '@auto-work/domain';
 import { APP_CONFIG, type AppConfig } from '../../config/config.module.js';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
@@ -35,6 +36,37 @@ export class DiagnosticsService {
 
   public exclusions(): readonly string[] {
     return DIAGNOSTIC_EXCLUSIONS;
+  }
+
+  public async capacity() {
+    const fileSystem = await statfs(this.config.dataDir, { bigint: true });
+    const blockSize = fileSystem.bsize;
+    const totalBytes = Number(fileSystem.blocks * blockSize);
+    const availableBytes = Number(fileSystem.bavail * blockSize);
+    const minimumAvailableBytes = Math.max(1024 ** 3, Math.ceil(totalBytes * 0.05));
+    return {
+      totalBytes,
+      availableBytes,
+      minimumAvailableBytes,
+      growthAllowed: availableBytes >= minimumAvailableBytes,
+    };
+  }
+
+  public async assertGrowthAllowed(operation: string, requestedBytes = 0): Promise<void> {
+    const capacity = await this.capacity();
+    if (capacity.availableBytes - Math.max(0, requestedBytes) >= capacity.minimumAvailableBytes)
+      return;
+    throw new DomainError('DISK_SPACE_LOW', '磁盘可用空间低于安全阈值，已停止增长型操作', {
+      httpStatus: 507,
+      retryable: false,
+      suggestedAction: 'manual_review',
+      details: {
+        operation,
+        availableBytes: capacity.availableBytes,
+        requestedBytes,
+        minimumAvailableBytes: capacity.minimumAvailableBytes,
+      },
+    });
   }
 
   public async facts(includeRecentErrors = true) {
@@ -110,6 +142,7 @@ export class DiagnosticsService {
   }
 
   public async createBundle(includeRecentErrors: boolean) {
+    await this.assertGrowthAllowed('diagnostic_bundle.create', 512 * 1024);
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     const bundleId = newId();
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -184,7 +217,7 @@ export class DiagnosticsService {
   }
 
   private async storageFacts() {
-    const fileSystem = await statfs(this.config.dataDir, { bigint: true });
+    const capacity = await this.capacity();
     const categories = await Promise.all(
       ['backups', 'quarterly-exports', 'weekly-report-exports', 'diagnostics', 'tmp'].map(
         async (name) => [name, await this.directorySize(join(this.config.dataDir, name))] as const,
@@ -198,10 +231,8 @@ export class DiagnosticsService {
           .catch(() => 0),
       ),
     );
-    const blockSize = fileSystem.bsize;
     return {
-      totalBytes: Number(fileSystem.blocks * blockSize),
-      availableBytes: Number(fileSystem.bavail * blockSize),
+      ...capacity,
       databaseBytes: databaseFiles.reduce((total, size) => total + size, 0),
       categories: Object.fromEntries(categories),
       dataDirectoryHash: requestHash({ location: this.config.dataDir }),
