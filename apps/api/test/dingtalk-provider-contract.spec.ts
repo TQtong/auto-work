@@ -244,7 +244,92 @@ describe('钉钉官方接口适配契约', () => {
         at: { isAtAll: false },
       },
     });
-    expect(result).toEqual({ requestId: 'robot-request', timestamp });
+    expect(result).toEqual({
+      requestId: 'robot-request',
+      timestamp,
+      providerCallCount: 1,
+      retryDelaysMs: [],
+    });
+  });
+
+  it('机器人仅对 429/5xx 有界重试，遵循 Retry-After 并返回调用证据', async () => {
+    vi.useFakeTimers();
+    try {
+      const postJson = vi
+        .fn<SecureHttpService['postJson']>()
+        .mockResolvedValueOnce({ status: 429, headers: { 'retry-after': '0' }, body: {} })
+        .mockResolvedValueOnce({ status: 503, headers: { 'retry-after': '0' }, body: {} })
+        .mockResolvedValueOnce({
+          status: 200,
+          headers: {},
+          body: { errcode: 0, request_id: 'retry-success' },
+        });
+      const client = new DingTalkRobotClient({ postJson } as unknown as SecureHttpService);
+      const pending = client.sendText({
+        webhook: 'https://oapi.dingtalk.com/robot/send?access_token=robot-token',
+        secret: 'SEC-robot-secret-value',
+        text: '有界重试测试',
+        timestamp: 1_752_816_000_000,
+      });
+
+      await vi.advanceTimersByTimeAsync(500);
+      await expect(pending).resolves.toMatchObject({
+        requestId: 'retry-success',
+        providerCallCount: 3,
+        retryDelaysMs: [250, 250],
+      });
+      expect(postJson).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('机器人明确限流码可重试，权限和签名类错误不会重试', async () => {
+    vi.useFakeTimers();
+    try {
+      const limitedPost = vi
+        .fn<SecureHttpService['postJson']>()
+        .mockResolvedValueOnce({
+          status: 200,
+          headers: { 'retry-after': '0' },
+          body: { errcode: 130101 },
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          headers: {},
+          body: { errcode: 0, request_id: 'after-provider-limit' },
+        });
+      const limitedClient = new DingTalkRobotClient({
+        postJson: limitedPost,
+      } as unknown as SecureHttpService);
+      const limitedPending = limitedClient.sendText({
+        webhook: 'https://oapi.dingtalk.com/robot/send?access_token=robot-token',
+        secret: 'SEC-robot-secret-value',
+        text: '供应商限流码测试',
+      });
+      await vi.advanceTimersByTimeAsync(250);
+      await expect(limitedPending).resolves.toMatchObject({
+        providerCallCount: 2,
+        retryDelaysMs: [250],
+      });
+
+      const deniedPost = vi
+        .fn<SecureHttpService['postJson']>()
+        .mockResolvedValue({ status: 403, headers: {}, body: {} });
+      const deniedClient = new DingTalkRobotClient({
+        postJson: deniedPost,
+      } as unknown as SecureHttpService);
+      await expect(
+        deniedClient.sendText({
+          webhook: 'https://oapi.dingtalk.com/robot/send?access_token=robot-token',
+          secret: 'SEC-robot-secret-value',
+          text: '权限错误测试',
+        }),
+      ).rejects.toMatchObject({ code: 'DINGTALK_ROBOT_PERMISSION_DENIED' });
+      expect(deniedPost).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('严格拒绝伪造 Webhook、额外查询参数和超长机器人正文', async () => {

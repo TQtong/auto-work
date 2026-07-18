@@ -74,6 +74,8 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     const sendText = vi.fn().mockResolvedValue({
       requestId: 'provider-robot-request',
       timestamp: 1,
+      providerCallCount: 3,
+      retryDelaysMs: [250, 500],
     });
     const runtime = createRuntime(createReport, sendText);
 
@@ -165,6 +167,13 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
         expect.objectContaining({ id: robotIntentId, status: 'succeeded', attemptCount: 1 }),
       ]),
     );
+    const robotAttempt = await prisma.deliveryAttempt.findFirstOrThrow({
+      where: { intentId: robotIntentId },
+    });
+    expect(JSON.parse(robotAttempt.responseSummaryJson)).toMatchObject({
+      providerCallCount: 3,
+      retryDelaysMs: [250, 500],
+    });
   });
 
   it('群通知失败保持正式日志成功事实，并形成可见的部分交付状态', async () => {
@@ -172,11 +181,13 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     const createReport = vi
       .fn()
       .mockResolvedValue({ reportId: 'external-report-2002', requestId: null });
-    const sendText = vi
-      .fn()
-      .mockRejectedValue(
-        new DomainError('DINGTALK_ROBOT_REJECTED', '机器人拒绝消息', { httpStatus: 502 }),
-      );
+    const sendText = vi.fn().mockRejectedValue(
+      new DomainError('DINGTALK_ROBOT_RESPONSE_ERROR', '机器人连续三次返回 503', {
+        httpStatus: 503,
+        retryable: true,
+        details: { providerCallCount: 3, retryDelaysMs: [250, 500] },
+      }),
+    );
     const runtime = createRuntime(createReport, sendText);
     const submitIdempotency = await seedIdempotency(fixture.suffix, 'partial-submit');
     const log = await runtime.service.submitLog(
@@ -206,7 +217,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     );
     const result = await execute(runtime.handler, robot.intent.id);
 
-    expect(result).toMatchObject({ status: 'failed', errorCode: 'DINGTALK_ROBOT_REJECTED' });
+    expect(result).toMatchObject({ status: 'failed', errorCode: 'DINGTALK_ROBOT_RESPONSE_ERROR' });
     expect(
       await prisma.weeklyReport.findUniqueOrThrow({ where: { id: fixture.reportId } }),
     ).toMatchObject({
@@ -218,6 +229,14 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     ).toMatchObject({
       status: 'succeeded',
       externalId: 'external-report-2002',
+    });
+    const failedAttempt = await prisma.deliveryAttempt.findFirstOrThrow({
+      where: { intentId: robot.intent.id },
+    });
+    expect(JSON.parse(failedAttempt.responseSummaryJson)).toMatchObject({
+      status: 'failed',
+      providerCallCount: 3,
+      retryDelaysMs: [250, 500],
     });
   });
 

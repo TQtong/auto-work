@@ -59,6 +59,8 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
         providerRequestId: providerResult.providerRequestId,
         errorCode: null,
         errorSummary: null,
+        providerCallCount: providerResult.providerCallCount,
+        retryDelaysMs: providerResult.retryDelaysMs,
       });
       return {
         intentId: intent.id,
@@ -69,7 +71,7 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
         attemptNo: attempt.attemptNo,
       };
     } catch (error) {
-      const classification = this.classifyFailure(error);
+      const classification = this.classifyFailure(error, intent.channel);
       await this.finishAttempt(intent.id, attempt.id, {
         status: classification.status,
         externalId: null,
@@ -77,6 +79,8 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
         providerRequestId: null,
         errorCode: classification.errorCode,
         errorSummary: classification.errorSummary,
+        providerCallCount: classification.providerCallCount,
+        retryDelaysMs: classification.retryDelaysMs,
       });
       if (classification.status === 'unknown') {
         // 外部平台可能已经创建日志。先固定 unknown 事实，再让 manual_review 作业进入人工复核，绝不正常返回为成功。
@@ -151,6 +155,8 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
       externalId: result.reportId,
       externalUrl: null,
       providerRequestId: result.requestId,
+      providerCallCount: 1,
+      retryDelaysMs: [] as number[],
     };
   }
 
@@ -200,6 +206,8 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
       externalId: formalLog.externalId,
       externalUrl: null,
       providerRequestId: result.requestId,
+      providerCallCount: result.providerCallCount,
+      retryDelaysMs: result.retryDelaysMs,
     };
   }
 
@@ -250,6 +258,8 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
       providerRequestId: string | null;
       errorCode: string | null;
       errorSummary: string | null;
+      providerCallCount: number;
+      retryDelaysMs: number[];
     },
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
@@ -267,6 +277,8 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
             hasExternalId: Boolean(result.externalId),
             providerRequestId: result.providerRequestId,
             errorCode: result.errorCode,
+            providerCallCount: result.providerCallCount,
+            retryDelaysMs: result.retryDelaysMs,
           }),
           completedAt: new Date(),
         },
@@ -312,20 +324,50 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
     });
   }
 
-  private classifyFailure(error: unknown): {
+  private classifyFailure(
+    error: unknown,
+    channel: string,
+  ): {
     status: 'failed' | 'unknown';
     errorCode: string;
     errorSummary: string;
+    providerCallCount: number;
+    retryDelaysMs: number[];
   } {
     const domain = error instanceof DomainError ? error : null;
     const errorCode = domain?.code ?? 'DINGTALK_DELIVERY_FAILED';
+    const details = this.parseObject(domain?.options.details);
+    const providerCallCount =
+      typeof details.providerCallCount === 'number' &&
+      Number.isInteger(details.providerCallCount) &&
+      details.providerCallCount >= 1 &&
+      details.providerCallCount <= 3
+        ? details.providerCallCount
+        : 1;
+    const retryDelaysMs = this.parseArray(details.retryDelaysMs).flatMap((value) =>
+      typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 30_000
+        ? [value]
+        : [],
+    );
+    const explicitRobotFailure =
+      channel === 'dingtalk_robot' &&
+      [
+        'DINGTALK_ROBOT_RATE_LIMITED',
+        'DINGTALK_ROBOT_RESPONSE_ERROR',
+        'DINGTALK_ROBOT_PERMISSION_DENIED',
+        'DINGTALK_ROBOT_SIGNATURE_INVALID',
+        'DINGTALK_ROBOT_API_ERROR',
+      ].includes(errorCode);
     const resultUnknown =
-      ['EXTERNAL_REQUEST_TIMEOUT', 'EXTERNAL_REQUEST_FAILED'].includes(errorCode) ||
-      (domain?.options.retryable === true && !errorCode.includes('RATE_LIMITED'));
+      !explicitRobotFailure &&
+      (['EXTERNAL_REQUEST_TIMEOUT', 'EXTERNAL_REQUEST_FAILED'].includes(errorCode) ||
+        (domain?.options.retryable === true && !errorCode.includes('RATE_LIMITED')));
     return {
       status: resultUnknown ? 'unknown' : 'failed',
       errorCode,
       errorSummary: (error instanceof Error ? error.message : '钉钉交付失败').slice(0, 500),
+      providerCallCount,
+      retryDelaysMs,
     };
   }
 
