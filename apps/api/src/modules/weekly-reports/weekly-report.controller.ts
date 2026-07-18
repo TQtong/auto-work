@@ -34,12 +34,14 @@ import {
   restoreWeeklyReportVersionSchema,
   retryWeeklyReportDeliverySchema,
   submitWeeklyReportLogSchema,
+  updateWeeklyReminderPolicySchema,
 } from './weekly-report.schemas.js';
 import { WeeklyReportAttachmentService } from './weekly-report-attachment.service.js';
 import { WeeklyReportAiService } from './weekly-report-ai.service.js';
 import { WeeklyReportDeliveryService } from './weekly-report-delivery.service.js';
 import { WeeklyReportDeliveryRecoveryService } from './weekly-report-delivery-recovery.service.js';
 import { WeeklyReportNotificationService } from './weekly-report-notification.service.js';
+import { WeeklyReportReminderPolicyService } from './weekly-report-reminder-policy.service.js';
 import { WeeklyReportService } from './weekly-report.service.js';
 
 const maxAttachmentBytes = 8 * 1024 * 1024;
@@ -53,11 +55,29 @@ export class WeeklyReportController {
     private readonly delivery: WeeklyReportDeliveryService,
     private readonly deliveryRecovery: WeeklyReportDeliveryRecoveryService,
     private readonly notifications: WeeklyReportNotificationService,
+    private readonly reminderPolicy: WeeklyReportReminderPolicyService,
     private readonly idempotency: IdempotencyService,
     private readonly audit: AuditService,
     private readonly sessions: SessionService,
     private readonly security: LocalSecurityService,
   ) {}
+
+  @Get('reminder-policy')
+  public async getReminderPolicy(@Req() request: FastifyRequest) {
+    return apiResponse(await this.reminderPolicy.get(), request.autoWork.correlationId);
+  }
+
+  @Put('reminder-policy')
+  public async updateReminderPolicy(@Body() rawBody: unknown, @Req() request: FastifyRequest) {
+    const input = updateWeeklyReminderPolicySchema.parse(rawBody);
+    return apiResponse(
+      await this.reminderPolicy.update(input, {
+        correlationId: request.autoWork.correlationId,
+        sessionId: request.autoWork.sessionId,
+      }),
+      request.autoWork.correlationId,
+    );
+  }
 
   @Post('generate')
   @HttpCode(202)

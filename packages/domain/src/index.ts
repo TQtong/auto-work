@@ -8,3 +8,4 @@ export * from './lib/state-machine.js';
 export * from './lib/url-policy.js';
 export * from './lib/evidence-matching.js';
 export * from './lib/weekly-report-rules.js';
+export * from './lib/weekly-reminder-schedule.js';

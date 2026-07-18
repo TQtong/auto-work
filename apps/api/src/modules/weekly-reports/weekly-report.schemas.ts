@@ -255,6 +255,48 @@ export const notifyWeeklyReportRiskSchema = z
     }
   });
 
+const weeklyReminderClockSchema = z
+  .object({
+    enabled: z.boolean(),
+    weekday: z.number().int().min(1).max(7),
+    time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/u),
+  })
+  .strict();
+
+export const updateWeeklyReminderPolicySchema = z
+  .object({
+    version: z.number().int().min(0),
+    enabled: z.boolean(),
+    robotConnectionId: z.string().trim().min(1).max(100).nullable(),
+    timezone: z.literal('Asia/Shanghai'),
+    workingWeekdays: z.array(z.number().int().min(1).max(7)).min(1).max(7),
+    generation: weeklyReminderClockSchema,
+    confirmation: weeklyReminderClockSchema,
+    deadline: weeklyReminderClockSchema,
+    graceMinutes: z.number().int().min(0).max(1_440),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.workingWeekdays).size !== value.workingWeekdays.length) {
+      context.addIssue({ code: 'custom', path: ['workingWeekdays'], message: '工作星期不得重复' });
+    }
+    if (value.enabled && !value.robotConnectionId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['robotConnectionId'],
+        message: '启用提醒策略必须选择钉钉机器人',
+      });
+    }
+    if (
+      value.enabled &&
+      !value.generation.enabled &&
+      !value.confirmation.enabled &&
+      !value.deadline.enabled
+    ) {
+      context.addIssue({ code: 'custom', message: '启用策略时至少启用一种提醒' });
+    }
+  });
+
 export const reconcileWeeklyReportDeliverySchema = z
   .object({
     intentVersion: z.number().int().positive(),
@@ -307,6 +349,7 @@ export type SubmitWeeklyReportLogInput = z.infer<typeof submitWeeklyReportLogSch
 export type NotifyWeeklyReportGroupInput = z.infer<typeof notifyWeeklyReportGroupSchema>;
 export type NotifyWeeklyReportFailureInput = z.infer<typeof notifyWeeklyReportFailureSchema>;
 export type NotifyWeeklyReportRiskInput = z.infer<typeof notifyWeeklyReportRiskSchema>;
+export type UpdateWeeklyReminderPolicyInput = z.infer<typeof updateWeeklyReminderPolicySchema>;
 export type ReconcileWeeklyReportDeliveryInput = z.infer<
   typeof reconcileWeeklyReportDeliverySchema
 >;

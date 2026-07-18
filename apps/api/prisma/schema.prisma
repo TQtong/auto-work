@@ -27,18 +27,19 @@ model InstanceLease {
 }
 
 model UserProfile {
-  id                    String                 @id
-  windowsSid            String                 @unique @map("windows_sid")
-  displayName           String                 @map("display_name")
-  timezone              String                 @default("Asia/Shanghai")
-  workdayHours          Int                    @default(8) @map("workday_hours")
-  version               Int                    @default(1)
-  createdAt             DateTime               @default(now()) @map("created_at")
-  updatedAt             DateTime               @updatedAt @map("updated_at")
+  id                    String                      @id
+  windowsSid            String                      @unique @map("windows_sid")
+  displayName           String                      @map("display_name")
+  timezone              String                      @default("Asia/Shanghai")
+  workdayHours          Int                         @default(8) @map("workday_hours")
+  version               Int                         @default(1)
+  createdAt             DateTime                    @default(now()) @map("created_at")
+  updatedAt             DateTime                    @updatedAt @map("updated_at")
   aliases               IdentityAlias[]
   aiGenerations         AiGeneration[]
   reportSourceSnapshots ReportSourceSnapshot[]
   weeklyReports         WeeklyReport[]
+  weeklyReminderPolicy  WeeklyReportReminderPolicy?
 
   @@map("user_profile")
 }
@@ -255,6 +256,7 @@ model IntegrationConnection {
   dingtalkRecipientSnapshots DingTalkRecipientValidation[]
   deliveryIntents            DeliveryIntent[]
   robotNotifications         RobotNotification[]
+  weeklyReminderPolicies     WeeklyReportReminderPolicy[]
   aiGenerations              AiGeneration[]
 
   @@index([type, enabled, status])
@@ -870,6 +872,34 @@ model WeeklyReport {
   @@index([ownerProfileId, periodStart, periodEnd])
   @@index([status, updatedAt])
   @@map("weekly_report")
+}
+
+/// 周报提醒策略只保存非秘密调度参数；机器人凭证仍由 IntegrationConnection 的保险箱引用管理。
+model WeeklyReportReminderPolicy {
+  id                  String                 @id
+  profileId           String                 @unique @map("profile_id")
+  robotConnectionId   String?                @map("robot_connection_id")
+  enabled             Boolean                @default(false)
+  timezone            String                 @default("Asia/Shanghai")
+  workingWeekdaysJson String                 @default("[1,2,3,4,5]") @map("working_weekdays_json")
+  generationEnabled   Boolean                @default(true) @map("generation_enabled")
+  generationWeekday   Int                    @default(5) @map("generation_weekday")
+  generationTime      String                 @default("14:00") @map("generation_time")
+  confirmationEnabled Boolean                @default(true) @map("confirmation_enabled")
+  confirmationWeekday Int                    @default(5) @map("confirmation_weekday")
+  confirmationTime    String                 @default("16:00") @map("confirmation_time")
+  deadlineEnabled     Boolean                @default(true) @map("deadline_enabled")
+  deadlineWeekday     Int                    @default(5) @map("deadline_weekday")
+  deadlineTime        String                 @default("17:30") @map("deadline_time")
+  graceMinutes        Int                    @default(120) @map("grace_minutes")
+  version             Int                    @default(1)
+  createdAt           DateTime               @default(now()) @map("created_at")
+  updatedAt           DateTime               @updatedAt @map("updated_at")
+  profile             UserProfile            @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  robotConnection     IntegrationConnection? @relation(fields: [robotConnectionId], references: [id], onDelete: Restrict)
+
+  @@index([enabled, updatedAt])
+  @@map("weekly_report_reminder_policy")
 }
 
 model WeeklyReportVersion {

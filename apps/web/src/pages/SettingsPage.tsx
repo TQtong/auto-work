@@ -27,7 +27,14 @@ import {
   type WeeklyReportWarningRuleCode,
 } from '@auto-work/contracts';
 import { apiRequest } from '../api/client.js';
-import type { GitLabProjectCache, IdentityAlias, Integration, UserProfile } from '../api/types.js';
+import type {
+  GitLabProjectCache,
+  IdentityAlias,
+  Integration,
+  UserProfile,
+  WeeklyReportReminderClock,
+  WeeklyReportReminderPolicy,
+} from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
 import { JiraSettingsModal } from './JiraSettingsModal.js';
 
@@ -65,6 +72,17 @@ interface IntegrationFormValues {
   gitlabHistoryDays?: number;
 }
 
+interface ReminderPolicyFormValues {
+  enabled: boolean;
+  robotConnectionId: string | null;
+  timezone: 'Asia/Shanghai';
+  workingWeekdays: number[];
+  generation: WeeklyReportReminderClock;
+  confirmation: WeeklyReportReminderClock;
+  deadline: WeeklyReportReminderClock;
+  graceMinutes: number;
+}
+
 export function SettingsPage() {
   return (
     <Space direction="vertical" size={20} style={{ width: '100%' }}>
@@ -77,6 +95,7 @@ export function SettingsPage() {
       <Tabs
         items={[
           { key: 'profile', label: '个人身份与别名', children: <ProfileSettings /> },
+          { key: 'reminders', label: '周报提醒', children: <ReminderPolicySettings /> },
           { key: 'integrations', label: '外部集成', children: <IntegrationSettings /> },
         ]}
       />
@@ -240,6 +259,188 @@ function ProfileSettings() {
     </Space>
   );
 }
+
+function ReminderPolicySettings() {
+  const queryClient = useQueryClient();
+  const [form] = Form.useForm<ReminderPolicyFormValues>();
+  const [messageApi, holder] = message.useMessage();
+  const policy = useQuery({
+    queryKey: ['weekly-report-reminder-policy'],
+    queryFn: () => apiRequest<WeeklyReportReminderPolicy>('/api/v1/weekly-reports/reminder-policy'),
+  });
+  const integrations = useQuery({
+    queryKey: ['integrations'],
+    queryFn: () => apiRequest<Integration[]>('/api/v1/integrations'),
+  });
+  useEffect(() => {
+    if (policy.data?.data) form.setFieldsValue(policy.data.data);
+  }, [form, policy.data]);
+  const save = useMutation({
+    mutationFn: (values: ReminderPolicyFormValues) =>
+      apiRequest<WeeklyReportReminderPolicy>('/api/v1/weekly-reports/reminder-policy', {
+        method: 'PUT',
+        body: JSON.stringify({ ...values, version: policy.data?.data.version ?? 0 }),
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['weekly-report-reminder-policy'] });
+      void messageApi.success('周报提醒策略已保存；保存本身不会发送消息');
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+  const healthyRobots = (integrations.data?.data ?? []).filter(
+    (item) =>
+      item.type === 'dingtalk_robot' &&
+      item.enabled &&
+      item.status === 'healthy' &&
+      !item.credentialReplacementPending,
+  );
+
+  return (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      {holder}
+      <Alert
+        type="info"
+        showIcon
+        message="提醒只通过已测试健康的加签机器人发送"
+        description="生成、确认和截止提醒按 Asia/Shanghai 计算；保存策略不会发消息，也不会自动生成、确认或正式提交周报。应用休眠后的宽限补发将在调度账本中单独留痕。"
+      />
+      <Card title="工作周与三阶段提醒" loading={policy.isLoading || integrations.isLoading}>
+        <Form<ReminderPolicyFormValues>
+          form={form}
+          layout="vertical"
+          onFinish={(values) => save.mutate(values)}
+        >
+          <div className="form-grid">
+            <Form.Item name="enabled" label="启用提醒策略" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item
+              name="robotConnectionId"
+              label="提醒机器人"
+              dependencies={['enabled']}
+              rules={[
+                ({ getFieldValue }) => ({
+                  validator: (_rule, value: unknown) =>
+                    getFieldValue('enabled') && !value
+                      ? Promise.reject(new Error('启用提醒必须选择健康机器人'))
+                      : Promise.resolve(),
+                }),
+              ]}
+            >
+              <Select
+                allowClear
+                placeholder="选择已测试健康的机器人"
+                options={healthyRobots.map((item) => ({ value: item.id, label: item.name }))}
+              />
+            </Form.Item>
+            <Form.Item name="timezone" label="固定业务时区">
+              <Input disabled />
+            </Form.Item>
+            <Form.Item
+              name="workingWeekdays"
+              label="工作星期"
+              rules={[{ required: true, message: '至少选择一个工作日' }]}
+            >
+              <Select mode="multiple" options={weekdayOptions} />
+            </Form.Item>
+            <Form.Item
+              name="graceMinutes"
+              label="休眠恢复宽限（分钟）"
+              rules={[{ required: true }]}
+              extra="恢复时仍在宽限内只补发一次；超出后记录 skipped。"
+            >
+              <InputNumber min={0} max={1440} precision={0} style={{ width: '100%' }} />
+            </Form.Item>
+          </div>
+          <div className="form-grid">
+            <ReminderClockFields prefix="generation" label="生成提醒" />
+            <ReminderClockFields prefix="confirmation" label="确认提醒" />
+            <ReminderClockFields prefix="deadline" label="截止提醒" />
+          </div>
+          <Button type="primary" htmlType="submit" loading={save.isPending}>
+            保存提醒策略
+          </Button>
+        </Form>
+      </Card>
+      <Card title="未来计划预览">
+        <Table
+          rowKey={(row) => `${row.cycleKey}:${row.reminderType}`}
+          dataSource={policy.data?.data.upcoming ?? []}
+          pagination={false}
+          locale={{ emptyText: '当前配置没有未来提醒时刻' }}
+          columns={[
+            {
+              title: '类型',
+              dataIndex: 'reminderType',
+              render: (value: WeeklyReportReminderPolicy['upcoming'][number]['reminderType']) =>
+                reminderTypeLabels[value],
+            },
+            {
+              title: '周期',
+              render: (_value: unknown, row: WeeklyReportReminderPolicy['upcoming'][number]) =>
+                `${row.periodStart} 至 ${row.periodEnd}`,
+            },
+            {
+              title: '计划时间',
+              dataIndex: 'scheduledFor',
+              render: (value: string) => new Date(value).toLocaleString('zh-CN'),
+            },
+            {
+              title: '补发截止',
+              dataIndex: 'graceUntil',
+              render: (value: string) => new Date(value).toLocaleString('zh-CN'),
+            },
+          ]}
+        />
+      </Card>
+    </Space>
+  );
+}
+
+function ReminderClockFields({
+  prefix,
+  label,
+}: {
+  prefix: 'generation' | 'confirmation' | 'deadline';
+  label: string;
+}) {
+  return (
+    <Card size="small" title={label}>
+      <Form.Item name={[prefix, 'enabled']} label="启用" valuePropName="checked">
+        <Switch />
+      </Form.Item>
+      <Form.Item name={[prefix, 'weekday']} label="星期" rules={[{ required: true }]}>
+        <Select options={weekdayOptions} />
+      </Form.Item>
+      <Form.Item
+        name={[prefix, 'time']}
+        label="时刻"
+        rules={[
+          { required: true },
+          { pattern: /^(?:[01]\d|2[0-3]):[0-5]\d$/u, message: '请输入 HH:mm' },
+        ]}
+      >
+        <Input placeholder="17:30" maxLength={5} />
+      </Form.Item>
+    </Card>
+  );
+}
+
+const weekdayOptions = [
+  { value: 1, label: '周一' },
+  { value: 2, label: '周二' },
+  { value: 3, label: '周三' },
+  { value: 4, label: '周四' },
+  { value: 5, label: '周五' },
+  { value: 6, label: '周六' },
+  { value: 7, label: '周日' },
+];
+
+const reminderTypeLabels = {
+  generation_reminder: '生成提醒',
+  confirmation_reminder: '确认提醒',
+  deadline_reminder: '截止提醒',
+} satisfies Record<WeeklyReportReminderPolicy['upcoming'][number]['reminderType'], string>;
 
 function IntegrationSettings() {
   const queryClient = useQueryClient();

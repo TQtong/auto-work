@@ -28,6 +28,36 @@ export interface UserProfile {
   aliases: IdentityAlias[];
 }
 
+export interface WeeklyReportReminderPolicy {
+  id: string | null;
+  version: number;
+  enabled: boolean;
+  robotConnectionId: string | null;
+  timezone: 'Asia/Shanghai';
+  workingWeekdays: number[];
+  generation: WeeklyReportReminderClock;
+  confirmation: WeeklyReportReminderClock;
+  deadline: WeeklyReportReminderClock;
+  graceMinutes: number;
+  upcoming: Array<{
+    cycleKey: string;
+    reminderType: 'generation_reminder' | 'confirmation_reminder' | 'deadline_reminder';
+    periodStart: string;
+    periodEnd: string;
+    reportDate: string;
+    scheduledFor: string;
+    graceUntil: string;
+  }>;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface WeeklyReportReminderClock {
+  enabled: boolean;
+  weekday: number;
+  time: string;
+}
+
 export interface Integration {
   id: string;
   type: 'gitlab' | 'jira' | 'dingtalk_log' | 'dingtalk_robot' | 'ai';
