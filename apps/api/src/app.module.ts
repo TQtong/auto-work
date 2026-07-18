@@ -24,6 +24,7 @@ import { WeeklyReportModule } from './modules/weekly-reports/weekly-report.modul
 import { AiModule } from './modules/ai/ai.module.js';
 import { DingTalkModule } from './modules/dingtalk/dingtalk.module.js';
 import { QuarterlyReviewModule } from './modules/quarterly-reviews/quarterly-review.module.js';
+import { DiagnosticsModule } from './modules/diagnostics/diagnostics.module.js';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { QuarterlyReviewModule } from './modules/quarterly-reviews/quarterly-rev
     WeeklyReportModule,
     QuarterlyReviewModule,
     BackupModule,
+    DiagnosticsModule,
     RepositoriesModule,
     HealthModule,
   ],

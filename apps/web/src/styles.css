@@ -302,6 +302,11 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.operations-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  gap: 16px;
+}
 @media (max-width: 1280px) {
   .app-content {
     padding: 20px;
@@ -319,5 +324,8 @@ body {
   }
   .quarterly-template-grid {
     grid-template-columns: repeat(2, minmax(240px, 1fr));
+  }
+  .operations-stat-grid {
+    grid-template-columns: repeat(2, minmax(160px, 1fr));
   }
 }

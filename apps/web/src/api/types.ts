@@ -137,6 +137,68 @@ export interface Backup {
   createdAt: string;
 }
 
+export interface DiagnosticFacts {
+  generatedAt: string;
+  runtime: {
+    applicationVersion: string;
+    schemaChecksum: string;
+    nodeVersion: string;
+    platform: string;
+    architecture: string;
+    uptimeSeconds: number;
+    environment: string;
+    binding: { host: string; port: number; loopbackOnly: boolean };
+  };
+  database: {
+    journalMode: string;
+    pageCount: number;
+    pageSizeBytes: number;
+    freePageCount: number;
+    databaseLocationHash: string;
+    readiness: { ready: boolean; quickCheck: string };
+  };
+  storage: {
+    totalBytes: number;
+    availableBytes: number;
+    databaseBytes: number;
+    categories: Record<string, number>;
+    dataDirectoryHash: string;
+  };
+  jobs: Record<string, number>;
+  integrations: Array<{ type: string; status: string; count: number }>;
+  backups: {
+    totalRecorded: number;
+    latestStatus: string | null;
+    latestCreatedAt: string | null;
+    latestVerifiedAt: string | null;
+    verificationAgeHours: number | null;
+  };
+  audit: { immutableEventCount: number };
+  recentErrors: Array<{
+    timestamp: string;
+    level: string;
+    component: string;
+    eventName: string;
+    outcome: string | null;
+    errorCode: string | null;
+    durationMs: number | null;
+  }>;
+}
+
+export interface DiagnosticBundlePreview {
+  formatVersion: string;
+  includedSections: string[];
+  exclusions: string[];
+}
+
+export interface DiagnosticBundle {
+  bundleId: string;
+  fileName: string;
+  sizeBytes: number;
+  sha256: string;
+  createdAt: string;
+}
+
 export interface ProjectSummary {
   id: string;
   name: string;
