@@ -11,6 +11,8 @@ import fastifyStatic from '@fastify/static';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { AppModule } from './app.module.js';
 import { APP_CONFIG, type AppConfig } from './config/config.module.js';
+import { loadAppConfig } from './config/app-config.js';
+import { applyPendingRestore } from './infrastructure/database/pending-restore.js';
 import { ApiExceptionFilter } from './infrastructure/http/api-exception.filter.js';
 import {
   LocalSecurityRejection,
@@ -20,6 +22,13 @@ import {
 const CORRELATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 
 async function bootstrap(): Promise<void> {
+  const pendingRestore = await applyPendingRestore(loadAppConfig());
+  if (pendingRestore) {
+    Logger.warn(
+      `已在数据库连接前应用恢复 ${pendingRestore.restoreId}；原数据库保存在紧急安全副本`,
+      'Bootstrap',
+    );
+  }
   const adapter = new FastifyAdapter({
     bodyLimit: 2 * 1024 * 1024,
     trustProxy: false,
