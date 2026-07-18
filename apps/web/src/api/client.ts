@@ -31,6 +31,13 @@ export interface LocalSession {
   csrfToken: string;
 }
 
+export interface DownloadedFile {
+  blob: Blob;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+}
+
 let sessionPromise: Promise<ApiEnvelope<LocalSession>> | undefined;
 
 export async function getSession(): Promise<ApiEnvelope<LocalSession>> {
@@ -54,6 +61,50 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
     headers.set('Content-Type', 'application/json; charset=utf-8');
   }
   return rawRequest<ApiEnvelope<T>>(path, { ...init, method, headers });
+}
+
+export async function apiDownload(path: string): Promise<DownloadedFile> {
+  const response = await fetch(path, {
+    method: 'GET',
+    credentials: 'same-origin',
+    headers: { Accept: 'application/octet-stream, application/json' },
+  });
+  if (!response.ok) {
+    let payload: ApiErrorPayload;
+    try {
+      payload = (await response.json()) as ApiErrorPayload;
+    } catch {
+      payload = {
+        code: 'DOWNLOAD_RESPONSE_INVALID',
+        message: `文件下载失败（HTTP ${response.status}）`,
+        correlationId: response.headers.get('X-Correlation-Id') ?? 'unknown',
+        retryable: false,
+        suggestedAction: 'refresh',
+      };
+    }
+    throw new ApiClientError(response.status, payload);
+  }
+  const blob = await response.blob();
+  const contentType = response.headers.get('Content-Type') ?? 'application/octet-stream';
+  return {
+    blob,
+    fileName: downloadFileName(response.headers.get('Content-Disposition')),
+    contentType,
+    sizeBytes: blob.size,
+  };
+}
+
+function downloadFileName(disposition: string | null): string {
+  if (!disposition) return 'download.bin';
+  const encoded = /filename\*=UTF-8''([^;]+)/iu.exec(disposition)?.[1];
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      // 编码文件名损坏时继续使用服务端提供的 ASCII fallback，不猜测 Unicode 内容。
+    }
+  }
+  return /filename="([^"]+)"/iu.exec(disposition)?.[1] ?? 'download.bin';
 }
 
 async function rawRequest<T>(path: string, init: RequestInit): Promise<T> {

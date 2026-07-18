@@ -1081,3 +1081,307 @@ export interface DingTalkRecipientValidation {
   expiresAt: string;
   contentHash: string;
 }
+
+export type QuarterlyFormulaType = 'weighted_average_100' | 'weighted_sum' | 'simple_sum';
+export type QuarterlyRoundingRule =
+  'none' | 'half_up_integer' | 'half_up_1_decimal' | 'floor_integer' | 'ceil_integer';
+
+export interface QuarterlyMetric {
+  id: string;
+  code: string;
+  name: string;
+  definition: string;
+  weight: number;
+  minimum: number;
+  maximum: number;
+  step: number;
+  required: boolean;
+  evidenceRequirement: Record<string, unknown>;
+  order: number;
+  enabled: boolean;
+}
+
+export interface QuarterlyMetricTemplateVersion {
+  id: string;
+  versionNo: number;
+  formulaType: QuarterlyFormulaType;
+  roundingRule: QuarterlyRoundingRule;
+  contentHash: string;
+  metrics: QuarterlyMetric[];
+}
+
+export interface QuarterlyMetricTemplateListItem {
+  id: string;
+  name: string;
+  version: number;
+  currentVersion: QuarterlyMetricTemplateVersion | null;
+}
+
+export interface QuarterlyBoundMetricTemplate extends QuarterlyMetricTemplateVersion {
+  name: string;
+  versionId: string;
+}
+
+export interface QuarterlyScoreItem {
+  id: string;
+  metricId: string;
+  aiSuggestedScore: number | null;
+  aiSuggestedMinimum: number | null;
+  aiSuggestedMaximum: number | null;
+  aiReason: string | null;
+  aiEvidenceGaps: string[];
+  aiUncertainty: string | null;
+  userScore: number | null;
+  userReason: string | null;
+  rawContribution: number | null;
+  validationStatus: string;
+  version: number;
+}
+
+export interface QuarterlyCompleteness extends Record<string, unknown> {
+  sourceFreshness?: string;
+  evidenceCoverage?: number;
+  requiredMetricCoverage?: number;
+  scoreReasonCoverage?: number;
+  unresolvedConflictCount?: number;
+  selectedWithoutEvidenceCount?: number;
+  selectedWithoutMetricCount?: number;
+  requiredMetricUncoveredCount?: number;
+  duplicateEvidenceReferenceCount?: number;
+}
+
+export interface QuarterlyReviewSummary {
+  id: string;
+  name: string;
+  periodStart: string;
+  periodEnd: string;
+  nextPeriodStart: string;
+  timezone: string;
+  naturalQuarter: boolean;
+  year: number | null;
+  quarter: number | null;
+  status: string;
+  metricTemplateVersionId: string | null;
+  currentNarrativeVersionId: string | null;
+  currentConfirmationId: string | null;
+  achievementCount: number;
+  exportCount: number;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface QuarterlyReview extends QuarterlyReviewSummary {
+  completeness: QuarterlyCompleteness;
+  metricTemplate: QuarterlyBoundMetricTemplate | null;
+  scores: QuarterlyScoreItem[];
+}
+
+export interface QuarterlyReviewList {
+  items: QuarterlyReviewSummary[];
+  total: number;
+}
+
+export type QuarterlyAchievementStatus = 'candidate' | 'selected' | 'excluded' | 'needs_evidence';
+
+export interface QuarterlyAchievementEvidence {
+  id: string;
+  sourceType: string;
+  sourceId: string;
+  title: string;
+  externalKey: string | null;
+  url: string | null;
+  eventAt: string | null;
+  availabilityState: string;
+  sourceContentHash: string;
+  sourceSummary: Record<string, unknown>;
+  contributionAngle: string;
+  primaryEvidence: boolean;
+  duplicateInReview: boolean;
+}
+
+export interface QuarterlyAchievementMetricLink {
+  id: string;
+  metricId: string;
+  metricCode: string;
+  metricName: string;
+  contribution: string;
+  version: number;
+}
+
+export interface QuarterlyAchievement {
+  id: string;
+  reviewId: string;
+  project: { id: string; name: string } | null;
+  sourceType: 'collected' | 'manual';
+  sourceKey: string;
+  title: string;
+  situation: string;
+  action: string;
+  result: string;
+  impact: string;
+  contributionBoundary: string;
+  periodStart: string;
+  periodEnd: string;
+  selectionStatus: QuarterlyAchievementStatus;
+  exclusionReason: string | null;
+  evidenceStatus: string;
+  sortOrder: number;
+  version: number;
+  evidences: QuarterlyAchievementEvidence[];
+  metricLinks: QuarterlyAchievementMetricLink[];
+  warnings: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface QuarterlyCollectionSnapshot {
+  id: string;
+  sequenceNo: number;
+  sources: Record<string, boolean>;
+  freshnessPolicy: Record<string, unknown>;
+  warnings: unknown[];
+  taskCount: number;
+  evidenceCount: number;
+  weeklyReportCount: number;
+  sourceContentHash: string;
+  generationHash: string;
+  createdAt: string;
+}
+
+export interface QuarterlyNarrativeCoreAchievement {
+  heading: string;
+  body: string;
+  achievementIds: string[];
+  metricIds: string[];
+  evidenceIds: string[];
+}
+
+export interface QuarterlyNarrativeContent {
+  overallOverview: string;
+  coreAchievements: QuarterlyNarrativeCoreAchievement[];
+  collaborationAndGrowth: string;
+  problemsAndImprovements: string;
+  nextPeriodPlan: string;
+}
+
+export interface QuarterlyNarrativeVersion {
+  id: string;
+  reviewId: string;
+  versionNo: number;
+  origin: 'rule' | 'manual' | 'ai';
+  parentVersionId: string | null;
+  sourceSnapshotHash: string;
+  aiGenerationId: string | null;
+  contentHash: string;
+  changeSummary: Record<string, unknown>;
+  content?: QuarterlyNarrativeContent;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface QuarterlyAiGeneration {
+  id: string;
+  reviewId: string | null;
+  baseReviewVersion: number | null;
+  providerConnectionId: string;
+  providerConfigVersion: number;
+  purpose: 'score_suggestion' | 'quarterly_review';
+  promptTemplateVersion: string;
+  sanitizationPolicyVersion: string;
+  retentionMode: string;
+  requestedFields: string[];
+  inputCategories: string[];
+  removedCategories: string[];
+  sanitizedInputHash: string | null;
+  protocol: string;
+  model: string;
+  providerRequestId: string | null;
+  stopReason: string | null;
+  usage: Record<string, unknown>;
+  durationMs: number | null;
+  status: 'pending' | 'succeeded' | 'failed' | 'blocked';
+  errorCode: string | null;
+  securityBlocks: string[];
+  adoptionStatus: 'pending' | 'adopted' | 'rejected' | 'not_applicable';
+  decisionReason: string | null;
+  decidedAt: string | null;
+  stale: boolean;
+  inputRefs?: unknown[];
+  rawOutput?: string | null;
+  parsedOutput?: unknown;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface QuarterlyAiGenerationList {
+  items: QuarterlyAiGeneration[];
+  total: number;
+}
+
+export interface QuarterlyConfirmationPreflight {
+  confirmable: boolean;
+  blockers: Array<{ code: string; message: string }>;
+  requiredAcknowledgements: Array<{ code: string; message: string; count: number }>;
+  completeness: QuarterlyCompleteness;
+}
+
+export interface QuarterlyPerformanceCalculation {
+  formulaType: QuarterlyFormulaType;
+  roundingRule: QuarterlyRoundingRule;
+  rawTotal: number;
+  finalTotal: number;
+  scoreCount: number;
+  metricCount: number;
+  items?: Array<Record<string, unknown>>;
+}
+
+export interface QuarterlyReviewConfirmation {
+  id: string;
+  reviewId: string;
+  reviewVersion: number;
+  metricTemplateVersionId: string;
+  narrativeVersionId: string;
+  snapshotHash: string;
+  achievementsHash: string;
+  scoresHash: string;
+  calculation: QuarterlyPerformanceCalculation;
+  acknowledgements: Array<Record<string, unknown>>;
+  status: 'active' | 'invalidated';
+  confirmedBy: string;
+  confirmedAt: string;
+  invalidatedAt: string | null;
+  invalidationReason: string | null;
+  reviewSnapshot?: Record<string, unknown>;
+  achievementsSnapshot?: unknown[];
+  scoresSnapshot?: unknown[];
+  templateSnapshot?: Record<string, unknown>;
+  narrativeSnapshot?: Record<string, unknown>;
+  completenessSnapshot?: QuarterlyCompleteness;
+}
+
+export interface QuarterlyExportArtifact {
+  id: string;
+  reviewId: string;
+  confirmationId: string;
+  format: 'xlsx' | 'docx';
+  templateVersion: string;
+  inputSnapshotHash: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  attemptCount: number;
+  version: number;
+  jobId: string | null;
+  fileName: string | null;
+  mimeType: string | null;
+  contentHash: string | null;
+  sizeBytes: number | null;
+  qaStatus: 'pending' | 'passed' | 'failed';
+  errorCode: string | null;
+  errorSummary: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  updatedAt: string;
+  qaReport?: Record<string, unknown>;
+  rendererFacts?: Record<string, unknown>;
+}
