@@ -11,6 +11,7 @@ import {
   Card,
   Checkbox,
   Descriptions,
+  InputNumber,
   Progress,
   Space,
   Statistic,
@@ -28,6 +29,9 @@ import type {
   DiagnosticBundlePreview,
   DiagnosticFacts,
   Job,
+  RetentionPolicy,
+  RetentionPreview,
+  RetentionResult,
 } from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
 
@@ -55,6 +59,12 @@ export function OperationsPage() {
 function DiagnosticsPanel() {
   const queryClient = useQueryClient();
   const [acknowledged, setAcknowledged] = useState(false);
+  const [retentionAcknowledged, setRetentionAcknowledged] = useState(false);
+  const [retentionPolicy, setRetentionPolicy] = useState<RetentionPolicy>({
+    eventLogDays: 30,
+    terminalJobDays: 90,
+    diagnosticBundleDays: 30,
+  });
   const [messageApi, holder] = message.useMessage();
   const facts = useQuery({
     queryKey: ['maintenance-diagnostics'],
@@ -95,6 +105,43 @@ function DiagnosticsPanel() {
       anchor.download = file.fileName;
       anchor.click();
       URL.revokeObjectURL(url);
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+  const retentionPreview = useQuery({
+    queryKey: ['retention-preview', retentionPolicy],
+    queryFn: () =>
+      apiRequest<RetentionPreview>('/api/v1/maintenance/retention/preview', {
+        method: 'POST',
+        body: JSON.stringify(retentionPolicy),
+      }),
+  });
+  const executeRetention = useMutation({
+    mutationFn: () => {
+      const previewHash = retentionPreview.data?.data.previewHash;
+      if (!previewHash) throw new Error('留存预览尚未完成');
+      return apiRequest<RetentionResult>('/api/v1/maintenance/retention/execute', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...retentionPolicy,
+          acknowledgedPreservationBoundary: true,
+          expectedPreviewHash: previewHash,
+        }),
+      });
+    },
+    onSuccess: async (response) => {
+      setRetentionAcknowledged(false);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['retention-preview'] }),
+        queryClient.invalidateQueries({ queryKey: ['maintenance-diagnostics'] }),
+        queryClient.invalidateQueries({ queryKey: ['diagnostic-bundles'] }),
+        queryClient.invalidateQueries({ queryKey: ['jobs'] }),
+        queryClient.invalidateQueries({ queryKey: ['audit'] }),
+      ]);
+      const deleted = response.data.deleted;
+      void messageApi.success(
+        `留存清理完成：事件 ${deleted.eventLogs}、幂等 ${deleted.expiredIdempotency}、作业 ${deleted.terminalJobs}、诊断包 ${deleted.diagnosticBundles}`,
+      );
     },
     onError: (error: Error) => void messageApi.error(error.message),
   });
@@ -251,6 +298,104 @@ function DiagnosticsPanel() {
               },
             ]}
           />
+        </Space>
+      </Card>
+      <Card
+        title="留存策略与受控清理"
+        extra={
+          <Button
+            danger
+            disabled={!retentionAcknowledged || !retentionPreview.data}
+            loading={executeRetention.isPending}
+            onClick={() => executeRetention.mutate()}
+          >
+            按当前预览执行清理
+          </Button>
+        }
+      >
+        <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <div className="operations-retention-grid">
+            <label>
+              <Typography.Text>结构化事件保留天数</Typography.Text>
+              <InputNumber
+                min={7}
+                max={3650}
+                value={retentionPolicy.eventLogDays}
+                onChange={(value) => {
+                  setRetentionAcknowledged(false);
+                  setRetentionPolicy((current) => ({ ...current, eventLogDays: value ?? 30 }));
+                }}
+              />
+            </label>
+            <label>
+              <Typography.Text>终态作业保留天数</Typography.Text>
+              <InputNumber
+                min={30}
+                max={3650}
+                value={retentionPolicy.terminalJobDays}
+                onChange={(value) => {
+                  setRetentionAcknowledged(false);
+                  setRetentionPolicy((current) => ({ ...current, terminalJobDays: value ?? 90 }));
+                }}
+              />
+            </label>
+            <label>
+              <Typography.Text>诊断包保留天数</Typography.Text>
+              <InputNumber
+                min={7}
+                max={3650}
+                value={retentionPolicy.diagnosticBundleDays}
+                onChange={(value) => {
+                  setRetentionAcknowledged(false);
+                  setRetentionPolicy((current) => ({
+                    ...current,
+                    diagnosticBundleDays: value ?? 30,
+                  }));
+                }}
+              />
+            </label>
+          </div>
+          {retentionPreview.data ? (
+            <Descriptions bordered size="small" column={3}>
+              <Descriptions.Item label="待清结构化事件">
+                {retentionPreview.data.data.candidates.eventLogs}
+              </Descriptions.Item>
+              <Descriptions.Item label="待清过期幂等">
+                {retentionPreview.data.data.candidates.expiredIdempotency}
+              </Descriptions.Item>
+              <Descriptions.Item label="待清终态作业">
+                {retentionPreview.data.data.candidates.terminalJobs}
+              </Descriptions.Item>
+              <Descriptions.Item label="待清诊断包">
+                {retentionPreview.data.data.candidates.diagnosticBundles} 份 /{' '}
+                {formatBytes(retentionPreview.data.data.candidates.diagnosticBytes)}
+              </Descriptions.Item>
+              <Descriptions.Item label="永不自动清理的审计">
+                {retentionPreview.data.data.preserved.auditEvents} 条
+              </Descriptions.Item>
+              <Descriptions.Item label="历史导出 / 校验备份">
+                {retentionPreview.data.data.preserved.exportArtifacts} /{' '}
+                {retentionPreview.data.data.preserved.verifiedBackups}
+              </Descriptions.Item>
+              <Descriptions.Item label="预览哈希" span={3}>
+                <Typography.Text code>
+                  {retentionPreview.data.data.previewHash.slice(0, 24)}…
+                </Typography.Text>
+              </Descriptions.Item>
+            </Descriptions>
+          ) : null}
+          <Alert
+            type="warning"
+            showIcon
+            message="清理不会触碰业务事实、不可变审计、历史导出、已校验备份或凭证"
+            description="执行前服务端会重新计算候选；数量或范围变化会返回 409，要求重新预览，避免确认后范围漂移。"
+          />
+          <Checkbox
+            checked={retentionAcknowledged}
+            onChange={(event) => setRetentionAcknowledged(event.target.checked)}
+          >
+            我已核对待清数量和永久保留边界，确认按当前预览哈希执行
+          </Checkbox>
         </Space>
       </Card>
     </Space>

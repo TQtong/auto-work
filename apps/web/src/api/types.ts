@@ -201,6 +201,39 @@ export interface DiagnosticBundle {
   createdAt: string;
 }
 
+export interface RetentionPolicy {
+  eventLogDays: number;
+  terminalJobDays: number;
+  diagnosticBundleDays: number;
+}
+
+export interface RetentionPreview {
+  generatedAt: string;
+  policy: RetentionPolicy;
+  candidates: {
+    eventLogs: number;
+    expiredIdempotency: number;
+    terminalJobs: number;
+    diagnosticBundles: number;
+    diagnosticBytes: number;
+  };
+  preserved: {
+    auditEvents: number;
+    exportArtifacts: number;
+    verifiedBackups: number;
+    businessFacts: string;
+    credentials: string;
+  };
+  previewHash: string;
+}
+
+export interface RetentionResult {
+  previewHash: string;
+  deleted: RetentionPreview['candidates'];
+  preserved: RetentionPreview['preserved'];
+  completedAt: string;
+}
+
 export interface ProjectSummary {
   id: string;
   name: string;

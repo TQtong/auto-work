@@ -6,6 +6,7 @@ import { LocalSecurityService } from '../../infrastructure/http/local-security.s
 import { AuditService } from '../audit/audit.service.js';
 import { SessionService } from '../session/session.service.js';
 import { DiagnosticsService } from './diagnostics.service.js';
+import { RetentionService } from './retention.service.js';
 
 const createBundleSchema = z
   .object({
@@ -15,6 +16,17 @@ const createBundleSchema = z
   .strict();
 
 const bundleIdSchema = z.uuid();
+const retentionPolicySchema = z
+  .object({
+    eventLogDays: z.number().int().min(7).max(3650),
+    terminalJobDays: z.number().int().min(30).max(3650),
+    diagnosticBundleDays: z.number().int().min(7).max(3650),
+  })
+  .strict();
+const retentionExecuteSchema = retentionPolicySchema.extend({
+  acknowledgedPreservationBoundary: z.literal(true),
+  expectedPreviewHash: z.string().regex(/^[a-f0-9]{64}$/u),
+});
 
 @Controller('maintenance')
 export class DiagnosticsController {
@@ -23,7 +35,36 @@ export class DiagnosticsController {
     private readonly audit: AuditService,
     private readonly sessions: SessionService,
     private readonly security: LocalSecurityService,
+    private readonly retention: RetentionService,
   ) {}
+
+  @Post('retention/preview')
+  public async retentionPreview(@Req() request: FastifyRequest) {
+    const policy = retentionPolicySchema.parse(request.body);
+    return apiResponse(await this.retention.preview(policy), request.autoWork.correlationId);
+  }
+
+  @Post('retention/execute')
+  public async retentionExecute(@Req() request: FastifyRequest) {
+    const input = retentionExecuteSchema.parse(request.body);
+    const policy = {
+      eventLogDays: input.eventLogDays,
+      terminalJobDays: input.terminalJobDays,
+      diagnosticBundleDays: input.diagnosticBundleDays,
+    };
+    const result = await this.retention.execute(policy, input.expectedPreviewHash);
+    await this.audit.record({
+      actorId: this.sessions.currentProfileId,
+      action: 'retention.executed',
+      targetType: 'maintenance',
+      targetId: result.previewHash,
+      correlationId: request.autoWork.correlationId,
+      outcome: 'succeeded',
+      after: { policy, deleted: result.deleted },
+      clientSessionHash: this.security.sessionHash(request.autoWork.sessionId),
+    });
+    return apiResponse(result, request.autoWork.correlationId);
+  }
 
   @Get('diagnostics')
   public async get(@Req() request: FastifyRequest) {

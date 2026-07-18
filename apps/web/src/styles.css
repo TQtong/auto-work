@@ -307,6 +307,16 @@ body {
   grid-template-columns: repeat(4, minmax(160px, 1fr));
   gap: 16px;
 }
+.operations-retention-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(200px, 1fr));
+  gap: 16px;
+}
+.operations-retention-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 @media (max-width: 1280px) {
   .app-content {
     padding: 20px;
@@ -327,5 +337,8 @@ body {
   }
   .operations-stat-grid {
     grid-template-columns: repeat(2, minmax(160px, 1fr));
+  }
+  .operations-retention-grid {
+    grid-template-columns: minmax(200px, 1fr);
   }
 }
