@@ -25,11 +25,14 @@ import {
   editWeeklyReportSchema,
   generateWeeklyReportSchema,
   listWeeklyReportsQuerySchema,
+  notifyWeeklyReportGroupSchema,
   rejectWeeklyAiSuggestionSchema,
   restoreWeeklyReportVersionSchema,
+  submitWeeklyReportLogSchema,
 } from './weekly-report.schemas.js';
 import { WeeklyReportAttachmentService } from './weekly-report-attachment.service.js';
 import { WeeklyReportAiService } from './weekly-report-ai.service.js';
+import { WeeklyReportDeliveryService } from './weekly-report-delivery.service.js';
 import { WeeklyReportService } from './weekly-report.service.js';
 
 const maxAttachmentBytes = 8 * 1024 * 1024;
@@ -40,6 +43,7 @@ export class WeeklyReportController {
     private readonly reports: WeeklyReportService,
     private readonly ai: WeeklyReportAiService,
     private readonly attachments: WeeklyReportAttachmentService,
+    private readonly delivery: WeeklyReportDeliveryService,
     private readonly idempotency: IdempotencyService,
     private readonly audit: AuditService,
     private readonly sessions: SessionService,
@@ -65,6 +69,11 @@ export class WeeklyReportController {
     return apiResponse(await this.reports.list(query), request.autoWork.correlationId, {
       asOf: new Date().toISOString(),
     });
+  }
+
+  @Get(':id/deliveries')
+  public async deliveries(@Param('id') id: string, @Req() request: FastifyRequest) {
+    return apiResponse(await this.delivery.list(id), request.autoWork.correlationId);
   }
 
   @Get(':id')
@@ -201,6 +210,42 @@ export class WeeklyReportController {
       { id, ...input },
       request,
       (recordId) => this.reports.confirm(id, input, this.context(request, recordId)),
+    );
+  }
+
+  @Post(':id/submit-log')
+  @HttpCode(202)
+  public async submitLog(
+    @Param('id') id: string,
+    @Body() rawBody: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = submitWeeklyReportLogSchema.parse(rawBody);
+    return this.mutate(
+      `/api/v1/weekly-reports/${id}/submit-log`,
+      key,
+      { id, ...input },
+      request,
+      (recordId) => this.delivery.submitLog(id, input, this.context(request, recordId)),
+    );
+  }
+
+  @Post(':id/notify-group')
+  @HttpCode(202)
+  public async notifyGroup(
+    @Param('id') id: string,
+    @Body() rawBody: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = notifyWeeklyReportGroupSchema.parse(rawBody);
+    return this.mutate(
+      `/api/v1/weekly-reports/${id}/notify-group`,
+      key,
+      { id, ...input },
+      request,
+      (recordId) => this.delivery.notifyGroup(id, input, this.context(request, recordId)),
     );
   }
 

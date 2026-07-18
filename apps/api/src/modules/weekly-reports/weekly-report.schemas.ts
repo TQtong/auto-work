@@ -205,6 +205,24 @@ export const rejectWeeklyAiSuggestionSchema = z
   })
   .strict();
 
+export const submitWeeklyReportLogSchema = z
+  .object({
+    confirmationId: z.string().trim().min(1).max(100),
+    confirmedVersionId: z.string().trim().min(1).max(100),
+    recipientScopeHash: z.string().regex(/^[a-f0-9]{64}$/u),
+    reportVersion: z.number().int().positive(),
+  })
+  .strict();
+
+export const notifyWeeklyReportGroupSchema = z
+  .object({
+    confirmationId: z.string().trim().min(1).max(100),
+    robotConnectionId: z.string().trim().min(1).max(100),
+    notificationType: z.literal('submission_success'),
+    reportVersion: z.number().int().positive(),
+  })
+  .strict();
+
 export type GenerateWeeklyReportInput = z.infer<typeof generateWeeklyReportSchema>;
 export type ListWeeklyReportsQuery = z.infer<typeof listWeeklyReportsQuerySchema>;
 export type EditWeeklyReportInput = z.infer<typeof editWeeklyReportSchema>;
@@ -213,3 +231,5 @@ export type ConfirmWeeklyReportInput = z.infer<typeof confirmWeeklyReportSchema>
 export type CreateWeeklyAiSuggestionInput = z.infer<typeof createWeeklyAiSuggestionSchema>;
 export type AdoptWeeklyAiSuggestionInput = z.infer<typeof adoptWeeklyAiSuggestionSchema>;
 export type RejectWeeklyAiSuggestionInput = z.infer<typeof rejectWeeklyAiSuggestionSchema>;
+export type SubmitWeeklyReportLogInput = z.infer<typeof submitWeeklyReportLogSchema>;
+export type NotifyWeeklyReportGroupInput = z.infer<typeof notifyWeeklyReportGroupSchema>;

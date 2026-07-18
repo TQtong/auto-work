@@ -1,0 +1,570 @@
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { PrismaClient } from '@prisma/client';
+import { DomainError } from '@auto-work/contracts';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { PrismaService } from '../src/infrastructure/database/prisma.service.js';
+import type { LocalSecurityService } from '../src/infrastructure/http/local-security.service.js';
+import type { CredentialVault } from '../src/infrastructure/vault/credential-vault.js';
+import { AuditService } from '../src/modules/audit/audit.service.js';
+import type { DingTalkLogClient } from '../src/modules/dingtalk/dingtalk-log.client.js';
+import type { DingTalkRobotClient } from '../src/modules/dingtalk/dingtalk-robot.client.js';
+import { JobRegistryService } from '../src/modules/jobs/job-registry.service.js';
+import type { SessionService } from '../src/modules/session/session.service.js';
+import { WeeklyReportDeliveryHandler } from '../src/modules/weekly-reports/weekly-report-delivery.handler.js';
+import { WeeklyReportDeliveryService } from '../src/modules/weekly-reports/weekly-report-delivery.service.js';
+
+const capabilityHash = 'a'.repeat(64);
+const recipientHash = 'b'.repeat(64);
+const emptyAttachmentsHash = 'c'.repeat(64);
+const contentHash = 'd'.repeat(64);
+const weeklyFields = [
+  'reportDate',
+  'recentGoals',
+  'weeklyWork',
+  'nextWeekPlans',
+  'problems',
+  'other',
+] as const;
+
+describe('周报钉钉正式日志与机器人双通道交付', () => {
+  let temporaryDirectory = '';
+  let prisma: PrismaClient;
+  let sequence = 0;
+
+  beforeAll(async () => {
+    temporaryDirectory = await mkdtemp(join(tmpdir(), 'auto-work-weekly-delivery-'));
+    prisma = new PrismaClient({
+      datasourceUrl: `file:${join(temporaryDirectory, 'delivery.db').replaceAll('\\', '/')}`,
+    });
+    const migrationRoot = resolve('prisma/migrations');
+    const migrations = (await readdir(migrationRoot, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+    for (const migration of migrations) {
+      const sql = await readFile(join(migrationRoot, migration, 'migration.sql'), 'utf8');
+      for (const statement of sql.split(/;\s*(?:\r?\n|$)/u).map((value) => value.trim())) {
+        if (statement) await prisma.$executeRawUnsafe(statement);
+      }
+    }
+    await prisma.userProfile.create({
+      data: {
+        id: 'local-user',
+        windowsSid: 'S-1-5-21-weekly-delivery',
+        displayName: '双通道验收用户',
+        timezone: 'Asia/Shanghai',
+      },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+    await rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  });
+
+  it('正式日志只创建一次，明确成功后才发送不含全文的群摘要', async () => {
+    const fixture = await seedConfirmedReport();
+    const createReport = vi.fn().mockResolvedValue({
+      reportId: 'external-report-1001',
+      requestId: 'provider-log-request',
+    });
+    const sendText = vi.fn().mockResolvedValue({
+      requestId: 'provider-robot-request',
+      timestamp: 1,
+    });
+    const runtime = createRuntime(createReport, sendText);
+
+    const firstIdempotency = await seedIdempotency(fixture.suffix, 'submit-1');
+    const requested = await runtime.service.submitLog(
+      fixture.reportId,
+      {
+        confirmationId: fixture.confirmationId,
+        confirmedVersionId: fixture.versionId,
+        recipientScopeHash: recipientHash,
+        reportVersion: fixture.reportVersion,
+      },
+      context(firstIdempotency),
+    );
+    const logIntentId = requested.intent.id;
+    expect(requested).toMatchObject({ replayed: false, intent: { status: 'pending' } });
+    expect(await prisma.job.count({ where: { payloadRef: logIntentId } })).toBe(1);
+
+    const duplicateIdempotency = await seedIdempotency(fixture.suffix, 'submit-2');
+    const replay = await runtime.service.submitLog(
+      fixture.reportId,
+      {
+        confirmationId: fixture.confirmationId,
+        confirmedVersionId: fixture.versionId,
+        recipientScopeHash: recipientHash,
+        // 重复点击允许携带首次请求前的聚合版本，但只能重放同一个交付意图。
+        reportVersion: fixture.reportVersion,
+      },
+      context(duplicateIdempotency),
+    );
+    expect(replay).toMatchObject({ replayed: true, intent: { id: logIntentId } });
+    expect(await prisma.deliveryIntent.count({ where: { reportId: fixture.reportId } })).toBe(1);
+
+    const logResult = await execute(runtime.handler, logIntentId);
+    expect(logResult).toMatchObject({ status: 'succeeded', externalId: 'external-report-1001' });
+    expect(createReport).toHaveBeenCalledOnce();
+    expect(createReport.mock.calls[0]![0]).toMatchObject({
+      templateId: fixture.templateId,
+      toUserIds: ['recipient-user'],
+      toChat: false,
+      source: 'auto-work',
+    });
+    const submittedCall = createReport.mock.calls[0]![0] as Parameters<
+      DingTalkLogClient['createReport']
+    >[0];
+    const submittedContents = submittedCall.contents;
+    expect(submittedContents).toHaveLength(6);
+    expect(new Set(submittedContents.map((field) => field.key)).size).toBe(6);
+    expect(submittedContents.map((field) => field.content)).toContain(
+      '仅正式日志可见的完整工作正文',
+    );
+
+    const current = await prisma.weeklyReport.findUniqueOrThrow({
+      where: { id: fixture.reportId },
+    });
+    const notifyIdempotency = await seedIdempotency(fixture.suffix, 'notify-1');
+    const notification = await runtime.service.notifyGroup(
+      fixture.reportId,
+      {
+        confirmationId: fixture.confirmationId,
+        robotConnectionId: fixture.robotConnectionId,
+        notificationType: 'submission_success',
+        reportVersion: current.version,
+      },
+      context(notifyIdempotency),
+    );
+    const robotIntentId = notification.intent.id;
+    await execute(runtime.handler, robotIntentId);
+
+    expect(sendText).toHaveBeenCalledOnce();
+    const sentCall = sendText.mock.calls[0]![0] as Parameters<DingTalkRobotClient['sendText']>[0];
+    const message = sentCall.text;
+    expect(message).toContain('状态：已提交钉钉正式日志');
+    expect(message).toContain('正式日志 ID：external-report-1001');
+    expect(message).toContain('项目甲');
+    expect(message).not.toContain('仅正式日志可见的完整工作正文');
+    expect(message).not.toContain('localhost');
+    const finalReport = await prisma.weeklyReport.findUniqueOrThrow({
+      where: { id: fixture.reportId },
+    });
+    expect(finalReport).toMatchObject({
+      logDeliveryState: 'submitted',
+      robotDeliveryState: 'notified',
+    });
+    const listed = await runtime.service.list(fixture.reportId);
+    expect(listed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: logIntentId, status: 'succeeded', attemptCount: 1 }),
+        expect.objectContaining({ id: robotIntentId, status: 'succeeded', attemptCount: 1 }),
+      ]),
+    );
+  });
+
+  it('群通知失败保持正式日志成功事实，并形成可见的部分交付状态', async () => {
+    const fixture = await seedConfirmedReport();
+    const createReport = vi
+      .fn()
+      .mockResolvedValue({ reportId: 'external-report-2002', requestId: null });
+    const sendText = vi
+      .fn()
+      .mockRejectedValue(
+        new DomainError('DINGTALK_ROBOT_REJECTED', '机器人拒绝消息', { httpStatus: 502 }),
+      );
+    const runtime = createRuntime(createReport, sendText);
+    const submitIdempotency = await seedIdempotency(fixture.suffix, 'partial-submit');
+    const log = await runtime.service.submitLog(
+      fixture.reportId,
+      {
+        confirmationId: fixture.confirmationId,
+        confirmedVersionId: fixture.versionId,
+        recipientScopeHash: recipientHash,
+        reportVersion: fixture.reportVersion,
+      },
+      context(submitIdempotency),
+    );
+    await execute(runtime.handler, log.intent.id);
+    const afterLog = await prisma.weeklyReport.findUniqueOrThrow({
+      where: { id: fixture.reportId },
+    });
+    const notifyIdempotency = await seedIdempotency(fixture.suffix, 'partial-notify');
+    const robot = await runtime.service.notifyGroup(
+      fixture.reportId,
+      {
+        confirmationId: fixture.confirmationId,
+        robotConnectionId: fixture.robotConnectionId,
+        notificationType: 'submission_success',
+        reportVersion: afterLog.version,
+      },
+      context(notifyIdempotency),
+    );
+    const result = await execute(runtime.handler, robot.intent.id);
+
+    expect(result).toMatchObject({ status: 'failed', errorCode: 'DINGTALK_ROBOT_REJECTED' });
+    expect(
+      await prisma.weeklyReport.findUniqueOrThrow({ where: { id: fixture.reportId } }),
+    ).toMatchObject({
+      logDeliveryState: 'submitted',
+      robotDeliveryState: 'failed',
+    });
+    expect(
+      await prisma.deliveryIntent.findUniqueOrThrow({ where: { id: log.intent.id } }),
+    ).toMatchObject({
+      status: 'succeeded',
+      externalId: 'external-report-2002',
+    });
+  });
+
+  it('超时结果进入 unknown 且重复请求不会盲目创建第二次外部调用', async () => {
+    const fixture = await seedConfirmedReport();
+    const createReport = vi.fn().mockRejectedValue(
+      new DomainError('EXTERNAL_REQUEST_TIMEOUT', '钉钉响应超时，结果未知', {
+        httpStatus: 503,
+        retryable: true,
+      }),
+    );
+    const runtime = createRuntime(createReport, vi.fn());
+    const submitIdempotency = await seedIdempotency(fixture.suffix, 'unknown-submit');
+    const requested = await runtime.service.submitLog(
+      fixture.reportId,
+      {
+        confirmationId: fixture.confirmationId,
+        confirmedVersionId: fixture.versionId,
+        recipientScopeHash: recipientHash,
+        reportVersion: fixture.reportVersion,
+      },
+      context(submitIdempotency),
+    );
+    await expect(execute(runtime.handler, requested.intent.id)).rejects.toMatchObject({
+      code: 'DINGTALK_DELIVERY_RESULT_UNKNOWN',
+      options: { suggestedAction: 'manual_review' },
+    });
+    expect(
+      await prisma.deliveryIntent.findUniqueOrThrow({ where: { id: requested.intent.id } }),
+    ).toMatchObject({ status: 'unknown', lastErrorCode: 'EXTERNAL_REQUEST_TIMEOUT' });
+
+    const duplicateIdempotency = await seedIdempotency(fixture.suffix, 'unknown-replay');
+    const replay = await runtime.service.submitLog(
+      fixture.reportId,
+      {
+        confirmationId: fixture.confirmationId,
+        confirmedVersionId: fixture.versionId,
+        recipientScopeHash: recipientHash,
+        reportVersion: fixture.reportVersion,
+      },
+      context(duplicateIdempotency),
+    );
+    expect(replay).toMatchObject({ replayed: true, intent: { status: 'unknown' } });
+    expect(createReport).toHaveBeenCalledOnce();
+    expect(await prisma.deliveryAttempt.count({ where: { intentId: requested.intent.id } })).toBe(
+      1,
+    );
+  });
+
+  it('拒绝带附件或已过期模板事实的正式提交', async () => {
+    const withAttachment = await seedConfirmedReport({ hasAttachment: true });
+    const runtime = createRuntime(vi.fn(), vi.fn());
+    const attachmentIdempotency = await seedIdempotency(withAttachment.suffix, 'attachment');
+    await expect(
+      runtime.service.submitLog(
+        withAttachment.reportId,
+        {
+          confirmationId: withAttachment.confirmationId,
+          confirmedVersionId: withAttachment.versionId,
+          recipientScopeHash: recipientHash,
+          reportVersion: withAttachment.reportVersion,
+        },
+        context(attachmentIdempotency),
+      ),
+    ).rejects.toMatchObject({ code: 'DINGTALK_LOG_ATTACHMENTS_UNSUPPORTED' });
+
+    const expired = await seedConfirmedReport({ expiredMapping: true });
+    const expiredIdempotency = await seedIdempotency(expired.suffix, 'expired');
+    await expect(
+      runtime.service.submitLog(
+        expired.reportId,
+        {
+          confirmationId: expired.confirmationId,
+          confirmedVersionId: expired.versionId,
+          recipientScopeHash: recipientHash,
+          reportVersion: expired.reportVersion,
+        },
+        context(expiredIdempotency),
+      ),
+    ).rejects.toMatchObject({ code: 'DINGTALK_LOG_CAPABILITY_CHANGED' });
+  });
+
+  function createRuntime(
+    createReport: ReturnType<typeof vi.fn>,
+    sendText: ReturnType<typeof vi.fn>,
+  ) {
+    const prismaService = prisma as unknown as PrismaService;
+    const sessions = { currentProfileId: 'local-user' } as SessionService;
+    const audit = new AuditService(prismaService);
+    const security = {
+      sessionHash: () => 'delivery-session-hash',
+    } as unknown as LocalSecurityService;
+    const service = new WeeklyReportDeliveryService(prismaService, sessions, audit, security);
+    const registry = new JobRegistryService();
+    const logClient = {
+      accessToken: vi
+        .fn()
+        .mockResolvedValue({ value: 'access-token', source: 'oauth2', expiresAt: null }),
+      createReport,
+    } as unknown as DingTalkLogClient;
+    const robotClient = { sendText } as unknown as DingTalkRobotClient;
+    const vault = {
+      get: vi.fn((reference: string) =>
+        Promise.resolve(
+          reference.includes('robot')
+            ? JSON.stringify({
+                webhook: 'https://oapi.dingtalk.com/robot/send?access_token=test-token',
+                secret: 'SEC-test-secret',
+              })
+            : JSON.stringify({ appSecret: 'app-secret' }),
+        ),
+      ),
+    } as unknown as CredentialVault;
+    const handler = new WeeklyReportDeliveryHandler(
+      registry,
+      prismaService,
+      logClient,
+      robotClient,
+      vault,
+    );
+    handler.onModuleInit();
+    expect(registry.get('weekly-report.delivery')).toBe(handler);
+    return { service, handler };
+  }
+
+  async function seedConfirmedReport(options?: {
+    hasAttachment?: boolean;
+    expiredMapping?: boolean;
+  }) {
+    sequence += 1;
+    const suffix = String(sequence);
+    const logConnectionId = `delivery-log-${suffix}`;
+    const robotConnectionId = `delivery-robot-${suffix}`;
+    const mappingId = `delivery-mapping-${suffix}`;
+    const mappingVersionId = `delivery-mapping-version-${suffix}`;
+    const reportId = `delivery-report-${suffix}`;
+    const snapshotId = `delivery-snapshot-${suffix}`;
+    const versionId = `delivery-version-${suffix}`;
+    const confirmationId = `delivery-confirmation-${suffix}`;
+    const templateId = `weekly-template-${suffix}`;
+    const periodStart = `2026-${suffix.padStart(2, '0')}-01`;
+    const periodEnd = `2026-${suffix.padStart(2, '0')}-05`;
+    const reportDate = `2026-${suffix.padStart(2, '0')}-06`;
+    const now = new Date();
+
+    await prisma.integrationConnection.createMany({
+      data: [
+        {
+          id: logConnectionId,
+          type: 'dingtalk_log',
+          name: `正式日志 ${suffix}`,
+          baseUrl: 'https://oapi.dingtalk.com/',
+          credentialRef: `vault:log:${suffix}`,
+          enabled: true,
+          status: 'healthy',
+          capabilitiesJson: JSON.stringify({ templateDiscovery: { snapshotHash: capabilityHash } }),
+          configJson: JSON.stringify({ appKey: 'app-key', operatorUserId: 'operator-user' }),
+        },
+        {
+          id: robotConnectionId,
+          type: 'dingtalk_robot',
+          name: `群通知 ${suffix}`,
+          credentialRef: `vault:robot:${suffix}`,
+          enabled: true,
+          status: 'healthy',
+          capabilitiesJson: JSON.stringify({ fullReportForbidden: true }),
+          configJson: JSON.stringify({ robotName: '研发群机器人', groupId: 'group-1' }),
+        },
+      ],
+    });
+    await prisma.dingTalkTemplateMapping.create({
+      data: { id: mappingId, connectionId: logConnectionId },
+    });
+    const fields = weeklyFields.map((internalField, order) => ({
+      internalField,
+      externalFieldId: `external-field-${order}`,
+      externalFieldName: `钉钉字段 ${order + 1}`,
+      externalType: '1',
+      order,
+      required: true,
+      maxLength: null,
+    }));
+    await prisma.dingTalkTemplateMappingVersion.create({
+      data: {
+        id: mappingVersionId,
+        mappingId,
+        versionNo: 1,
+        templateId,
+        templateName: '研发周报',
+        templateHash: 'e'.repeat(64),
+        fieldsJson: JSON.stringify(fields),
+        capabilitySnapshotHash: capabilityHash,
+        observedAt: new Date(now.getTime() - 60_000),
+        expiresAt: options?.expiredMapping
+          ? new Date(now.getTime() - 1_000)
+          : new Date(now.getTime() + 86_400_000),
+        contentHash: 'f'.repeat(64),
+        createdBy: 'local-user',
+      },
+    });
+    await prisma.dingTalkTemplateMapping.update({
+      where: { id: mappingId },
+      data: { currentVersionId: mappingVersionId, version: { increment: 1 } },
+    });
+    const recipientValidationId = `delivery-recipient-${suffix}`;
+    await prisma.dingTalkRecipientValidation.create({
+      data: {
+        id: recipientValidationId,
+        connectionId: logConnectionId,
+        subjectType: 'user',
+        externalId: 'recipient-user',
+        displayName: '接收人',
+        available: true,
+        capabilitySnapshotHash: capabilityHash,
+        observedAt: new Date(now.getTime() - 60_000),
+        expiresAt: new Date(now.getTime() + 86_400_000),
+        contentHash,
+      },
+    });
+    await prisma.weeklyReport.create({
+      data: {
+        id: reportId,
+        ownerProfileId: 'local-user',
+        periodStart,
+        periodEnd,
+        reportDate,
+        templateName: '研发周报',
+        templateMappingVersionId: mappingVersionId,
+      },
+    });
+    await prisma.reportSourceSnapshot.create({
+      data: {
+        id: snapshotId,
+        reportId,
+        periodStart,
+        periodEnd,
+        reportDate,
+        timezone: 'Asia/Shanghai',
+        profileId: 'local-user',
+        profileVersion: 1,
+        taskFactsJson: JSON.stringify([{ projectName: '项目甲' }, { projectName: '项目乙' }]),
+        evidenceFactsJson: '[]',
+        freshnessPolicyJson: '{}',
+        ruleVersion: 'weekly-rule-v1',
+        templateMappingVersionId: mappingVersionId,
+        sanitizationPolicyVersion: 'weekly-sanitization-v1',
+        generationHash: `generation-${suffix}`,
+        sourceContentHash: '1'.repeat(64),
+        createdBy: 'local-user',
+      },
+    });
+    const recipients = [
+      {
+        validationId: recipientValidationId,
+        subjectType: 'user',
+        externalId: 'recipient-user',
+        displayName: '接收人',
+        contentHash,
+      },
+    ];
+    const attachments = options?.hasAttachment
+      ? [{ id: `attachment-${suffix}`, name: '验收附件.pdf', contentHash: '2'.repeat(64) }]
+      : [];
+    await prisma.weeklyReportVersion.create({
+      data: {
+        id: versionId,
+        reportId,
+        versionNo: 1,
+        origin: 'rule',
+        reportDateText: '2026-07-18',
+        recentGoalsText: '完成迭代目标',
+        weeklyWorkText: '仅正式日志可见的完整工作正文',
+        nextWeekPlansText: '继续交付',
+        problemsText: '暂无',
+        otherText: '无',
+        fieldsJson: '{}',
+        attachmentsJson: JSON.stringify(attachments),
+        recipientScopeJson: JSON.stringify({ recipients }),
+        templateMappingVersionId: mappingVersionId,
+        sourceSnapshotId: snapshotId,
+        contentHash: '3'.repeat(64),
+        createdBy: 'local-user',
+      },
+    });
+    await prisma.weeklyReportConfirmation.create({
+      data: {
+        id: confirmationId,
+        reportId,
+        versionId,
+        reportAggregateVersion: 1,
+        contentHash: '3'.repeat(64),
+        templateMappingVersionId: mappingVersionId,
+        warningAcknowledgementsJson: '[]',
+        recipientScopeHash: recipientHash,
+        attachmentsHash: options?.hasAttachment ? '4'.repeat(64) : emptyAttachmentsHash,
+        status: 'active',
+        confirmedBy: 'local-user',
+      },
+    });
+    const report = await prisma.weeklyReport.update({
+      where: { id: reportId },
+      data: {
+        status: 'confirmed',
+        currentVersionId: versionId,
+        confirmedVersionId: versionId,
+        currentConfirmationId: confirmationId,
+        version: { increment: 1 },
+      },
+    });
+    return {
+      suffix,
+      reportId,
+      versionId,
+      confirmationId,
+      templateId,
+      robotConnectionId,
+      reportVersion: report.version,
+    };
+  }
+
+  async function seedIdempotency(suffix: string, label: string): Promise<string> {
+    const id = `delivery-idempotency-${suffix}-${label}`;
+    await prisma.idempotencyRecord.create({
+      data: {
+        id,
+        actorId: 'local-user',
+        route: `/test/${label}`,
+        idempotencyKey: `delivery-${suffix}-${label}`,
+        requestHash: '9'.repeat(64),
+      },
+    });
+    return id;
+  }
+
+  function context(idempotencyRecordId: string) {
+    return {
+      correlationId: `correlation-${idempotencyRecordId}`,
+      sessionId: 'delivery-session',
+      idempotencyRecordId,
+    };
+  }
+
+  async function execute(handler: WeeklyReportDeliveryHandler, intentId: string) {
+    return handler.execute({
+      jobId: `job-for-${intentId}`,
+      payloadRef: intentId,
+      isCancellationRequested: () => Promise.resolve(false),
+      reportProgress: () => Promise.resolve(),
+    });
+  }
+});

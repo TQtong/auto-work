@@ -680,6 +680,38 @@ export interface WeeklyReportList {
   page: { cursor?: string; nextCursor?: string; hasMore: boolean; limit: number };
 }
 
+export interface WeeklyReportDeliveryAttempt {
+  id: string;
+  attemptNo: number;
+  status: 'running' | 'succeeded' | 'failed' | 'unknown';
+  providerRequestId: string | null;
+  externalId: string | null;
+  externalUrl: string | null;
+  providerErrorCode: string | null;
+  retryAt: string | null;
+  startedAt: string;
+  completedAt: string | null;
+}
+
+export interface WeeklyReportDeliveryIntent {
+  id: string;
+  reportId: string;
+  confirmationId: string;
+  confirmedVersionId: string;
+  connectionId: string;
+  channel: 'dingtalk_log' | 'dingtalk_robot';
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'unknown' | 'needs_review';
+  jobId: string | null;
+  externalId: string | null;
+  externalUrl: string | null;
+  attemptCount: number;
+  lastErrorCode: string | null;
+  lastErrorSummary: string | null;
+  createdAt: string;
+  updatedAt: string;
+  attempts: WeeklyReportDeliveryAttempt[];
+}
+
 export interface WeeklyReportWarning {
   id: string;
   code: string;

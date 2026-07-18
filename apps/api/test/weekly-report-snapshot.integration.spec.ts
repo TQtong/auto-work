@@ -205,7 +205,13 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
     );
     expect(result).toMatchObject({
       replayed: false,
-      report: { status: 'generated', version: 2, versionCount: 1 },
+      report: {
+        status: 'generated',
+        logDeliveryState: 'not_started',
+        robotDeliveryState: 'not_started',
+        version: 2,
+        versionCount: 1,
+      },
       version: {
         versionNo: 1,
         origin: 'rule',

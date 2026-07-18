@@ -97,6 +97,59 @@ describe('钉钉官方接口适配契约', () => {
     ).rejects.toMatchObject({ code: 'DINGTALK_TEMPLATE_OPERATOR_MISMATCH' });
   });
 
+  it('按官方旧版日志协议提交恰好六个字段，并解析外部日志 ID', async () => {
+    const postJson = vi.fn<SecureHttpService['postJson']>().mockResolvedValue({
+      status: 200,
+      headers: {},
+      body: { errcode: 0, request_id: 'create-request', result: 'report-1001' },
+    });
+    const client = new DingTalkLogClient({ postJson } as unknown as SecureHttpService);
+    const contents = Array.from({ length: 6 }, (_, index) => ({
+      key: `字段 ${index + 1}`,
+      sort: String(index),
+      type: '1',
+      content: `内容 ${index + 1}`,
+    }));
+
+    const result = await client.createReport({
+      baseUrl: 'https://oapi.dingtalk.com/',
+      accessToken: 'access-token',
+      operatorUserId: 'operator-1',
+      templateId: 'weekly-template',
+      contents,
+      toUserIds: ['user-2', 'user-1', 'user-2'],
+      toChat: false,
+      source: 'auto-work',
+    });
+
+    expect(result).toEqual({ reportId: 'report-1001', requestId: 'create-request' });
+    const request = postJson.mock.calls[0]![0];
+    expect(request.url.hostname).toBe('oapi.dingtalk.com');
+    expect(request.url.pathname).toBe('/topapi/report/create');
+    expect(request.url.searchParams.get('access_token')).toBe('access-token');
+    expect(request.body).toEqual({
+      userid: 'operator-1',
+      template_id: 'weekly-template',
+      contents,
+      to_chat: false,
+      to_userids: ['user-2', 'user-1'],
+      dd_from: 'auto-work',
+    });
+
+    await expect(
+      client.createReport({
+        baseUrl: 'https://oapi.dingtalk.com/',
+        accessToken: 'access-token',
+        operatorUserId: 'operator-1',
+        templateId: 'weekly-template',
+        contents: contents.slice(0, 5),
+        toUserIds: [],
+        toChat: false,
+        source: 'auto-work',
+      }),
+    ).rejects.toMatchObject({ code: 'DINGTALK_REPORT_CONTENTS_INVALID' });
+  });
+
   it('按 timestamp 换行 secret 生成 HMAC-SHA256 加签并发送固定文本结构', async () => {
     const postJson = vi.fn<SecureHttpService['postJson']>().mockResolvedValue({
       status: 200,

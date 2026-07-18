@@ -1796,6 +1796,8 @@ export class WeeklyReportService {
       templateName: report.templateName,
       templateMappingVersionId: report.templateMappingVersionId,
       status: report.status,
+      logDeliveryState: report.logDeliveryState,
+      robotDeliveryState: report.robotDeliveryState,
       currentVersionId: report.currentVersionId,
       confirmedVersionId: report.confirmedVersionId,
       currentVersion: report.currentVersion

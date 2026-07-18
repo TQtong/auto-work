@@ -253,6 +253,7 @@ model IntegrationConnection {
   jiraSyncRuns               JiraSyncRun[]
   dingtalkTemplateMapping    DingTalkTemplateMapping?
   dingtalkRecipientSnapshots DingTalkRecipientValidation[]
+  deliveryIntents            DeliveryIntent[]
   aiGenerations              AiGeneration[]
 
   @@index([type, enabled, status])
@@ -862,6 +863,7 @@ model WeeklyReport {
   confirmations            WeeklyReportConfirmation[] @relation("WeeklyReportConfirmations")
   attachments              WeeklyReportAttachment[]
   aiGenerations            AiGeneration[]
+  deliveryIntents          DeliveryIntent[]
 
   @@index([ownerProfileId, periodStart, periodEnd])
   @@index([status, updatedAt])
@@ -903,6 +905,7 @@ model WeeklyReportVersion {
   aiGeneration             AiGeneration?              @relation("AiGeneratedVersions", fields: [aiGenerationId], references: [id], onDelete: Restrict)
   baseForAiGenerations     AiGeneration[]             @relation("AiGenerationBaseVersion")
   adoptedForAiGenerations  AiGeneration[]             @relation("AiGenerationAdoptedVersion")
+  deliveryIntents          DeliveryIntent[]
 
   @@unique([reportId, versionNo])
   @@index([reportId, createdAt])
@@ -1057,10 +1060,70 @@ model WeeklyReportConfirmation {
   version                     WeeklyReportVersion            @relation(fields: [versionId], references: [id], onDelete: Restrict)
   templateMappingVersion      DingTalkTemplateMappingVersion @relation(fields: [templateMappingVersionId], references: [id], onDelete: Restrict)
   currentForReport            WeeklyReport?                  @relation("WeeklyReportCurrentConfirmation")
+  deliveryIntents             DeliveryIntent[]
 
   @@unique([reportId, versionId, contentHash, templateMappingVersionId, recipientScopeHash, attachmentsHash])
   @@index([reportId, status, confirmedAt])
   @@map("weekly_report_confirmation")
+}
+
+/// 每个交付意图固定到一次有效确认、一个外部通道和一个连接；正文仍只保存在不可变周报版本中。
+model DeliveryIntent {
+  id                  String                   @id
+  reportId            String                   @map("report_id")
+  confirmationId      String                   @map("confirmation_id")
+  confirmedVersionId  String                   @map("confirmed_version_id")
+  connectionId        String                   @map("connection_id")
+  channel             String
+  idempotencyRecordId String                   @map("idempotency_record_id")
+  requestHash         String                   @map("request_hash")
+  targetSummaryJson   String                   @default("{}") @map("target_summary_json")
+  status              String                   @default("pending")
+  jobId               String?                  @unique @map("job_id")
+  externalId          String?                  @map("external_id")
+  externalUrl         String?                  @map("external_url")
+  providerRequestId   String?                  @map("provider_request_id")
+  attemptCount        Int                      @default(0) @map("attempt_count")
+  lastAttemptAt       DateTime?                @map("last_attempt_at")
+  lastErrorCode       String?                  @map("last_error_code")
+  lastErrorSummary    String?                  @map("last_error_summary")
+  completedAt         DateTime?                @map("completed_at")
+  version             Int                      @default(1)
+  createdAt           DateTime                 @default(now()) @map("created_at")
+  updatedAt           DateTime                 @updatedAt @map("updated_at")
+  report              WeeklyReport             @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  confirmation        WeeklyReportConfirmation @relation(fields: [confirmationId], references: [id], onDelete: Restrict)
+  confirmedVersion    WeeklyReportVersion      @relation(fields: [confirmedVersionId], references: [id], onDelete: Restrict)
+  connection          IntegrationConnection    @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  attempts            DeliveryAttempt[]
+
+  @@unique([reportId, confirmationId, channel, connectionId])
+  @@index([reportId, channel, createdAt])
+  @@index([status, updatedAt])
+  @@map("delivery_intent")
+}
+
+/// attempt 只记录请求/响应摘要、错误分类和外部标识，不复制秘密或六字段正文。
+model DeliveryAttempt {
+  id                  String         @id
+  intentId            String         @map("intent_id")
+  attemptNo           Int            @map("attempt_no")
+  requestSummaryHash  String         @map("request_summary_hash")
+  status              String         @default("running")
+  httpStatus          Int?           @map("http_status")
+  providerErrorCode   String?        @map("provider_error_code")
+  providerRequestId   String?        @map("provider_request_id")
+  externalId          String?        @map("external_id")
+  externalUrl         String?        @map("external_url")
+  responseSummaryJson String         @default("{}") @map("response_summary_json")
+  retryAt             DateTime?      @map("retry_at")
+  startedAt           DateTime       @default(now()) @map("started_at")
+  completedAt         DateTime?      @map("completed_at")
+  intent              DeliveryIntent @relation(fields: [intentId], references: [id], onDelete: Restrict)
+
+  @@unique([intentId, attemptNo])
+  @@index([status, startedAt])
+  @@map("delivery_attempt")
 }
 
 model ReportSourceSnapshot {

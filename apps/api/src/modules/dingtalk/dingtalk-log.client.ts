@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { DomainError } from '@auto-work/contracts';
 import { SecureHttpService } from '../../infrastructure/http/secure-http.service.js';
-import { dingTalkAccessTokenSchema, dingTalkTemplateResponseSchema } from './dingtalk.schemas.js';
+import {
+  dingTalkAccessTokenSchema,
+  dingTalkCreateReportResponseSchema,
+  dingTalkTemplateResponseSchema,
+} from './dingtalk.schemas.js';
 
 const tokenEndpoint = new URL('https://api.dingtalk.com/v1.0/oauth2/accessToken');
 const tokenRefreshSkewMs = 5 * 60 * 1_000;
@@ -99,6 +103,58 @@ export class DingTalkLogClient {
     }
     return {
       ...parsed.data.result,
+      requestId: parsed.data.request_id ?? null,
+    };
+  }
+
+  public async createReport(input: {
+    baseUrl: string;
+    accessToken: string;
+    operatorUserId: string;
+    templateId: string;
+    contents: Array<{ key: string; sort: string; type: string; content: string }>;
+    toUserIds: string[];
+    toChat: boolean;
+    source: string;
+  }): Promise<{ reportId: string; requestId: string | null }> {
+    if (
+      input.contents.length !== 6 ||
+      new Set(input.contents.map((item) => item.key)).size !== 6 ||
+      new Set(input.contents.map((item) => item.sort)).size !== 6
+    ) {
+      throw new DomainError(
+        'DINGTALK_REPORT_CONTENTS_INVALID',
+        '钉钉正式日志必须包含六个名称和顺序均唯一的模板字段',
+        { httpStatus: 422 },
+      );
+    }
+    const response = await this.legacyPost(
+      input.baseUrl,
+      input.accessToken,
+      '/topapi/report/create',
+      {
+        userid: input.operatorUserId,
+        template_id: input.templateId,
+        contents: input.contents,
+        to_chat: input.toChat,
+        to_userids: [...new Set(input.toUserIds)],
+        dd_from: input.source,
+      },
+    );
+    const parsed = dingTalkCreateReportResponseSchema.safeParse(response.body);
+    if (!parsed.success) {
+      throw new DomainError(
+        'DINGTALK_REPORT_CREATE_RESPONSE_INVALID',
+        '钉钉创建日志端点返回结构无效',
+        { httpStatus: 502 },
+      );
+    }
+    if (parsed.data.errcode !== 0) {
+      throw this.apiError(parsed.data.errcode, parsed.data.request_id);
+    }
+    return {
+      reportId:
+        typeof parsed.data.result === 'string' ? parsed.data.result : parsed.data.result.report_id,
       requestId: parsed.data.request_id ?? null,
     };
   }

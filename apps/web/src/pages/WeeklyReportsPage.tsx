@@ -11,6 +11,7 @@ import {
   RobotOutlined,
   SafetyCertificateOutlined,
   SaveOutlined,
+  SendOutlined,
   UndoOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -51,6 +52,7 @@ import type {
   DingTalkTemplateMappingHistory,
   Integration,
   WeeklyReport,
+  WeeklyReportDeliveryIntent,
   WeeklyAiGeneration,
   WeeklyAiGenerationList,
   WeeklyAiSuggestionResult,
@@ -121,6 +123,12 @@ interface AiDecisionResult {
   report?: { id: string; currentVersionId: string; version: number; status: string };
 }
 
+interface DeliveryRequestResult {
+  replayed: boolean;
+  jobId: string | null;
+  intent: WeeklyReportDeliveryIntent;
+}
+
 const workflowItems = [
   { title: '采集数据' },
   { title: '生成周报' },
@@ -161,6 +169,7 @@ export function WeeklyReportsPage() {
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [selectedRecipientIds, setSelectedRecipientIds] = useState<string[]>([]);
   const [selectedSchedule, setSelectedSchedule] = useState<Dayjs | null>(null);
+  const [selectedRobotConnectionId, setSelectedRobotConnectionId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [autosaveState, setAutosaveState] = useState<
     'idle' | 'dirty' | 'saving' | 'saved' | 'error' | 'conflict'
@@ -228,6 +237,17 @@ export function WeeklyReportsPage() {
     },
     enabled: Boolean(selectedReportId),
   });
+  const deliveries = useQuery({
+    queryKey: ['weekly-report-deliveries', selectedReportId],
+    queryFn: () => {
+      if (!selectedReportId) throw new Error('尚未选择周报');
+      return apiRequest<WeeklyReportDeliveryIntent[]>(
+        `/api/v1/weekly-reports/${selectedReportId}/deliveries`,
+      );
+    },
+    enabled: Boolean(selectedReportId),
+    refetchInterval: 3_000,
+  });
   const integrations = useQuery({
     queryKey: ['integrations'],
     queryFn: () => apiRequest<Integration[]>('/api/v1/integrations'),
@@ -236,6 +256,17 @@ export function WeeklyReportsPage() {
     () =>
       (integrations.data?.data ?? []).filter(
         (connection) => connection.type === 'ai' && connection.enabled,
+      ),
+    [integrations.data],
+  );
+  const healthyRobotConnections = useMemo(
+    () =>
+      (integrations.data?.data ?? []).filter(
+        (connection) =>
+          connection.type === 'dingtalk_robot' &&
+          connection.enabled &&
+          connection.status === 'healthy' &&
+          !connection.credentialReplacementPending,
       ),
     [integrations.data],
   );
@@ -308,6 +339,7 @@ export function WeeklyReportsPage() {
       queryClient.invalidateQueries({ queryKey: ['weekly-report-attachments', reportId] }),
       queryClient.invalidateQueries({ queryKey: ['weekly-report-ai-generations', reportId] }),
       queryClient.invalidateQueries({ queryKey: ['weekly-report-ai-generation', reportId] }),
+      queryClient.invalidateQueries({ queryKey: ['weekly-report-deliveries', reportId] }),
     ]);
   };
 
@@ -410,6 +442,61 @@ export function WeeklyReportsPage() {
       setConfirmedEditingUnlocked(false);
       await invalidateReport(response.data.report.id);
       void messageApi.success('当前版本已锁定确认；后续编辑会生成新版本并使本次确认失效');
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+
+  const submitLogMutation = useMutation({
+    mutationFn: (input: {
+      reportId: string;
+      confirmationId: string;
+      confirmedVersionId: string;
+      recipientScopeHash: string;
+      reportVersion: number;
+    }) =>
+      apiRequest<DeliveryRequestResult>(`/api/v1/weekly-reports/${input.reportId}/submit-log`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey('weekly-submit-log') },
+        body: JSON.stringify({
+          confirmationId: input.confirmationId,
+          confirmedVersionId: input.confirmedVersionId,
+          recipientScopeHash: input.recipientScopeHash,
+          reportVersion: input.reportVersion,
+        }),
+      }),
+    onSuccess: async (response) => {
+      await invalidateReport(response.data.intent.reportId);
+      void messageApi.success(
+        response.data.replayed
+          ? '已返回原交付意图，不会重复创建钉钉正式日志'
+          : '正式日志交付已进入受控队列',
+      );
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+
+  const notifyGroupMutation = useMutation({
+    mutationFn: (input: {
+      reportId: string;
+      confirmationId: string;
+      robotConnectionId: string;
+      reportVersion: number;
+    }) =>
+      apiRequest<DeliveryRequestResult>(`/api/v1/weekly-reports/${input.reportId}/notify-group`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey('weekly-notify-group') },
+        body: JSON.stringify({
+          confirmationId: input.confirmationId,
+          robotConnectionId: input.robotConnectionId,
+          notificationType: 'submission_success',
+          reportVersion: input.reportVersion,
+        }),
+      }),
+    onSuccess: async (response) => {
+      await invalidateReport(response.data.intent.reportId);
+      void messageApi.success(
+        response.data.replayed ? '已返回原群通知意图，不会重复发送' : '群摘要通知已进入受控队列',
+      );
     },
     onError: (error: Error) => void messageApi.error(error.message),
   });
@@ -533,6 +620,26 @@ export function WeeklyReportsPage() {
   }, [aiConnections, aiForm]);
 
   useEffect(() => {
+    if (
+      !selectedRobotConnectionId ||
+      !healthyRobotConnections.some((connection) => connection.id === selectedRobotConnectionId)
+    ) {
+      setSelectedRobotConnectionId(healthyRobotConnections[0]?.id ?? null);
+    }
+  }, [healthyRobotConnections, selectedRobotConnectionId]);
+
+  useEffect(() => {
+    const hasActiveDelivery = (deliveries.data?.data ?? []).some((intent) =>
+      ['pending', 'running'].includes(intent.status),
+    );
+    if (!hasActiveDelivery || !selectedReportId) return;
+    const timer = setInterval(() => {
+      void queryClient.invalidateQueries({ queryKey: ['weekly-report', selectedReportId] });
+    }, 3_000);
+    return () => clearInterval(timer);
+  }, [deliveries.data, queryClient, selectedReportId]);
+
+  useEffect(() => {
     setSelectedAiGenerationId(null);
   }, [selectedReportId]);
 
@@ -613,6 +720,28 @@ export function WeeklyReportsPage() {
     version && comparedVersion.data?.data
       ? compareWeeklyFields(comparedVersion.data.data.fields, version.fields)
       : [];
+  const deliveryItems = deliveries.data?.data ?? [];
+  const logIntent = deliveryItems.find((intent) => intent.channel === 'dingtalk_log') ?? null;
+  const selectedRobotIntent =
+    deliveryItems.find(
+      (intent) =>
+        intent.channel === 'dingtalk_robot' && intent.connectionId === selectedRobotConnectionId,
+    ) ?? null;
+  const logResultUnknown = logIntent?.status === 'unknown' || logIntent?.status === 'needs_review';
+  const logSubmissionBlocked =
+    !report ||
+    !version ||
+    report.status !== 'confirmed' ||
+    !report.currentConfirmation ||
+    !report.confirmedVersionId ||
+    version.attachments.length > 0 ||
+    Boolean(logIntent);
+  const robotNotificationBlocked =
+    !report ||
+    !report.currentConfirmation ||
+    report.logDeliveryState !== 'submitted' ||
+    !selectedRobotConnectionId ||
+    Boolean(selectedRobotIntent);
 
   const saveFieldsNow = () => {
     if (!report || !version) return;
@@ -788,6 +917,80 @@ export function WeeklyReportsPage() {
     });
   };
 
+  const confirmSubmitLog = () => {
+    if (!report?.currentConfirmation || !report.confirmedVersionId || !version) return;
+    Modal.confirm({
+      title: '提交钉钉正式日志？',
+      icon: <ExclamationCircleOutlined />,
+      width: 660,
+      content: (
+        <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 12 }}>
+          <Alert
+            type="warning"
+            showIcon
+            message="这是会在钉钉创建正式日志的外部写操作"
+            description="系统只使用当前确认冻结的六字段、模板和收件范围；未知结果不会自动重发。机器人通知不会替代正式日志。"
+          />
+          <Descriptions size="small" bordered column={1}>
+            <Descriptions.Item label="冻结版本">v{version.versionNo}</Descriptions.Item>
+            <Descriptions.Item label="模板">{report.templateName}</Descriptions.Item>
+            <Descriptions.Item label="接收对象">
+              {version.recipientScope.recipients?.length ?? 0} 个已验证事实
+            </Descriptions.Item>
+            <Descriptions.Item label="附件">
+              {version.attachments.length === 0
+                ? '无（当前正式日志适配器不支持可靠附件上传）'
+                : `${version.attachments.length} 个，当前提交将被阻断`}
+            </Descriptions.Item>
+          </Descriptions>
+        </Space>
+      ),
+      okText: '确认创建正式日志',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () =>
+        submitLogMutation.mutateAsync({
+          reportId: report.id,
+          confirmationId: report.currentConfirmation!.id,
+          confirmedVersionId: report.confirmedVersionId!,
+          recipientScopeHash: report.currentConfirmation!.recipientScopeHash,
+          reportVersion: report.version,
+        }),
+    });
+  };
+
+  const confirmNotifyGroup = () => {
+    if (!report?.currentConfirmation || !selectedRobotConnectionId) return;
+    const robot = healthyRobotConnections.find(
+      (connection) => connection.id === selectedRobotConnectionId,
+    );
+    Modal.confirm({
+      title: '发送钉钉群摘要？',
+      icon: <SendOutlined />,
+      width: 620,
+      content: (
+        <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 12 }}>
+          <Alert
+            type="info"
+            showIcon
+            message="群消息只发送交付摘要"
+            description="仅包含周期、报告日期、状态、最多三个项目名和正式日志 ID；不会发送六字段全文、附件、凭证或 localhost 链接。"
+          />
+          <Typography.Text>目标机器人：{robot?.name ?? selectedRobotConnectionId}</Typography.Text>
+        </Space>
+      ),
+      okText: '确认发送摘要',
+      cancelText: '取消',
+      onOk: () =>
+        notifyGroupMutation.mutateAsync({
+          reportId: report.id,
+          confirmationId: report.currentConfirmation!.id,
+          robotConnectionId: selectedRobotConnectionId,
+          reportVersion: report.version,
+        }),
+    });
+  };
+
   return (
     <Space direction="vertical" size={20} className="page-stack weekly-report-page">
       {holder}
@@ -813,7 +1016,7 @@ export function WeeklyReportsPage() {
         showIcon
         icon={<SafetyCertificateOutlined />}
         message="确认与正式提交严格分离"
-        description="本页面只完成可追溯编辑与确认锁定。钉钉模板、收件人和附件必须来自已验证事实；日志正式提交与机器人通知将在独立交付步骤执行。"
+        description="先完成可追溯编辑与确认锁定，再由独立交付意图创建正式日志；只有正式日志明确成功后才能发送群摘要。"
       />
 
       <Card size="small">
@@ -910,6 +1113,156 @@ export function WeeklyReportsPage() {
               }
             />
           )}
+
+          <Card
+            title="钉钉双通道交付"
+            extra={
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                loading={deliveries.isFetching}
+                onClick={() => void deliveries.refetch()}
+              >
+                刷新交付事实
+              </Button>
+            }
+          >
+            <Space direction="vertical" size={14} style={{ width: '100%' }}>
+              {version.attachments.length > 0 && report.status === 'confirmed' && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="当前确认包含附件，正式日志提交已阻断"
+                  description="当前已批准的钉钉正式日志适配器不能可靠上传附件。请开始新版本、移除附件并重新确认，或使用后续降级导出。"
+                />
+              )}
+              {logResultUnknown && (
+                <Alert
+                  type="error"
+                  showIcon
+                  message="正式日志结果未知，禁止再次提交"
+                  description="外部请求可能已经成功。请先在钉钉人工核对并等待恢复流程处理，系统不会盲目重放。"
+                />
+              )}
+              {report.delivery?.partial && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="部分交付：正式日志已成功，但群摘要尚未成功"
+                  description="正式日志成功事实保持不变；可选择尚无交付意图的其他健康机器人。当前失败意图需等待受控恢复/重试，重复点击不会伪装成重试。"
+                />
+              )}
+
+              <Descriptions size="small" bordered column={{ xs: 1, sm: 2, lg: 3 }}>
+                <Descriptions.Item label="正式日志">
+                  <Tag color={deliveryStatusColor(report.logDeliveryState)}>
+                    {deliveryStatusLabel(report.logDeliveryState)}
+                  </Tag>
+                </Descriptions.Item>
+                <Descriptions.Item label="群摘要">
+                  <Tag color={deliveryStatusColor(report.robotDeliveryState)}>
+                    {deliveryStatusLabel(report.robotDeliveryState)}
+                  </Tag>
+                </Descriptions.Item>
+                <Descriptions.Item label="外部日志 ID">
+                  <Typography.Text copyable={Boolean(logIntent?.externalId)}>
+                    {logIntent?.externalId ?? '—'}
+                  </Typography.Text>
+                </Descriptions.Item>
+              </Descriptions>
+
+              <Space wrap align="end">
+                <Button
+                  type="primary"
+                  danger
+                  icon={<SendOutlined />}
+                  disabled={logSubmissionBlocked}
+                  loading={submitLogMutation.isPending}
+                  onClick={confirmSubmitLog}
+                >
+                  提交钉钉正式日志
+                </Button>
+                <div>
+                  <Typography.Text type="secondary">群通知机器人</Typography.Text>
+                  <Select
+                    value={selectedRobotConnectionId}
+                    placeholder="选择已测试健康的机器人"
+                    style={{ width: 280, display: 'block', marginTop: 4 }}
+                    onChange={(value: string) => setSelectedRobotConnectionId(value)}
+                    options={healthyRobotConnections.map((connection) => ({
+                      value: connection.id,
+                      label: connection.name,
+                    }))}
+                  />
+                </div>
+                <Button
+                  icon={<RobotOutlined />}
+                  disabled={robotNotificationBlocked}
+                  loading={notifyGroupMutation.isPending}
+                  onClick={confirmNotifyGroup}
+                >
+                  发送群交付摘要
+                </Button>
+              </Space>
+
+              {deliveryItems.length === 0 ? (
+                <Empty description="尚无交付意图" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              ) : (
+                <Table
+                  size="small"
+                  rowKey="id"
+                  pagination={false}
+                  scroll={{ x: 860 }}
+                  dataSource={deliveryItems}
+                  columns={[
+                    {
+                      title: '通道',
+                      dataIndex: 'channel',
+                      width: 130,
+                      render: (value: WeeklyReportDeliveryIntent['channel']) =>
+                        value === 'dingtalk_log' ? '正式日志' : '群摘要',
+                    },
+                    {
+                      title: '状态',
+                      dataIndex: 'status',
+                      width: 120,
+                      render: (value: string) => (
+                        <Tag color={deliveryStatusColor(value)}>{deliveryStatusLabel(value)}</Tag>
+                      ),
+                    },
+                    { title: '尝试次数', dataIndex: 'attemptCount', width: 100 },
+                    {
+                      title: '外部标识',
+                      dataIndex: 'externalId',
+                      width: 210,
+                      ellipsis: true,
+                      render: (value: string | null) => value ?? '—',
+                    },
+                    {
+                      title: '错误/人工动作',
+                      key: 'error',
+                      render: (_value: unknown, item: WeeklyReportDeliveryIntent) =>
+                        item.lastErrorCode ? (
+                          <Tooltip title={item.lastErrorSummary ?? item.lastErrorCode}>
+                            <Typography.Text type="danger">{item.lastErrorCode}</Typography.Text>
+                          </Tooltip>
+                        ) : item.status === 'unknown' || item.status === 'needs_review' ? (
+                          '必须人工复核'
+                        ) : (
+                          '—'
+                        ),
+                    },
+                    {
+                      title: '更新时间',
+                      dataIndex: 'updatedAt',
+                      width: 170,
+                      render: (value: string) => formatDateTime(value),
+                    },
+                  ]}
+                />
+              )}
+            </Space>
+          </Card>
 
           {autosaveState === 'conflict' && (
             <Alert
@@ -1959,6 +2312,31 @@ function statusLabel(status: WeeklyReport['status']): string {
     editing: '编辑中',
     confirmed: '已确认',
   }[status];
+}
+
+function deliveryStatusLabel(status: string): string {
+  return (
+    {
+      not_started: '未开始',
+      submitting: '排队提交',
+      pending: '待执行',
+      running: '执行中',
+      submitted: '正式日志已提交',
+      notified: '群摘要已发送',
+      succeeded: '成功',
+      failed: '失败',
+      unknown: '结果未知',
+      needs_review: '待人工复核',
+    }[status] ?? status
+  );
+}
+
+function deliveryStatusColor(status: string): string {
+  if (['submitted', 'notified', 'succeeded'].includes(status)) return 'green';
+  if (['submitting', 'pending', 'running'].includes(status)) return 'processing';
+  if (['unknown', 'needs_review'].includes(status)) return 'orange';
+  if (status === 'failed') return 'red';
+  return 'default';
 }
 
 function formatDateTime(value: string | null | undefined): string {

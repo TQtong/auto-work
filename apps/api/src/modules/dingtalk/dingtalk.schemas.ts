@@ -68,3 +68,19 @@ export const dingTalkRobotResponseSchema = z
     request_id: z.string().max(500).optional(),
   })
   .passthrough();
+
+export const dingTalkCreateReportResponseSchema = z
+  .object({
+    errcode: z.number().int(),
+    errmsg: z.string().max(1_000).optional(),
+    request_id: z.string().max(500).optional(),
+    result: z.union([
+      z.string().min(1).max(500),
+      z
+        .object({
+          report_id: z.string().min(1).max(500),
+        })
+        .passthrough(),
+    ]),
+  })
+  .passthrough();
