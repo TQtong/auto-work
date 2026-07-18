@@ -19,7 +19,7 @@
 | 03B1  | Excel 容器安全、三表解析与持久化预检              | [阶段三 B1 实现与验证](./phase-3b1-excel-safe-preview.md)      | verified    |
 | 03B2  | Excel 预检修正、确认提交、逐字段补充与 provenance | [阶段三 B2 实现与验证](./phase-3b2-excel-commit-provenance.md) | verified    |
 | 03B3  | Excel 导入向导、冲突处理与字段来源 UI             | [阶段三 B3 实现与验证](./phase-3b3-excel-import-ui.md)         | verified    |
-| 03C   | Git/GitLab 证据建议、确认与生命周期               | [阶段三 C 实现与验证](./phase-3c-evidence-lifecycle.md)        | implemented |
+| 03C   | Git/GitLab 证据建议、确认与生命周期               | [阶段三 C 实现与验证](./phase-3c-evidence-lifecycle.md)        | verified    |
 | 04A1  | 六字段周报确定性规则、来源块与黄金样例            | [阶段四 A1 实现与验证](./phase-4a1-weekly-rule-core.md)        | implemented |
 | 04A2+ | 周报快照/版本/确认、AI、钉钉与交付恢复            | 待提交                                                         | planned     |
 | 05    | 季度绩效、导出、运维与发布门禁                    | 待提交                                                         | planned     |
