@@ -63,6 +63,11 @@ import type {
 } from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
 import {
+  deliveryRecoveryActions,
+  deliveryRecoveryOutcomeLabel,
+  deliveryRecoveryStatusLabel,
+} from './weekly-report-delivery-view-model.js';
+import {
   compareWeeklyFields,
   confirmationGate,
   previousVersionId,
@@ -129,6 +134,37 @@ interface DeliveryRequestResult {
   intent: WeeklyReportDeliveryIntent;
 }
 
+interface DeliveryRecoveryResult {
+  intentId: string;
+  status: WeeklyReportDeliveryIntent['status'];
+  recoveryStatus: WeeklyReportDeliveryIntent['recoveryStatus'];
+  externalId?: string | null;
+  candidateCount?: number;
+  exactMatchCount?: number;
+  retryAllowed: boolean;
+  outcome?: string;
+  errorCode?: string;
+}
+
+interface DeliveryRetryResult {
+  intentId: string;
+  status: 'pending';
+  jobId: string;
+  nextAttemptNo: number;
+}
+
+interface ManualResolutionValues {
+  resolution: 'delivered' | 'not_delivered';
+  externalId?: string;
+  externalUrl?: string;
+  reason: string;
+  confirmationPhrase: string;
+}
+
+interface DeliveryRetryValues {
+  reason: string;
+}
+
 const workflowItems = [
   { title: '采集数据' },
   { title: '生成周报' },
@@ -157,6 +193,8 @@ export function WeeklyReportsPage() {
     includeUnconfirmedEvidence: boolean;
   }>();
   const [aiForm] = Form.useForm<AiSuggestionFormValues>();
+  const [manualResolutionForm] = Form.useForm<ManualResolutionValues>();
+  const [deliveryRetryForm] = Form.useForm<DeliveryRetryValues>();
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [generateOpen, setGenerateOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -170,6 +208,11 @@ export function WeeklyReportsPage() {
   const [selectedRecipientIds, setSelectedRecipientIds] = useState<string[]>([]);
   const [selectedSchedule, setSelectedSchedule] = useState<Dayjs | null>(null);
   const [selectedRobotConnectionId, setSelectedRobotConnectionId] = useState<string | null>(null);
+  const [manualResolutionIntent, setManualResolutionIntent] =
+    useState<WeeklyReportDeliveryIntent | null>(null);
+  const [deliveryRetryIntent, setDeliveryRetryIntent] = useState<WeeklyReportDeliveryIntent | null>(
+    null,
+  );
   const [dirty, setDirty] = useState(false);
   const [autosaveState, setAutosaveState] = useState<
     'idle' | 'dirty' | 'saving' | 'saved' | 'error' | 'conflict'
@@ -497,6 +540,99 @@ export function WeeklyReportsPage() {
       void messageApi.success(
         response.data.replayed ? '已返回原群通知意图，不会重复发送' : '群摘要通知已进入受控队列',
       );
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+
+  const reconcileDeliveryMutation = useMutation({
+    mutationFn: (input: { reportId: string; intentId: string; intentVersion: number }) =>
+      apiRequest<DeliveryRecoveryResult>(
+        `/api/v1/weekly-reports/${input.reportId}/deliveries/${input.intentId}/reconcile`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey('weekly-delivery-reconcile') },
+          body: JSON.stringify({ intentVersion: input.intentVersion }),
+        },
+      ),
+    onSuccess: async (response, input) => {
+      await invalidateReport(input.reportId);
+      const result = response.data;
+      if (result.recoveryStatus === 'matched') {
+        void messageApi.success(`查询唯一命中钉钉日志 ${result.externalId ?? ''}，已恢复成功`);
+      } else if (result.recoveryStatus === 'absence_confirmed') {
+        void messageApi.warning('连续查询确认未创建，现在可以发起一次受控新尝试');
+      } else if (result.recoveryStatus === 'ambiguous') {
+        void messageApi.warning('查询结果有歧义，已进入待人工复核');
+      } else if (result.outcome === 'query_failed') {
+        void messageApi.error(`只读恢复查询失败：${result.errorCode ?? '未知错误'}`);
+      } else {
+        void messageApi.info('本次未找到精确匹配；等待可见性宽限后请再次查询');
+      }
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+
+  const resolveDeliveryMutation = useMutation({
+    mutationFn: (input: {
+      reportId: string;
+      intentId: string;
+      intentVersion: number;
+      values: ManualResolutionValues;
+    }) =>
+      apiRequest<DeliveryRecoveryResult>(
+        `/api/v1/weekly-reports/${input.reportId}/deliveries/${input.intentId}/resolve`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey('weekly-delivery-resolve') },
+          body: JSON.stringify({
+            intentVersion: input.intentVersion,
+            resolution: input.values.resolution,
+            externalId:
+              input.values.resolution === 'delivered'
+                ? input.values.externalId?.trim() || null
+                : null,
+            externalUrl:
+              input.values.resolution === 'delivered'
+                ? input.values.externalUrl?.trim() || null
+                : null,
+            reason: input.values.reason,
+            confirmationPhrase: input.values.confirmationPhrase,
+          }),
+        },
+      ),
+    onSuccess: async (response, input) => {
+      setManualResolutionIntent(null);
+      manualResolutionForm.resetFields();
+      await invalidateReport(input.reportId);
+      void messageApi.success(
+        response.data.status === 'succeeded'
+          ? '已记录人工确认的交付成功事实'
+          : '已记录人工确认的未交付事实，可按门禁发起受控重试',
+      );
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+
+  const retryDeliveryMutation = useMutation({
+    mutationFn: (input: {
+      reportId: string;
+      intentId: string;
+      intentVersion: number;
+      reason: string;
+    }) =>
+      apiRequest<DeliveryRetryResult>(
+        `/api/v1/weekly-reports/${input.reportId}/deliveries/${input.intentId}/retry`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey('weekly-delivery-retry') },
+          body: JSON.stringify({ intentVersion: input.intentVersion, reason: input.reason }),
+        },
+      ),
+    onSuccess: async (response, input) => {
+      setDeliveryRetryIntent(null);
+      deliveryRetryForm.resetFields();
+      await invalidateReport(input.reportId);
+      void messageApi.success(`第 ${response.data.nextAttemptNo} 次显式尝试已进入受控队列`);
     },
     onError: (error: Error) => void messageApi.error(error.message),
   });
@@ -991,6 +1127,55 @@ export function WeeklyReportsPage() {
     });
   };
 
+  const confirmReconcileDelivery = (intent: WeeklyReportDeliveryIntent) => {
+    Modal.confirm({
+      title: '查询钉钉实际交付结果？',
+      icon: <SafetyCertificateOutlined />,
+      width: 660,
+      content: (
+        <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 12 }}>
+          <Alert
+            type="info"
+            showIcon
+            message="这是只读外部查询，不会创建或重发日志"
+            description="系统会查询原尝试附近的窄时间窗口，并用确认冻结的六字段逐项精确匹配。唯一命中才恢复成功；首次未找到不会开放重试。"
+          />
+          <Descriptions size="small" bordered column={1}>
+            <Descriptions.Item label="交付意图">{intent.id}</Descriptions.Item>
+            <Descriptions.Item label="当前恢复状态">
+              {deliveryRecoveryStatusLabel(intent.recoveryStatus)}
+            </Descriptions.Item>
+            <Descriptions.Item label="已有尝试">{intent.attemptCount} 次</Descriptions.Item>
+          </Descriptions>
+        </Space>
+      ),
+      okText: '执行只读查询',
+      cancelText: '取消',
+      onOk: () =>
+        reconcileDeliveryMutation.mutateAsync({
+          reportId: intent.reportId,
+          intentId: intent.id,
+          intentVersion: intent.version,
+        }),
+    });
+  };
+
+  const openManualResolution = (intent: WeeklyReportDeliveryIntent) => {
+    manualResolutionForm.setFieldsValue({
+      resolution: 'delivered',
+      ...(intent.externalId ? { externalId: intent.externalId } : {}),
+      ...(intent.externalUrl ? { externalUrl: intent.externalUrl } : {}),
+      reason: '',
+      confirmationPhrase: '',
+    });
+    setManualResolutionIntent(intent);
+  };
+
+  const openDeliveryRetry = (intent: WeeklyReportDeliveryIntent) => {
+    deliveryRetryForm.setFieldsValue({ reason: '' });
+    setDeliveryRetryIntent(intent);
+  };
+
   return (
     <Space direction="vertical" size={20} className="page-stack weekly-report-page">
       {holder}
@@ -1141,7 +1326,18 @@ export function WeeklyReportsPage() {
                   type="error"
                   showIcon
                   message="正式日志结果未知，禁止再次提交"
-                  description="外部请求可能已经成功。请先在钉钉人工核对并等待恢复流程处理，系统不会盲目重放。"
+                  description="外部请求可能已经成功。请先执行只读查询或在钉钉人工核对；系统不会盲目重放。"
+                  action={
+                    logIntent ? (
+                      <Button
+                        size="small"
+                        loading={reconcileDeliveryMutation.isPending}
+                        onClick={() => confirmReconcileDelivery(logIntent)}
+                      >
+                        查询实际结果
+                      </Button>
+                    ) : undefined
+                  }
                 />
               )}
               {report.delivery?.partial && (
@@ -1212,8 +1408,75 @@ export function WeeklyReportsPage() {
                   size="small"
                   rowKey="id"
                   pagination={false}
-                  scroll={{ x: 860 }}
+                  scroll={{ x: 1_180 }}
                   dataSource={deliveryItems}
+                  expandable={{
+                    expandedRowRender: (item) => (
+                      <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                        <Descriptions size="small" bordered column={{ xs: 1, md: 2, lg: 3 }}>
+                          <Descriptions.Item label="恢复状态">
+                            {deliveryRecoveryStatusLabel(item.recoveryStatus)}
+                          </Descriptions.Item>
+                          <Descriptions.Item label="最后核对">
+                            {formatDateTime(item.lastRecoveryAt)}
+                          </Descriptions.Item>
+                          <Descriptions.Item label="人工裁决">
+                            {item.resolvedAt
+                              ? `${formatDateTime(item.resolvedAt)} · ${item.resolvedBy ?? '本机用户'}`
+                              : '—'}
+                          </Descriptions.Item>
+                          <Descriptions.Item label="裁决原因" span={3}>
+                            {item.resolutionReason ?? '—'}
+                          </Descriptions.Item>
+                        </Descriptions>
+                        {item.recoveryChecks.length === 0 ? (
+                          <Typography.Text type="secondary">
+                            尚无恢复查询或人工裁决证据
+                          </Typography.Text>
+                        ) : (
+                          <Timeline
+                            items={item.recoveryChecks.map((check) => ({
+                              color:
+                                check.outcome === 'matched' || check.outcome === 'manual_succeeded'
+                                  ? 'green'
+                                  : check.outcome === 'absence_confirmed' ||
+                                      check.outcome === 'manual_absence_confirmed'
+                                    ? 'blue'
+                                    : check.outcome === 'ambiguous' ||
+                                        check.outcome === 'query_failed'
+                                      ? 'red'
+                                      : 'gray',
+                              children: (
+                                <Space direction="vertical" size={2}>
+                                  <Space wrap>
+                                    <Typography.Text strong>
+                                      第 {check.sequenceNo} 次 ·{' '}
+                                      {deliveryRecoveryOutcomeLabel(check.outcome)}
+                                    </Typography.Text>
+                                    <Tag>
+                                      {check.mode === 'provider_query'
+                                        ? '外部只读查询'
+                                        : '人工裁决'}
+                                    </Tag>
+                                  </Space>
+                                  <Typography.Text type="secondary">
+                                    {formatDateTime(check.createdAt)} · 候选 {check.candidateCount}{' '}
+                                    · 精确命中 {check.exactMatchCount}
+                                    {check.matchedExternalId
+                                      ? ` · 外部 ID ${check.matchedExternalId}`
+                                      : ''}
+                                  </Typography.Text>
+                                  <Typography.Text type="secondary" copyable>
+                                    证据哈希 {check.evidenceHash}
+                                  </Typography.Text>
+                                </Space>
+                              ),
+                            }))}
+                          />
+                        )}
+                      </Space>
+                    ),
+                  }}
                   columns={[
                     {
                       title: '通道',
@@ -1232,6 +1495,12 @@ export function WeeklyReportsPage() {
                     },
                     { title: '尝试次数', dataIndex: 'attemptCount', width: 100 },
                     {
+                      title: '恢复状态',
+                      dataIndex: 'recoveryStatus',
+                      width: 170,
+                      render: (value: string) => deliveryRecoveryStatusLabel(value),
+                    },
+                    {
                       title: '外部标识',
                       dataIndex: 'externalId',
                       width: 210,
@@ -1239,8 +1508,9 @@ export function WeeklyReportsPage() {
                       render: (value: string | null) => value ?? '—',
                     },
                     {
-                      title: '错误/人工动作',
+                      title: '最近错误',
                       key: 'error',
+                      width: 220,
                       render: (_value: unknown, item: WeeklyReportDeliveryIntent) =>
                         item.lastErrorCode ? (
                           <Tooltip title={item.lastErrorSummary ?? item.lastErrorCode}>
@@ -1257,6 +1527,51 @@ export function WeeklyReportsPage() {
                       dataIndex: 'updatedAt',
                       width: 170,
                       render: (value: string) => formatDateTime(value),
+                    },
+                    {
+                      title: '恢复动作',
+                      key: 'actions',
+                      width: 300,
+                      fixed: 'right',
+                      render: (_value: unknown, item: WeeklyReportDeliveryIntent) => {
+                        const actions = deliveryRecoveryActions(item);
+                        return (
+                          <Space wrap>
+                            {actions.canReconcile && (
+                              <Button
+                                size="small"
+                                loading={
+                                  reconcileDeliveryMutation.isPending &&
+                                  reconcileDeliveryMutation.variables?.intentId === item.id
+                                }
+                                onClick={() => confirmReconcileDelivery(item)}
+                              >
+                                查询钉钉结果
+                              </Button>
+                            )}
+                            {actions.canResolve && (
+                              <Button size="small" onClick={() => openManualResolution(item)}>
+                                人工裁决
+                              </Button>
+                            )}
+                            {actions.canRetry && (
+                              <Button size="small" danger onClick={() => openDeliveryRetry(item)}>
+                                受控重试
+                              </Button>
+                            )}
+                            {!actions.canReconcile &&
+                              !actions.canResolve &&
+                              !actions.canRetry &&
+                              (actions.retryBlockedReason ? (
+                                <Tooltip title={actions.retryBlockedReason}>
+                                  <Typography.Text type="secondary">不可重试</Typography.Text>
+                                </Tooltip>
+                              ) : (
+                                '—'
+                              ))}
+                          </Space>
+                        );
+                      },
                     },
                   ]}
                 />
@@ -1628,6 +1943,193 @@ export function WeeklyReportsPage() {
       ) : (
         <Card loading />
       )}
+
+      <Modal
+        title="人工裁决钉钉交付结果"
+        width={720}
+        open={Boolean(manualResolutionIntent)}
+        okText="确认并写入裁决事实"
+        okButtonProps={{ danger: true }}
+        confirmLoading={resolveDeliveryMutation.isPending}
+        onCancel={() => {
+          setManualResolutionIntent(null);
+          manualResolutionForm.resetFields();
+        }}
+        onOk={() => {
+          if (!manualResolutionIntent) return;
+          // 表单校验失败由控件就地展示，接口失败由 mutation 统一提示，避免产生未处理 Promise。
+          void manualResolutionForm
+            .validateFields()
+            .then((values) =>
+              resolveDeliveryMutation.mutateAsync({
+                reportId: manualResolutionIntent.reportId,
+                intentId: manualResolutionIntent.id,
+                intentVersion: manualResolutionIntent.version,
+                values,
+              }),
+            )
+            .catch(() => undefined);
+        }}
+      >
+        <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <Alert
+            type="warning"
+            showIcon
+            message="人工裁决会改变本机交付主事实"
+            description="请先在钉钉客户端核对模板、操作用户、时间和六字段。确认已交付必须填写真实日志 ID；确认未交付后才可能开放受控重试。"
+          />
+          <Form<ManualResolutionValues>
+            form={manualResolutionForm}
+            layout="vertical"
+            initialValues={{ resolution: 'delivered' }}
+          >
+            <Form.Item
+              name="resolution"
+              label="钉钉实际结果"
+              rules={[{ required: true, message: '请选择实际结果' }]}
+            >
+              <Segmented
+                block
+                options={[
+                  { label: '已找到本次正式日志', value: 'delivered' },
+                  { label: '确认未创建/未发送', value: 'not_delivered' },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item noStyle shouldUpdate>
+              {({ getFieldValue }) =>
+                getFieldValue('resolution') === 'delivered' ? (
+                  <>
+                    <Form.Item
+                      name="externalId"
+                      label="钉钉日志 ID"
+                      rules={[
+                        {
+                          required: true,
+                          whitespace: true,
+                          message: '确认已交付时必须填写日志 ID',
+                        },
+                        { max: 500 },
+                      ]}
+                    >
+                      <Input placeholder="从钉钉实际日志中复制，不要猜测" />
+                    </Form.Item>
+                    <Form.Item
+                      name="externalUrl"
+                      label="可打开链接（可选）"
+                      rules={[{ max: 2_000 }]}
+                    >
+                      <Input placeholder="仅填写已核对的 https:// 或 dingtalk:// 链接" />
+                    </Form.Item>
+                  </>
+                ) : (
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message="确认未交付时不会保存外部 ID；提交后仍需点击“受控重试”才能创建新 attempt。"
+                  />
+                )
+              }
+            </Form.Item>
+            <Form.Item
+              name="reason"
+              label="核对依据与原因"
+              rules={[
+                { required: true, whitespace: true, message: '请记录人工核对依据' },
+                { min: 5, max: 500 },
+              ]}
+            >
+              <Input.TextArea
+                rows={3}
+                placeholder="例如：在钉钉发件箱按模板与时间核对，六字段唯一匹配……"
+              />
+            </Form.Item>
+            <Form.Item
+              name="confirmationPhrase"
+              label="强确认短语"
+              extra="请输入：我已在钉钉人工核对交付结果"
+              rules={[
+                { required: true, message: '必须输入强确认短语' },
+                {
+                  validator: (_rule, value: unknown) =>
+                    value === '我已在钉钉人工核对交付结果'
+                      ? Promise.resolve()
+                      : Promise.reject(new Error('确认短语不一致')),
+                },
+              ]}
+            >
+              <Input autoComplete="off" />
+            </Form.Item>
+          </Form>
+        </Space>
+      </Modal>
+
+      <Modal
+        title="发起一次受控新尝试"
+        width={660}
+        open={Boolean(deliveryRetryIntent)}
+        okText="创建新 attempt"
+        okButtonProps={{ danger: true }}
+        confirmLoading={retryDeliveryMutation.isPending}
+        onCancel={() => {
+          setDeliveryRetryIntent(null);
+          deliveryRetryForm.resetFields();
+        }}
+        onOk={() => {
+          if (!deliveryRetryIntent) return;
+          // 受控重试只在完整校验后创建新 attempt，失败提示统一由 mutation 输出。
+          void deliveryRetryForm
+            .validateFields()
+            .then((values) =>
+              retryDeliveryMutation.mutateAsync({
+                reportId: deliveryRetryIntent.reportId,
+                intentId: deliveryRetryIntent.id,
+                intentVersion: deliveryRetryIntent.version,
+                reason: values.reason,
+              }),
+            )
+            .catch(() => undefined);
+        }}
+      >
+        <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <Alert
+            type="warning"
+            showIcon
+            message="这会产生一次新的外部写尝试"
+            description="仅明确失败或已证明未交付的意图可执行；每个作业只尝试一次，总 attempt 上限为三次。正式日志结果未知时后端仍会拒绝。"
+          />
+          {deliveryRetryIntent && (
+            <Descriptions size="small" bordered column={1}>
+              <Descriptions.Item label="通道">
+                {deliveryRetryIntent.channel === 'dingtalk_log' ? '正式日志' : '群摘要'}
+              </Descriptions.Item>
+              <Descriptions.Item label="当前尝试次数">
+                {deliveryRetryIntent.attemptCount} / 3
+              </Descriptions.Item>
+              <Descriptions.Item label="失败/恢复事实">
+                {deliveryRecoveryStatusLabel(deliveryRetryIntent.recoveryStatus)}
+                {deliveryRetryIntent.lastErrorCode ? ` · ${deliveryRetryIntent.lastErrorCode}` : ''}
+              </Descriptions.Item>
+            </Descriptions>
+          )}
+          <Form<DeliveryRetryValues> form={deliveryRetryForm} layout="vertical">
+            <Form.Item
+              name="reason"
+              label="重试原因与已完成的修正"
+              rules={[
+                { required: true, whitespace: true, message: '请说明为什么现在可以重试' },
+                { min: 3, max: 500 },
+              ]}
+            >
+              <Input.TextArea
+                rows={4}
+                placeholder="例如：已修复应用权限并重新测试连接；或连续查询已确认未创建……"
+              />
+            </Form.Item>
+          </Form>
+        </Space>
+      </Modal>
 
       <Modal
         title="生成确定性周报版本"

@@ -693,6 +693,29 @@ export interface WeeklyReportDeliveryAttempt {
   completedAt: string | null;
 }
 
+export interface WeeklyReportDeliveryRecoveryCheck {
+  id: string;
+  sequenceNo: number;
+  mode: 'provider_query' | 'manual_resolution';
+  outcome:
+    | 'matched'
+    | 'not_found'
+    | 'absence_confirmed'
+    | 'ambiguous'
+    | 'query_failed'
+    | 'manual_succeeded'
+    | 'manual_absence_confirmed';
+  queryWindowStart: string | null;
+  queryWindowEnd: string | null;
+  candidateCount: number;
+  exactMatchCount: number;
+  matchedExternalId: string | null;
+  evidenceHash: string;
+  actorId: string;
+  createdAt: string;
+  summary: Record<string, unknown>;
+}
+
 export interface WeeklyReportDeliveryIntent {
   id: string;
   reportId: string;
@@ -701,15 +724,30 @@ export interface WeeklyReportDeliveryIntent {
   connectionId: string;
   channel: 'dingtalk_log' | 'dingtalk_robot';
   status: 'pending' | 'running' | 'succeeded' | 'failed' | 'unknown' | 'needs_review';
+  version: number;
   jobId: string | null;
   externalId: string | null;
   externalUrl: string | null;
   attemptCount: number;
   lastErrorCode: string | null;
   lastErrorSummary: string | null;
+  recoveryStatus:
+    | 'not_required'
+    | 'pending'
+    | 'not_found'
+    | 'absence_confirmed'
+    | 'matched'
+    | 'ambiguous'
+    | 'manual_succeeded'
+    | 'manual_absence_confirmed';
+  lastRecoveryAt: string | null;
+  resolvedBy: string | null;
+  resolvedAt: string | null;
+  resolutionReason: string | null;
   createdAt: string;
   updatedAt: string;
   attempts: WeeklyReportDeliveryAttempt[];
+  recoveryChecks: WeeklyReportDeliveryRecoveryCheck[];
 }
 
 export interface WeeklyReportWarning {
