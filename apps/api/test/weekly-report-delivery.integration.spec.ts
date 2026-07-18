@@ -11,11 +11,14 @@ import { AuditService } from '../src/modules/audit/audit.service.js';
 import type { DingTalkLogClient } from '../src/modules/dingtalk/dingtalk-log.client.js';
 import type { DingTalkRobotClient } from '../src/modules/dingtalk/dingtalk-robot.client.js';
 import { JobRegistryService } from '../src/modules/jobs/job-registry.service.js';
+import type { JobHandler } from '../src/modules/jobs/job-registry.service.js';
 import type { SessionService } from '../src/modules/session/session.service.js';
 import { WeeklyReportDeliveryHandler } from '../src/modules/weekly-reports/weekly-report-delivery.handler.js';
 import { WeeklyReportDeliveryRecoveryService } from '../src/modules/weekly-reports/weekly-report-delivery-recovery.service.js';
 import { WeeklyReportDeliveryService } from '../src/modules/weekly-reports/weekly-report-delivery.service.js';
 import { WeeklyReportNotificationLedgerService } from '../src/modules/weekly-reports/weekly-report-notification-ledger.service.js';
+import { WeeklyReportNotificationHandler } from '../src/modules/weekly-reports/weekly-report-notification.handler.js';
+import { WeeklyReportNotificationService } from '../src/modules/weekly-reports/weekly-report-notification.service.js';
 
 const capabilityHash = 'a'.repeat(64);
 const recipientHash = 'b'.repeat(64);
@@ -194,6 +197,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
         businessObjectKey: notificationFact.businessObjectKey,
         stateVersion: notificationFact.stateVersion,
         contentHash: notificationFact.contentHash,
+        messageFacts: JSON.parse(notificationFact.messageFactsJson) as Record<string, unknown>,
         quietWindowMinutes: 30,
         scheduledFor: new Date(),
       }),
@@ -205,6 +209,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       businessObjectKey: notificationFact.businessObjectKey,
       stateVersion: notificationFact.stateVersion + 1,
       contentHash: notificationFact.contentHash,
+      messageFacts: JSON.parse(notificationFact.messageFactsJson) as Record<string, unknown>,
       quietWindowMinutes: 30,
       scheduledFor: new Date(),
     });
@@ -279,6 +284,135 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     });
   });
 
+  it('明确的正式日志失败可生成去重失败提醒，独立通知作业只发送安全短摘要', async () => {
+    const fixture = await seedConfirmedReport();
+    const createReport = vi.fn().mockRejectedValue(
+      new DomainError('DINGTALK_LOG_PERMISSION_DENIED', 'Authorization: secret-value 权限不足', {
+        httpStatus: 403,
+      }),
+    );
+    const sendText = vi.fn().mockResolvedValue({
+      requestId: 'failure-reminder-request',
+      timestamp: 1,
+      providerCallCount: 1,
+      retryDelaysMs: [],
+    });
+    const runtime = createRuntime(createReport, sendText);
+    const submitRecord = await seedIdempotency(fixture.suffix, 'failure-reminder-submit');
+    const log = await runtime.service.submitLog(
+      fixture.reportId,
+      {
+        confirmationId: fixture.confirmationId,
+        confirmedVersionId: fixture.versionId,
+        recipientScopeHash: recipientHash,
+        reportVersion: fixture.reportVersion,
+      },
+      context(submitRecord),
+    );
+    await execute(runtime.handler, log.intent.id);
+    const report = await prisma.weeklyReport.findUniqueOrThrow({
+      where: { id: fixture.reportId },
+    });
+    const notifyRecord = await seedIdempotency(fixture.suffix, 'failure-reminder-notify');
+    const queued = await runtime.notifications.notifyFailure(
+      fixture.reportId,
+      {
+        robotConnectionId: fixture.robotConnectionId,
+        failedDeliveryIntentId: log.intent.id,
+        reportVersion: report.version,
+      },
+      context(notifyRecord),
+    );
+    expect(queued).toMatchObject({ disposition: 'created' });
+    expect(await execute(runtime.notificationHandler, queued.notification.id)).toMatchObject({
+      status: 'succeeded',
+    });
+
+    const sent = sendText.mock.calls[0]![0] as Parameters<DingTalkRobotClient['sendText']>[0];
+    expect(sent.text).toContain('周报交付失败提醒');
+    expect(sent.text).toContain('失败阶段：钉钉正式日志提交');
+    expect(sent.text).toContain('[REDACTED] 权限不足');
+    expect(sent.text).not.toContain('仅正式日志可见的完整工作正文');
+    expect(sent.text).not.toContain('secret-value');
+    expect(await runtime.notifications.list(fixture.reportId)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: queued.notification.id,
+          notificationType: 'submission_failure',
+          status: 'succeeded',
+          providerRequestId: 'failure-reminder-request',
+        }),
+      ]),
+    );
+
+    const duplicateRecord = await seedIdempotency(fixture.suffix, 'failure-reminder-duplicate');
+    const duplicate = await runtime.notifications.notifyFailure(
+      fixture.reportId,
+      {
+        robotConnectionId: fixture.robotConnectionId,
+        failedDeliveryIntentId: log.intent.id,
+        reportVersion: report.version,
+      },
+      context(duplicateRecord),
+    );
+    expect(duplicate).toMatchObject({
+      disposition: 'duplicate',
+      jobId: queued.jobId,
+    });
+    expect(sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it('失败提醒网络超时进入 unknown，通知作业和重复执行都不会盲目重放', async () => {
+    const fixture = await seedConfirmedReport();
+    const createReport = vi
+      .fn()
+      .mockRejectedValue(new DomainError('DINGTALK_LOG_REJECTED', '正式日志明确失败'));
+    const sendText = vi.fn().mockRejectedValue(
+      new DomainError('EXTERNAL_REQUEST_TIMEOUT', '机器人请求超时', {
+        httpStatus: 504,
+        retryable: true,
+      }),
+    );
+    const runtime = createRuntime(createReport, sendText);
+    const submitRecord = await seedIdempotency(fixture.suffix, 'notification-unknown-submit');
+    const log = await runtime.service.submitLog(
+      fixture.reportId,
+      {
+        confirmationId: fixture.confirmationId,
+        confirmedVersionId: fixture.versionId,
+        recipientScopeHash: recipientHash,
+        reportVersion: fixture.reportVersion,
+      },
+      context(submitRecord),
+    );
+    await execute(runtime.handler, log.intent.id);
+    const report = await prisma.weeklyReport.findUniqueOrThrow({
+      where: { id: fixture.reportId },
+    });
+    const notifyRecord = await seedIdempotency(fixture.suffix, 'notification-unknown-notify');
+    const queued = await runtime.notifications.notifyFailure(
+      fixture.reportId,
+      {
+        robotConnectionId: fixture.robotConnectionId,
+        failedDeliveryIntentId: log.intent.id,
+        reportVersion: report.version,
+      },
+      context(notifyRecord),
+    );
+    await expect(
+      execute(runtime.notificationHandler, queued.notification.id),
+    ).rejects.toMatchObject({ code: 'DINGTALK_NOTIFICATION_RESULT_UNKNOWN' });
+    expect(
+      await prisma.robotNotification.findUniqueOrThrow({
+        where: { id: queued.notification.id },
+      }),
+    ).toMatchObject({ status: 'unknown', lastErrorCode: 'EXTERNAL_REQUEST_TIMEOUT' });
+    await expect(
+      execute(runtime.notificationHandler, queued.notification.id),
+    ).rejects.toMatchObject({ code: 'ROBOT_NOTIFICATION_NOT_EXECUTABLE' });
+    expect(sendText).toHaveBeenCalledTimes(1);
+  });
+
   it('超时结果进入 unknown 且重复请求不会盲目创建第二次外部调用', async () => {
     const fixture = await seedConfirmedReport();
     const createReport = vi.fn().mockRejectedValue(
@@ -323,6 +457,21 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     expect(await prisma.deliveryAttempt.count({ where: { intentId: requested.intent.id } })).toBe(
       1,
     );
+    const unknownReport = await prisma.weeklyReport.findUniqueOrThrow({
+      where: { id: fixture.reportId },
+    });
+    const failureReminderRecord = await seedIdempotency(fixture.suffix, 'unknown-failure-reminder');
+    await expect(
+      runtime.notifications.notifyFailure(
+        fixture.reportId,
+        {
+          robotConnectionId: fixture.robotConnectionId,
+          failedDeliveryIntentId: requested.intent.id,
+          reportVersion: unknownReport.version,
+        },
+        context(failureReminderRecord),
+      ),
+    ).rejects.toMatchObject({ code: 'DINGTALK_LOG_FAILURE_FACT_REQUIRED' });
   });
 
   it('未知结果只在六字段唯一匹配时恢复成功，并保留原尝试的 unknown 事实', async () => {
@@ -593,6 +742,13 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       security,
       notificationLedger,
     );
+    const notifications = new WeeklyReportNotificationService(
+      prismaService,
+      sessions,
+      audit,
+      security,
+      notificationLedger,
+    );
     const registry = new JobRegistryService();
     const logClient = {
       accessToken: vi
@@ -622,6 +778,13 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       vault,
     );
     handler.onModuleInit();
+    const notificationHandler = new WeeklyReportNotificationHandler(
+      registry,
+      prismaService,
+      robotClient,
+      vault,
+    );
+    notificationHandler.onModuleInit();
     const recovery = new WeeklyReportDeliveryRecoveryService(
       prismaService,
       sessions,
@@ -631,7 +794,14 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       vault,
     );
     expect(registry.get('weekly-report.delivery')).toBe(handler);
-    return { service, handler, recovery, notificationLedger };
+    return {
+      service,
+      handler,
+      recovery,
+      notificationLedger,
+      notifications,
+      notificationHandler,
+    };
   }
 
   function matchingProviderReport(reportId: string) {
@@ -874,7 +1044,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     };
   }
 
-  async function execute(handler: WeeklyReportDeliveryHandler, intentId: string) {
+  async function execute(handler: JobHandler, intentId: string) {
     return handler.execute({
       jobId: `job-for-${intentId}`,
       payloadRef: intentId,

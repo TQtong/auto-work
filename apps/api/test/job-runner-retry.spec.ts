@@ -97,4 +97,82 @@ describe('持久化作业重试分类', () => {
       lastErrorCode: 'RESULT_REQUIRES_REVIEW',
     });
   });
+
+  it('启动恢复会把租约过期的通知和钉钉交付业务事实一并转为 unknown', async () => {
+    const notificationUpdate = vi
+      .fn<
+        (input: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => Promise<{ count: number }>
+      >()
+      .mockResolvedValue({ count: 1 });
+    const intentUpdate = vi
+      .fn<
+        (input: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => Promise<{ count: number }>
+      >()
+      .mockResolvedValue({ count: 1 });
+    const reportUpdate = vi
+      .fn<
+        (input: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => Promise<Record<string, never>>
+      >()
+      .mockResolvedValue({});
+    const expiredJobs = [
+      { id: 'notification-job', type: 'weekly-report.notification', payloadRef: 'notice-1' },
+      { id: 'delivery-job', type: 'weekly-report.delivery', payloadRef: 'intent-1' },
+    ];
+    const prisma = {
+      job: {
+        findMany: vi.fn().mockResolvedValue(expiredJobs),
+        update: vi.fn().mockResolvedValue({}),
+      },
+      robotNotification: { updateMany: notificationUpdate },
+      deliveryIntent: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 'intent-1',
+          reportId: 'report-1',
+          channel: 'dingtalk_log',
+          status: 'running',
+          version: 4,
+        }),
+      },
+      $transaction: vi.fn((callback: (tx: Record<string, unknown>) => Promise<unknown>) =>
+        callback({
+          deliveryIntent: { updateMany: intentUpdate },
+          weeklyReport: { update: reportUpdate },
+          robotNotification: { updateMany: notificationUpdate },
+        }),
+      ),
+    } as unknown as PrismaService;
+    const registry = {
+      recoveryFor: vi.fn().mockReturnValue('manual_review'),
+    } as unknown as JobRegistryService;
+    const runner = new JobRunnerService(prisma, registry, {} as InstanceLeaseService);
+
+    await runner.onApplicationBootstrap();
+
+    expect(notificationUpdate.mock.calls[0]?.[0].where).toEqual({
+      id: 'notice-1',
+      status: 'sending',
+    });
+    expect(notificationUpdate.mock.calls[0]?.[0].data).toMatchObject({ status: 'unknown' });
+    expect(intentUpdate.mock.calls[0]?.[0].where).toEqual({
+      id: 'intent-1',
+      status: 'running',
+      version: 4,
+    });
+    expect(intentUpdate.mock.calls[0]?.[0].data).toMatchObject({
+      status: 'unknown',
+      recoveryStatus: 'pending',
+    });
+    expect(reportUpdate.mock.calls[0]?.[0].data).toMatchObject({
+      logDeliveryState: 'unknown',
+    });
+  });
 });

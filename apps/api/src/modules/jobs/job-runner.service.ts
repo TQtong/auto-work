@@ -48,17 +48,7 @@ export class JobRunnerService implements OnApplicationBootstrap {
                 lastErrorCode: 'RESULT_REQUIRES_REVIEW',
               },
       });
-      if (recovery === 'manual_review' && job.type === 'git.batch.execute' && job.payloadRef) {
-        await this.prisma.gitBatch.updateMany({
-          where: { id: job.payloadRef, status: 'running' },
-          data: {
-            status: 'needs_review',
-            executionEndedAt: new Date(),
-            cancelReason: 'Worker 租约过期，无法确认最后一个 Git 写动作是否完成',
-            version: { increment: 1 },
-          },
-        });
-      }
+      if (recovery === 'manual_review') await this.markManualReviewTarget(job, 'lease_expired');
     }
   }
 
@@ -185,15 +175,7 @@ export class JobRunnerService implements OnApplicationBootstrap {
             },
       });
       if (handler.recovery === 'manual_review' && job.payloadRef) {
-        await this.prisma.gitBatch.updateMany({
-          where: { id: job.payloadRef, status: 'running' },
-          data: {
-            status: 'needs_review',
-            executionEndedAt: new Date(),
-            cancelReason: 'Git 执行作业异常退出，最终仓库状态必须人工复核',
-            version: { increment: 1 },
-          },
-        });
+        await this.markManualReviewTarget(job, 'execution_failed');
       }
       this.logger.warn(`作业 ${jobId} 执行失败：${this.safeError(error)}`);
     } finally {
@@ -206,5 +188,80 @@ export class JobRunnerService implements OnApplicationBootstrap {
     return message
       .replace(/(?:Bearer|PRIVATE-TOKEN|token|secret|webhook)\s*[:=]?\s*\S+/gi, '[REDACTED]')
       .slice(0, 1_000);
+  }
+
+  private async markManualReviewTarget(
+    job: { type: string; payloadRef: string | null },
+    reason: 'lease_expired' | 'execution_failed',
+  ): Promise<void> {
+    if (!job.payloadRef) return;
+    if (job.type === 'git.batch.execute') {
+      await this.prisma.gitBatch.updateMany({
+        where: { id: job.payloadRef, status: 'running' },
+        data: {
+          status: 'needs_review',
+          executionEndedAt: new Date(),
+          cancelReason:
+            reason === 'lease_expired'
+              ? 'Worker 租约过期，无法确认最后一个 Git 写动作是否完成'
+              : 'Git 执行作业异常退出，最终仓库状态必须人工复核',
+          version: { increment: 1 },
+        },
+      });
+      return;
+    }
+    if (job.type === 'weekly-report.notification') {
+      await this.prisma.robotNotification.updateMany({
+        where: { id: job.payloadRef, status: 'sending' },
+        data: {
+          status: 'unknown',
+          lastErrorCode: 'RESULT_REQUIRES_REVIEW',
+          lastErrorSummary: '通知作业中断，无法确认机器人是否已经接收消息',
+          version: { increment: 1 },
+        },
+      });
+      return;
+    }
+    if (job.type === 'weekly-report.delivery') {
+      const intent = await this.prisma.deliveryIntent.findUnique({
+        where: { id: job.payloadRef },
+        select: { id: true, reportId: true, channel: true, status: true, version: true },
+      });
+      if (!intent || intent.status !== 'running') return;
+      await this.prisma.$transaction(async (tx) => {
+        const changed = await tx.deliveryIntent.updateMany({
+          where: { id: intent.id, status: 'running', version: intent.version },
+          data: {
+            status: 'unknown',
+            recoveryStatus: 'pending',
+            lastErrorCode: 'RESULT_REQUIRES_REVIEW',
+            lastErrorSummary: '交付作业中断，无法确认钉钉是否已接收请求',
+            completedAt: new Date(),
+            version: { increment: 1 },
+          },
+        });
+        if (changed.count !== 1) return;
+        await tx.weeklyReport.update({
+          where: { id: intent.reportId },
+          data: {
+            ...(intent.channel === 'dingtalk_log'
+              ? { logDeliveryState: 'unknown' }
+              : { robotDeliveryState: 'unknown' }),
+            version: { increment: 1 },
+          },
+        });
+        if (intent.channel === 'dingtalk_robot') {
+          await tx.robotNotification.updateMany({
+            where: { deliveryIntentId: intent.id, status: 'sending' },
+            data: {
+              status: 'unknown',
+              lastErrorCode: 'RESULT_REQUIRES_REVIEW',
+              lastErrorSummary: '群摘要作业中断，无法确认机器人是否已接收消息',
+              version: { increment: 1 },
+            },
+          });
+        }
+      });
+    }
   }
 }

@@ -12,6 +12,7 @@ export interface ReserveRobotNotificationInput {
   businessObjectKey: string;
   stateVersion: number;
   contentHash: string;
+  messageFacts: Record<string, unknown>;
   quietWindowMinutes: number;
   scheduledFor: Date;
   jobId?: string | null;
@@ -51,6 +52,7 @@ export class WeeklyReportNotificationLedgerService {
           businessObjectKey: input.businessObjectKey,
           notificationType: input.notificationType,
           contentHash: input.contentHash,
+          messageFactsJson: JSON.stringify(input.messageFacts),
           quietWindowEndsAt: { gt: now },
           status: { notIn: ['skipped', 'cancelled'] },
         },
@@ -78,6 +80,7 @@ export class WeeklyReportNotificationLedgerService {
           stateVersion: input.stateVersion,
           dedupeKey,
           contentHash: input.contentHash,
+          messageFactsJson: JSON.stringify(input.messageFacts),
           status: input.jobId ? 'queued' : 'pending',
           quietWindowStartedAt: now,
           quietWindowEndsAt,

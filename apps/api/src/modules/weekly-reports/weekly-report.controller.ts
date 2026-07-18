@@ -26,6 +26,7 @@ import {
   generateWeeklyReportSchema,
   listWeeklyReportsQuerySchema,
   notifyWeeklyReportGroupSchema,
+  notifyWeeklyReportFailureSchema,
   reconcileWeeklyReportDeliverySchema,
   rejectWeeklyAiSuggestionSchema,
   resolveWeeklyReportDeliverySchema,
@@ -37,6 +38,7 @@ import { WeeklyReportAttachmentService } from './weekly-report-attachment.servic
 import { WeeklyReportAiService } from './weekly-report-ai.service.js';
 import { WeeklyReportDeliveryService } from './weekly-report-delivery.service.js';
 import { WeeklyReportDeliveryRecoveryService } from './weekly-report-delivery-recovery.service.js';
+import { WeeklyReportNotificationService } from './weekly-report-notification.service.js';
 import { WeeklyReportService } from './weekly-report.service.js';
 
 const maxAttachmentBytes = 8 * 1024 * 1024;
@@ -49,6 +51,7 @@ export class WeeklyReportController {
     private readonly attachments: WeeklyReportAttachmentService,
     private readonly delivery: WeeklyReportDeliveryService,
     private readonly deliveryRecovery: WeeklyReportDeliveryRecoveryService,
+    private readonly notifications: WeeklyReportNotificationService,
     private readonly idempotency: IdempotencyService,
     private readonly audit: AuditService,
     private readonly sessions: SessionService,
@@ -79,6 +82,11 @@ export class WeeklyReportController {
   @Get(':id/deliveries')
   public async deliveries(@Param('id') id: string, @Req() request: FastifyRequest) {
     return apiResponse(await this.delivery.list(id), request.autoWork.correlationId);
+  }
+
+  @Get(':id/notifications')
+  public async notificationList(@Param('id') id: string, @Req() request: FastifyRequest) {
+    return apiResponse(await this.notifications.list(id), request.autoWork.correlationId);
   }
 
   @Get(':id')
@@ -251,6 +259,24 @@ export class WeeklyReportController {
       { id, ...input },
       request,
       (recordId) => this.delivery.notifyGroup(id, input, this.context(request, recordId)),
+    );
+  }
+
+  @Post(':id/notifications/failure')
+  @HttpCode(202)
+  public async notifyFailure(
+    @Param('id') id: string,
+    @Body() rawBody: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = notifyWeeklyReportFailureSchema.parse(rawBody);
+    return this.mutate(
+      `/api/v1/weekly-reports/${id}/notifications/failure`,
+      key,
+      { id, ...input },
+      request,
+      (recordId) => this.notifications.notifyFailure(id, input, this.context(request, recordId)),
     );
   }
 

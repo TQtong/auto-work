@@ -290,8 +290,8 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
             status: result.status,
             hasExternalId: Boolean(result.externalId),
             providerRequestId: result.providerRequestId,
-            errorCode: result.errorCode,
             providerCallCount: result.providerCallCount,
+            errorCode: result.errorCode,
             retryDelaysMs: result.retryDelaysMs,
           }),
           completedAt: new Date(),
@@ -319,11 +319,27 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
         );
       }
       if (intent.channel === 'dingtalk_robot') {
+        const notification = await tx.robotNotification.findUnique({
+          where: { deliveryIntentId: intent.id },
+        });
+        // 即使数据库中的历史证据被异常数据污染，也只允许追加合法的退避毫秒数。
+        const priorDelays = notification
+          ? this.parseArray(notification.retryDelaysJson).flatMap((value) =>
+              typeof value === 'number' &&
+              Number.isInteger(value) &&
+              value >= 0 &&
+              value <= 30_000
+                ? [value]
+                : [],
+            )
+          : [];
         await tx.robotNotification.updateMany({
           where: { deliveryIntentId: intent.id, status: 'sending' },
           data: {
             status: result.status,
             providerRequestId: result.providerRequestId,
+            providerCallCount: { increment: result.providerCallCount },
+            retryDelaysJson: JSON.stringify([...priorDelays, ...result.retryDelaysMs]),
             lastErrorCode: result.errorCode,
             lastErrorSummary: result.errorSummary,
             sentAt: result.status === 'succeeded' ? new Date() : null,

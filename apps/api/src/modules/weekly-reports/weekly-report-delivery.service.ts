@@ -197,6 +197,16 @@ export class WeeklyReportDeliveryService {
         stateVersion: logIntent.version,
         contentHash: requestHash({ notificationType: input.notificationType, message }),
         quietWindowMinutes,
+        messageFacts: {
+          type: 'submission_success',
+          periodStart: facts.report.periodStart,
+          periodEnd: facts.report.periodEnd,
+          reportDate: facts.report.reportDate,
+          formalLogId: logIntent.externalId,
+          projectNames: projectNamesFromTaskFacts(
+            facts.confirmedVersion.sourceSnapshot.taskFactsJson,
+          ),
+        },
       },
       context,
     });
@@ -233,6 +243,7 @@ export class WeeklyReportDeliveryService {
       stateVersion: number;
       contentHash: string;
       quietWindowMinutes: number;
+      messageFacts: Record<string, unknown>;
     };
     context: DeliveryAuditContext;
   }) {
@@ -294,6 +305,7 @@ export class WeeklyReportDeliveryService {
             businessObjectKey: input.robotNotification.businessObjectKey,
             stateVersion: input.robotNotification.stateVersion,
             contentHash: input.robotNotification.contentHash,
+            messageFacts: input.robotNotification.messageFacts,
             quietWindowMinutes: input.robotNotification.quietWindowMinutes,
             scheduledFor: new Date(),
             jobId,

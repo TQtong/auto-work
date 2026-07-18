@@ -9,6 +9,8 @@ import { WeeklyReportDeliveryHandler } from './weekly-report-delivery.handler.js
 import { WeeklyReportDeliveryRecoveryService } from './weekly-report-delivery-recovery.service.js';
 import { WeeklyReportDeliveryService } from './weekly-report-delivery.service.js';
 import { WeeklyReportNotificationLedgerService } from './weekly-report-notification-ledger.service.js';
+import { WeeklyReportNotificationHandler } from './weekly-report-notification.handler.js';
+import { WeeklyReportNotificationService } from './weekly-report-notification.service.js';
 
 @Module({
   imports: [AiModule, DingTalkModule],
@@ -20,6 +22,8 @@ import { WeeklyReportNotificationLedgerService } from './weekly-report-notificat
     WeeklyReportDeliveryService,
     WeeklyReportDeliveryRecoveryService,
     WeeklyReportNotificationLedgerService,
+    WeeklyReportNotificationHandler,
+    WeeklyReportNotificationService,
     WeeklyReportDeliveryHandler,
   ],
   exports: [WeeklyReportService],

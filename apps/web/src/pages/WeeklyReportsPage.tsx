@@ -53,6 +53,7 @@ import type {
   Integration,
   WeeklyReport,
   WeeklyReportDeliveryIntent,
+  WeeklyReportRobotNotification,
   WeeklyAiGeneration,
   WeeklyAiGenerationList,
   WeeklyAiSuggestionResult,
@@ -64,6 +65,7 @@ import type {
 import { StatusTag } from '../components/StatusTag.js';
 import {
   deliveryRecoveryActions,
+  canNotifyFormalLogFailure,
   deliveryRecoveryOutcomeLabel,
   deliveryRecoveryStatusLabel,
 } from './weekly-report-delivery-view-model.js';
@@ -151,6 +153,12 @@ interface DeliveryRetryResult {
   status: 'pending';
   jobId: string;
   nextAttemptNo: number;
+}
+
+interface NotificationRequestResult {
+  notification: WeeklyReportRobotNotification;
+  disposition: 'created' | 'duplicate' | 'coalesced';
+  jobId: string | null;
 }
 
 interface ManualResolutionValues {
@@ -291,6 +299,17 @@ export function WeeklyReportsPage() {
     enabled: Boolean(selectedReportId),
     refetchInterval: 3_000,
   });
+  const notifications = useQuery({
+    queryKey: ['weekly-report-notifications', selectedReportId],
+    queryFn: () => {
+      if (!selectedReportId) throw new Error('尚未选择周报');
+      return apiRequest<WeeklyReportRobotNotification[]>(
+        `/api/v1/weekly-reports/${selectedReportId}/notifications`,
+      );
+    },
+    enabled: Boolean(selectedReportId),
+    refetchInterval: 3_000,
+  });
   const integrations = useQuery({
     queryKey: ['integrations'],
     queryFn: () => apiRequest<Integration[]>('/api/v1/integrations'),
@@ -383,6 +402,7 @@ export function WeeklyReportsPage() {
       queryClient.invalidateQueries({ queryKey: ['weekly-report-ai-generations', reportId] }),
       queryClient.invalidateQueries({ queryKey: ['weekly-report-ai-generation', reportId] }),
       queryClient.invalidateQueries({ queryKey: ['weekly-report-deliveries', reportId] }),
+      queryClient.invalidateQueries({ queryKey: ['weekly-report-notifications', reportId] }),
     ]);
   };
 
@@ -539,6 +559,38 @@ export function WeeklyReportsPage() {
       await invalidateReport(response.data.intent.reportId);
       void messageApi.success(
         response.data.replayed ? '已返回原群通知意图，不会重复发送' : '群摘要通知已进入受控队列',
+      );
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+
+  const notifyFailureMutation = useMutation({
+    mutationFn: (input: {
+      reportId: string;
+      robotConnectionId: string;
+      failedDeliveryIntentId: string;
+      reportVersion: number;
+    }) =>
+      apiRequest<NotificationRequestResult>(
+        `/api/v1/weekly-reports/${input.reportId}/notifications/failure`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey('weekly-notify-failure') },
+          body: JSON.stringify({
+            robotConnectionId: input.robotConnectionId,
+            failedDeliveryIntentId: input.failedDeliveryIntentId,
+            reportVersion: input.reportVersion,
+          }),
+        },
+      ),
+    onSuccess: async (response, input) => {
+      await invalidateReport(input.reportId);
+      void messageApi.success(
+        response.data.disposition === 'created'
+          ? '交付失败提醒已进入独立通知队列'
+          : response.data.disposition === 'coalesced'
+            ? '相同失败提醒仍在静默窗口，已合并且不会重复发送'
+            : '相同状态版本的失败提醒已经存在，不会重复发送',
       );
     },
     onError: (error: Error) => void messageApi.error(error.message),
@@ -857,6 +909,7 @@ export function WeeklyReportsPage() {
       ? compareWeeklyFields(comparedVersion.data.data.fields, version.fields)
       : [];
   const deliveryItems = deliveries.data?.data ?? [];
+  const notificationItems = notifications.data?.data ?? [];
   const logIntent = deliveryItems.find((intent) => intent.channel === 'dingtalk_log') ?? null;
   const selectedRobotIntent =
     deliveryItems.find(
@@ -878,6 +931,8 @@ export function WeeklyReportsPage() {
     report.logDeliveryState !== 'submitted' ||
     !selectedRobotConnectionId ||
     Boolean(selectedRobotIntent);
+  const failureNotificationBlocked =
+    !report || !canNotifyFormalLogFailure(logIntent) || !selectedRobotConnectionId;
 
   const saveFieldsNow = () => {
     if (!report || !version) return;
@@ -1122,6 +1177,53 @@ export function WeeklyReportsPage() {
           reportId: report.id,
           confirmationId: report.currentConfirmation!.id,
           robotConnectionId: selectedRobotConnectionId,
+          reportVersion: report.version,
+        }),
+    });
+  };
+
+  const confirmNotifyFailure = () => {
+    if (
+      !report ||
+      !canNotifyFormalLogFailure(logIntent) ||
+      !logIntent ||
+      !selectedRobotConnectionId
+    )
+      return;
+    const robot = healthyRobotConnections.find(
+      (connection) => connection.id === selectedRobotConnectionId,
+    );
+    Modal.confirm({
+      title: '发送正式日志失败提醒？',
+      icon: <ExclamationCircleOutlined />,
+      width: 660,
+      content: (
+        <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 12 }}>
+          <Alert
+            type="warning"
+            showIcon
+            message="只根据明确失败事实生成短提醒"
+            description="消息只包含周期、失败阶段、脱敏简化错误和本机查看提示；不会发送六字段全文、附件、凭证或 localhost 链接。结果未知时该入口会被禁止。"
+          />
+          <Descriptions size="small" bordered column={1}>
+            <Descriptions.Item label="失败意图">{logIntent.id}</Descriptions.Item>
+            <Descriptions.Item label="错误代码">
+              {logIntent.lastErrorCode ?? '未提供'}
+            </Descriptions.Item>
+            <Descriptions.Item label="目标机器人">
+              {robot?.name ?? selectedRobotConnectionId}
+            </Descriptions.Item>
+          </Descriptions>
+        </Space>
+      ),
+      okText: '确认发送失败提醒',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () =>
+        notifyFailureMutation.mutateAsync({
+          reportId: report.id,
+          robotConnectionId: selectedRobotConnectionId,
+          failedDeliveryIntentId: logIntent.id,
           reportVersion: report.version,
         }),
     });
@@ -1399,6 +1501,15 @@ export function WeeklyReportsPage() {
                 >
                   发送群交付摘要
                 </Button>
+                <Button
+                  danger
+                  icon={<ExclamationCircleOutlined />}
+                  disabled={failureNotificationBlocked}
+                  loading={notifyFailureMutation.isPending}
+                  onClick={confirmNotifyFailure}
+                >
+                  发送失败提醒
+                </Button>
               </Space>
 
               {deliveryItems.length === 0 ? (
@@ -1572,6 +1683,82 @@ export function WeeklyReportsPage() {
                           </Space>
                         );
                       },
+                    },
+                  ]}
+                />
+              )}
+
+              <Typography.Title level={5} style={{ margin: '8px 0 0' }}>
+                机器人通知账本
+              </Typography.Title>
+              {notificationItems.length === 0 ? (
+                <Empty description="尚无业务通知事实" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              ) : (
+                <Table
+                  size="small"
+                  rowKey="id"
+                  pagination={false}
+                  scroll={{ x: 1_100 }}
+                  dataSource={notificationItems}
+                  columns={[
+                    {
+                      title: '通知类型',
+                      dataIndex: 'notificationType',
+                      width: 150,
+                      render: (value: WeeklyReportRobotNotification['notificationType']) =>
+                        notificationTypeLabel(value),
+                    },
+                    {
+                      title: '状态',
+                      dataIndex: 'status',
+                      width: 120,
+                      render: (value: WeeklyReportRobotNotification['status']) => (
+                        <Tag color={deliveryStatusColor(value)}>{deliveryStatusLabel(value)}</Tag>
+                      ),
+                    },
+                    {
+                      title: '状态版本',
+                      dataIndex: 'stateVersion',
+                      width: 100,
+                      render: (value: number) => `v${value}`,
+                    },
+                    {
+                      title: '静默合并',
+                      dataIndex: 'coalescedCount',
+                      width: 100,
+                      render: (value: number) => `${value} 次`,
+                    },
+                    {
+                      title: '供应商调用',
+                      key: 'providerCalls',
+                      width: 170,
+                      render: (_value: unknown, item: WeeklyReportRobotNotification) =>
+                        `${item.providerCallCount} 次${item.retryDelaysMs.length ? ` · 等待 ${item.retryDelaysMs.join('/')}ms` : ''}`,
+                    },
+                    {
+                      title: '最近错误/跳过原因',
+                      key: 'error',
+                      width: 260,
+                      ellipsis: true,
+                      render: (_value: unknown, item: WeeklyReportRobotNotification) => {
+                        const detail = item.lastErrorSummary ?? item.skipReason;
+                        return detail ? (
+                          <Tooltip title={detail}>
+                            <Typography.Text type="danger">
+                              {item.lastErrorCode ?? detail}
+                            </Typography.Text>
+                          </Tooltip>
+                        ) : (
+                          '—'
+                        );
+                      },
+                    },
+                    {
+                      title: '发送/更新时间',
+                      key: 'time',
+                      width: 180,
+                      render: (_value: unknown, item: WeeklyReportRobotNotification) =>
+                        formatDateTime(item.sentAt ?? item.updatedAt),
                     },
                   ]}
                 />
@@ -2822,23 +3009,37 @@ function deliveryStatusLabel(status: string): string {
       not_started: '未开始',
       submitting: '排队提交',
       pending: '待执行',
+      queued: '已排队',
       running: '执行中',
+      sending: '发送中',
       submitted: '正式日志已提交',
       notified: '群摘要已发送',
       succeeded: '成功',
       failed: '失败',
       unknown: '结果未知',
       needs_review: '待人工复核',
+      skipped: '已跳过',
+      cancelled: '已取消',
     }[status] ?? status
   );
 }
 
 function deliveryStatusColor(status: string): string {
   if (['submitted', 'notified', 'succeeded'].includes(status)) return 'green';
-  if (['submitting', 'pending', 'running'].includes(status)) return 'processing';
+  if (['submitting', 'pending', 'queued', 'running', 'sending'].includes(status))
+    return 'processing';
   if (['unknown', 'needs_review'].includes(status)) return 'orange';
   if (status === 'failed') return 'red';
   return 'default';
+}
+
+function notificationTypeLabel(type: WeeklyReportRobotNotification['notificationType']): string {
+  return {
+    deadline_reminder: '截止提醒',
+    submission_success: '提交成功摘要',
+    submission_failure: '提交失败提醒',
+    risk_alert: '严重风险提醒',
+  }[type];
 }
 
 function formatDateTime(value: string | null | undefined): string {

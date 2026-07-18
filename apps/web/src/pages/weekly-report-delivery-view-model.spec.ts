@@ -4,6 +4,7 @@ import {
   deliveryRecoveryActions,
   deliveryRecoveryOutcomeLabel,
   deliveryRecoveryStatusLabel,
+  canNotifyFormalLogFailure,
 } from './weekly-report-delivery-view-model.js';
 
 describe('周报交付恢复视图模型', () => {
@@ -32,6 +33,14 @@ describe('周报交付恢复视图模型', () => {
     expect(deliveryRecoveryStatusLabel('not_found')).toBe('首次未找到');
     expect(deliveryRecoveryOutcomeLabel('not_found')).toBe('本次未找到，尚未开放重试');
     expect(deliveryRecoveryOutcomeLabel('absence_confirmed')).toBe('连续查询确认未创建');
+  });
+
+  it('只有明确失败的正式日志可生成失败提醒，unknown 和机器人失败均禁止', () => {
+    expect(canNotifyFormalLogFailure(intent({ status: 'failed' }))).toBe(true);
+    expect(canNotifyFormalLogFailure(intent({ status: 'unknown' }))).toBe(false);
+    expect(canNotifyFormalLogFailure(intent({ channel: 'dingtalk_robot', status: 'failed' }))).toBe(
+      false,
+    );
   });
 
   function intent(override: Partial<WeeklyReportDeliveryIntent> = {}): WeeklyReportDeliveryIntent {

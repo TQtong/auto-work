@@ -53,3 +53,8 @@ export function deliveryRecoveryOutcomeLabel(outcome: string): string {
     }[outcome] ?? outcome
   );
 }
+
+/** 失败提醒不能把 unknown/needs_review 误表述成已经失败。 */
+export function canNotifyFormalLogFailure(intent: WeeklyReportDeliveryIntent | null): boolean {
+  return intent?.channel === 'dingtalk_log' && intent.status === 'failed';
+}

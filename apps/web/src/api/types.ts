@@ -750,6 +750,33 @@ export interface WeeklyReportDeliveryIntent {
   recoveryChecks: WeeklyReportDeliveryRecoveryCheck[];
 }
 
+export interface WeeklyReportRobotNotification {
+  id: string;
+  reportId: string;
+  connectionId: string;
+  deliveryIntentId: string | null;
+  notificationType:
+    'deadline_reminder' | 'submission_success' | 'submission_failure' | 'risk_alert';
+  stateVersion: number;
+  status:
+    'pending' | 'queued' | 'sending' | 'succeeded' | 'failed' | 'unknown' | 'skipped' | 'cancelled';
+  coalescedCount: number;
+  scheduledFor: string;
+  quietWindowStartedAt: string;
+  quietWindowEndsAt: string;
+  providerRequestId: string | null;
+  providerCallCount: number;
+  retryDelaysMs: number[];
+  lastErrorCode: string | null;
+  lastErrorSummary: string | null;
+  sentAt: string | null;
+  skippedAt: string | null;
+  skipReason: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface WeeklyReportWarning {
   id: string;
   code: string;

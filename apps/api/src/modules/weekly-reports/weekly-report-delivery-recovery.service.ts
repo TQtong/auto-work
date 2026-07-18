@@ -403,6 +403,18 @@ export class WeeklyReportDeliveryRecoveryService {
           dedupeKey: `weekly-report.delivery:${intent.id}:attempt:${nextAttemptNo}`,
         },
       });
+      if (intent.channel === 'dingtalk_robot') {
+        await tx.robotNotification.updateMany({
+          where: { deliveryIntentId: intent.id, status: 'failed' },
+          data: {
+            status: 'queued',
+            jobId,
+            lastErrorCode: null,
+            lastErrorSummary: null,
+            version: { increment: 1 },
+          },
+        });
+      }
       await tx.weeklyReport.update({
         where: { id: intent.reportId },
         data: {

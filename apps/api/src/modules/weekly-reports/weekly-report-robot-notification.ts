@@ -1,40 +1,47 @@
 export type WeeklyReportRobotNotificationType =
   'deadline_reminder' | 'submission_success' | 'submission_failure' | 'risk_alert';
 
-type NotificationInput =
-  | {
-      type: 'submission_success';
-      periodStart: string;
-      periodEnd: string;
-      reportDate: string;
-      formalLogId: string;
-      projectNames: string[];
-    }
-  | {
-      type: 'deadline_reminder';
-      periodStart: string;
-      periodEnd: string;
-      deadlineText: string;
-      draftStatus: string;
-    }
-  | {
-      type: 'submission_failure';
-      periodStart: string;
-      periodEnd: string;
-      stage: string;
-      safeErrorSummary: string;
-    }
-  | {
-      type: 'risk_alert';
-      periodStart: string;
-      periodEnd: string;
-      riskSummaries: string[];
-    };
+const shortText = z.string().min(1).max(500);
+export const weeklyReportRobotNotificationFactsSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('submission_success'),
+    periodStart: shortText,
+    periodEnd: shortText,
+    reportDate: shortText,
+    formalLogId: shortText,
+    projectNames: z.array(shortText).max(3),
+  }),
+  z.object({
+    type: z.literal('deadline_reminder'),
+    periodStart: shortText,
+    periodEnd: shortText,
+    deadlineText: shortText,
+    draftStatus: shortText,
+  }),
+  z.object({
+    type: z.literal('submission_failure'),
+    periodStart: shortText,
+    periodEnd: shortText,
+    stage: shortText,
+    safeErrorSummary: shortText,
+  }),
+  z.object({
+    type: z.literal('risk_alert'),
+    periodStart: shortText,
+    periodEnd: shortText,
+    riskSummaries: z.array(shortText).min(1).max(3),
+  }),
+]);
+export type WeeklyReportRobotNotificationFacts = z.infer<
+  typeof weeklyReportRobotNotificationFactsSchema
+>;
 
 /**
  * 机器人正文由固定模板生成，绝不接收六字段全文、附件内容、外部凭证或 localhost 链接。
  */
-export function buildWeeklyReportRobotNotification(input: NotificationInput): string {
+export function buildWeeklyReportRobotNotification(
+  input: WeeklyReportRobotNotificationFacts,
+): string {
   const period = `周期：${safeLine(input.periodStart, 20)} 至 ${safeLine(input.periodEnd, 20)}`;
   if (input.type === 'submission_success') {
     const projects = normalizeList(input.projectNames, 3, 80);
@@ -107,3 +114,4 @@ function safeLine(value: string, maximumLength: number): string {
     .trim()
     .slice(0, maximumLength);
 }
+import { z } from 'zod';
