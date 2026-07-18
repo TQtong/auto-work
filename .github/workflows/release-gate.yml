@@ -1,0 +1,48 @@
+name: 发布门禁
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-gate:
+    name: Windows 完整发布门禁
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.14.0
+          run_install: false
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.14.0
+          cache: pnpm
+
+      - name: 冻结安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 执行完整发布门禁
+        run: pnpm release:gate
+
+      - name: 上传发布包、SBOM 与校验和
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: auto-work-release-${{ github.sha }}
+          path: |
+            dist/release/*.zip
+            dist/release/*.zip.sha256
+            dist/release/*/SBOM.cdx.json
+            dist/release/*/SHA256SUMS
+            dist/release/*/release-manifest.json
+          if-no-files-found: error
+          retention-days: 14
