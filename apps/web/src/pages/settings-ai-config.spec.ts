@@ -36,4 +36,52 @@ describe('AI 连接配置视图模型', () => {
       credential: { apiKey: 'secret-value' },
     });
   });
+
+  it('完整提交钉钉正式日志的固定主机、操作用户和应用凭证', () => {
+    expect(
+      toIntegrationPayload({
+        type: 'dingtalk_log',
+        name: '研发正式日志',
+        baseUrl: 'https://oapi.dingtalk.com',
+        appKey: 'app-key',
+        corpId: 'corp-1',
+        operatorUserId: 'operator-1',
+        templateName: '研发周报',
+        appSecret: 'app-secret-value',
+      }),
+    ).toEqual({
+      type: 'dingtalk_log',
+      name: '研发正式日志',
+      baseUrl: 'https://oapi.dingtalk.com',
+      config: {
+        appKey: 'app-key',
+        corpId: 'corp-1',
+        operatorUserId: 'operator-1',
+        templateName: '研发周报',
+      },
+      credential: { appSecret: 'app-secret-value' },
+    });
+  });
+
+  it('机器人 Webhook 与加签只进入一次性凭证载荷，不混入普通配置', () => {
+    expect(
+      toIntegrationPayload({
+        type: 'dingtalk_robot',
+        name: '研发通知',
+        robotName: '研发机器人',
+        groupId: 'group-1',
+        webhook: 'https://oapi.dingtalk.com/robot/send?access_token=token',
+        secret: 'secret-value',
+      }),
+    ).toEqual({
+      type: 'dingtalk_robot',
+      name: '研发通知',
+      baseUrl: undefined,
+      config: { robotName: '研发机器人', groupId: 'group-1', quietWindowMinutes: 30 },
+      credential: {
+        webhook: 'https://oapi.dingtalk.com/robot/send?access_token=token',
+        secret: 'secret-value',
+      },
+    });
+  });
 });

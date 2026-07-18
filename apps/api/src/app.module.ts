@@ -22,6 +22,7 @@ import { ExcelImportsModule } from './modules/excel-imports/excel-imports.module
 import { EvidenceModule } from './modules/evidence/evidence.module.js';
 import { WeeklyReportModule } from './modules/weekly-reports/weekly-report.module.js';
 import { AiModule } from './modules/ai/ai.module.js';
+import { DingTalkModule } from './modules/dingtalk/dingtalk.module.js';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { AiModule } from './modules/ai/ai.module.js';
     SettingsModule,
     IntegrationsModule,
     AiModule,
+    DingTalkModule,
     GitLabModule,
     GitBatchesModule,
     JiraModule,

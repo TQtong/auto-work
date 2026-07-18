@@ -39,6 +39,7 @@ interface IntegrationFormValues {
   apiKey?: string;
   appKey?: string;
   corpId?: string;
+  operatorUserId?: string;
   templateName?: string;
   robotName?: string;
   groupId?: string;
@@ -242,6 +243,12 @@ function IntegrationSettings() {
   const [cacheConnection, setCacheConnection] = useState<Integration | null>(null);
   const [jiraConnection, setJiraConnection] = useState<Integration | null>(null);
   const [messageApi, holder] = message.useMessage();
+  useEffect(() => {
+    form.setFieldValue(
+      'baseUrl',
+      selectedType === 'dingtalk_log' ? 'https://oapi.dingtalk.com' : undefined,
+    );
+  }, [form, selectedType]);
   const integrations = useQuery({
     queryKey: ['integrations'],
     queryFn: () => apiRequest<Integration[]>('/api/v1/integrations'),
@@ -326,7 +333,7 @@ function IntegrationSettings() {
         showIcon
         icon={<SafetyOutlined />}
         message="凭证不会回显"
-        description="替换凭证时系统先用新凭证通过能力测试，再切换引用并删除旧保险箱条目；撤销本地凭证不等于外部平台吊销。"
+        description="普通连接替换凭证时会先测试再切换。钉钉机器人因测试会真实向群里发送固定消息，保存后只进入待测试状态，必须显式确认测试成功才会替换旧凭证；撤销本地凭证不等于外部平台吊销。"
         style={{ marginBottom: 16 }}
       />
       <Table
@@ -372,13 +379,26 @@ function IntegrationSettings() {
           {
             title: '状态',
             dataIndex: 'status',
-            render: (value: string) => <StatusTag status={value} />,
+            render: (value: string, row: Integration) => (
+              <Space direction="vertical" size={2}>
+                <StatusTag status={value} />
+                {row.credentialReplacementPending && <Tag color="gold">新凭证待显式测试</Tag>}
+              </Space>
+            ),
           },
           {
             title: '凭证',
             dataIndex: 'credentialMask',
-            render: (value: Record<string, string> | null) =>
-              value ? Object.values(value).join(' / ') : '未配置',
+            render: (value: Record<string, string> | null, row: Integration) => (
+              <Space direction="vertical" size={2}>
+                <Typography.Text>
+                  {value ? Object.values(value).join(' / ') : '当前凭证未配置'}
+                </Typography.Text>
+                {row.credentialReplacementPending && (
+                  <Typography.Text type="warning">待测试凭证已安全保存</Typography.Text>
+                )}
+              </Space>
+            ),
           },
           {
             title: '上次测试',
@@ -389,13 +409,30 @@ function IntegrationSettings() {
             title: '操作',
             render: (_: unknown, row: Integration) => (
               <Space wrap>
-                <Button
-                  size="small"
-                  onClick={() => action.mutate({ row, kind: 'test' })}
-                  disabled={!row.enabled}
-                >
-                  测试
-                </Button>
+                {row.type === 'dingtalk_robot' ? (
+                  <Popconfirm
+                    title="确认向目标钉钉群发送固定连接测试消息？"
+                    description="测试消息不包含周报正文、凭证或本机链接；成功后待测试凭证才会正式启用。"
+                    onConfirm={() => action.mutate({ row, kind: 'test' })}
+                  >
+                    <Button
+                      size="small"
+                      disabled={
+                        !row.enabled || (!row.credentialMask && !row.credentialReplacementPending)
+                      }
+                    >
+                      {row.credentialReplacementPending ? '测试并启用新凭证' : '发送固定测试消息'}
+                    </Button>
+                  </Popconfirm>
+                ) : (
+                  <Button
+                    size="small"
+                    onClick={() => action.mutate({ row, kind: 'test' })}
+                    disabled={!row.enabled}
+                  >
+                    测试
+                  </Button>
+                )}
                 {row.type === 'gitlab' && (
                   <>
                     <Button
@@ -444,7 +481,11 @@ function IntegrationSettings() {
                   title="确认删除本机保险箱中的凭证？外部平台 Token 仍需在平台侧另行吊销。"
                   onConfirm={() => action.mutate({ row, kind: 'revoke' })}
                 >
-                  <Button size="small" danger disabled={!row.credentialMask}>
+                  <Button
+                    size="small"
+                    danger
+                    disabled={!row.credentialMask && !row.credentialReplacementPending}
+                  >
                     撤销凭证
                   </Button>
                 </Popconfirm>
@@ -559,8 +600,13 @@ function IntegrationSettings() {
               name="baseUrl"
               label="HTTPS 基础地址"
               rules={[{ required: true }, { type: 'url' }]}
+              extra={
+                selectedType === 'dingtalk_log'
+                  ? '正式日志适配器固定使用钉钉官方 oapi 主机，不接受自定义路径、查询参数或代理地址。'
+                  : undefined
+              }
             >
-              <Input placeholder="https://..." />
+              <Input placeholder="https://..." disabled={selectedType === 'dingtalk_log'} />
             </Form.Item>
           )}
           <IntegrationFields type={selectedType ?? 'gitlab'} />
@@ -625,18 +671,35 @@ function IntegrationFields({ type }: { type: Integration['type'] }) {
         <Form.Item name="templateName" label="周报模板名称">
           <Input />
         </Form.Item>
+        <Form.Item
+          name="operatorUserId"
+          label="日志操作用户 User ID"
+          rules={[{ required: true }]}
+          extra="该用户必须在应用可见范围内，并有权读取目标日志模板与创建日志。"
+        >
+          <Input />
+        </Form.Item>
       </>
     );
   if (type === 'dingtalk_robot')
     return (
-      <div className="form-grid">
-        <Form.Item name="robotName" label="机器人名称" rules={[{ required: true }]}>
-          <Input />
-        </Form.Item>
-        <Form.Item name="groupId" label="群稳定标识" rules={[{ required: true }]}>
-          <Input />
-        </Form.Item>
-      </div>
+      <>
+        <Alert
+          type="warning"
+          showIcon
+          message="保存不会自动向群里发送消息"
+          description="Webhook 和 Secret 会先进入待测试状态。只有你在连接列表显式确认发送固定、无敏感信息的测试消息且钉钉返回成功后，新凭证才会生效。"
+          style={{ marginBottom: 16 }}
+        />
+        <div className="form-grid">
+          <Form.Item name="robotName" label="机器人名称" rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="groupId" label="群稳定标识" rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+        </div>
+      </>
     );
   if (type === 'ai')
     return (
@@ -771,7 +834,12 @@ export function toIntegrationPayload(values: IntegrationFormValues) {
   if (values.type === 'dingtalk_log')
     return {
       ...common,
-      config: { appKey: values.appKey, corpId: values.corpId, templateName: values.templateName },
+      config: {
+        appKey: values.appKey,
+        corpId: values.corpId,
+        operatorUserId: values.operatorUserId,
+        templateName: values.templateName,
+      },
       credential: {
         appSecret: values.appSecret,
         ...(values.accessToken ? { accessToken: values.accessToken } : {}),

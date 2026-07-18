@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { DomainError, errorCodes } from '@auto-work/contracts';
-import { newId, normalizeHttpsBaseUrl } from '@auto-work/domain';
+import { newId, normalizeHttpsBaseUrl, requestHash } from '@auto-work/domain';
 import type { CredentialVault } from '../../infrastructure/vault/credential-vault.js';
 import { CREDENTIAL_VAULT } from '../../infrastructure/vault/credential-vault.js';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
@@ -13,6 +13,7 @@ import { SessionService } from '../session/session.service.js';
 import type { RequestAuditContext } from '../settings/profile.service.js';
 import { IntegrationProbeRegistry, type IntegrationType } from './integration-probe.registry.js';
 import { aiProviderConfigSchema } from '../ai/ai-provider.config.js';
+import { validateDingTalkRobotWebhook } from '../dingtalk/dingtalk-robot.client.js';
 
 const configSchemas = {
   gitlab: z
@@ -33,6 +34,7 @@ const configSchemas = {
     .object({
       appKey: z.string().trim().min(1).max(200),
       corpId: z.string().trim().min(1).max(200),
+      operatorUserId: z.string().trim().min(1).max(500),
       templateName: z.string().trim().min(1).max(200).default('uTwin产研创新部周报'),
     })
     .strict(),
@@ -111,8 +113,18 @@ export class IntegrationsService {
           name: input.name,
           baseUrl: normalized.baseUrl,
           configJson: JSON.stringify(normalized.config),
-          credentialRef,
-          credentialMask: credential ? JSON.stringify(this.maskCredential(credential)) : null,
+          credentialRef: input.type === 'dingtalk_robot' ? null : credentialRef,
+          credentialMask:
+            credential && input.type !== 'dingtalk_robot'
+              ? JSON.stringify(this.maskCredential(credential))
+              : null,
+          pendingCredentialRef: input.type === 'dingtalk_robot' ? credentialRef : null,
+          pendingCredentialMask:
+            credential && input.type === 'dingtalk_robot'
+              ? JSON.stringify(this.maskCredential(credential))
+              : null,
+          pendingCredentialCreatedAt:
+            credential && input.type === 'dingtalk_robot' ? new Date() : null,
         },
       });
       await this.audit.record({
@@ -127,6 +139,7 @@ export class IntegrationsService {
           name: connection.name,
           baseUrl: connection.baseUrl,
           hasCredential: Boolean(credentialRef),
+          credentialPendingExplicitTest: input.type === 'dingtalk_robot' && Boolean(credentialRef),
         },
         clientSessionHash: this.security.sessionHash(context.sessionId),
       });
@@ -151,34 +164,38 @@ export class IntegrationsService {
       : undefined;
     if (credential) {
       newCredentialRef = await this.vault.put(JSON.stringify(credential));
-      credentialProbeResult = await this.probes.probe({
-        id,
-        type: before.type as IntegrationType,
-        baseUrl: normalized.baseUrl,
-        config: normalized.config,
-        credential,
-      });
-      const credentialUsable =
-        credentialProbeResult.healthy ||
-        (before.type === 'jira' &&
-          credentialProbeResult.status === 'configuration_required' &&
-          credentialProbeResult.capabilities.authenticated === true);
-      if (!credentialUsable) {
-        await this.vault.delete(newCredentialRef);
-        throw new DomainError(
-          'CREDENTIAL_TEST_FAILED',
-          credentialProbeResult.message ?? '新凭证连接测试未通过',
-          {
-            httpStatus: 422,
-            details: {
-              code: credentialProbeResult.errorCode,
-              status: credentialProbeResult.status,
+      // 机器人探测会真实向群内发送固定测试消息，保存时只暂存，必须由用户显式触发测试。
+      if (before.type !== 'dingtalk_robot') {
+        credentialProbeResult = await this.probes.probe({
+          id,
+          type: before.type as IntegrationType,
+          baseUrl: normalized.baseUrl,
+          config: normalized.config,
+          credential,
+        });
+        const credentialUsable =
+          credentialProbeResult.healthy ||
+          (before.type === 'jira' &&
+            credentialProbeResult.status === 'configuration_required' &&
+            credentialProbeResult.capabilities.authenticated === true);
+        if (!credentialUsable) {
+          await this.vault.delete(newCredentialRef);
+          throw new DomainError(
+            'CREDENTIAL_TEST_FAILED',
+            credentialProbeResult.message ?? '新凭证连接测试未通过',
+            {
+              httpStatus: 422,
+              details: {
+                code: credentialProbeResult.errorCode,
+                status: credentialProbeResult.status,
+              },
+              suggestedAction: 'reconfigure',
             },
-            suggestedAction: 'reconfigure',
-          },
-        );
+          );
+        }
       }
     }
+    let persisted = false;
     try {
       const updateData: Prisma.IntegrationConnectionUpdateManyMutationInput = {
         baseUrl: normalized.baseUrl,
@@ -187,14 +204,20 @@ export class IntegrationsService {
       };
       if (input.name !== undefined) updateData.name = input.name;
       if (credential && newCredentialRef) {
-        updateData.credentialRef = newCredentialRef;
-        updateData.credentialMask = JSON.stringify(this.maskCredential(credential));
-        const probeResult = credentialProbeResult!;
-        updateData.status = probeResult.status;
-        updateData.capabilitiesJson = JSON.stringify(probeResult.capabilities);
-        updateData.lastTestedAt = new Date();
-        if (probeResult.healthy || probeResult.capabilities.authenticated === true) {
-          updateData.lastSuccessAt = new Date();
+        if (before.type === 'dingtalk_robot') {
+          updateData.pendingCredentialRef = newCredentialRef;
+          updateData.pendingCredentialMask = JSON.stringify(this.maskCredential(credential));
+          updateData.pendingCredentialCreatedAt = new Date();
+        } else {
+          updateData.credentialRef = newCredentialRef;
+          updateData.credentialMask = JSON.stringify(this.maskCredential(credential));
+          const probeResult = credentialProbeResult!;
+          updateData.status = probeResult.status;
+          updateData.capabilitiesJson = JSON.stringify(probeResult.capabilities);
+          updateData.lastTestedAt = new Date();
+          if (probeResult.healthy || probeResult.capabilities.authenticated === true) {
+            updateData.lastSuccessAt = new Date();
+          }
         }
       }
       const updated = await this.prisma.integrationConnection.updateMany({
@@ -207,12 +230,17 @@ export class IntegrationsService {
           suggestedAction: 'refresh',
         });
       }
-      if (newCredentialRef && before.credentialRef) await this.vault.delete(before.credentialRef);
+      persisted = true;
+      if (newCredentialRef && before.type === 'dingtalk_robot') {
+        if (before.pendingCredentialRef) await this.vault.delete(before.pendingCredentialRef);
+      } else if (newCredentialRef && before.credentialRef) {
+        await this.vault.delete(before.credentialRef);
+      }
       const after = await this.find(id);
       await this.auditChange('integration.updated', before, after, context);
       return this.toPublic(after);
     } catch (error) {
-      if (newCredentialRef) await this.vault.delete(newCredentialRef);
+      if (newCredentialRef && !persisted) await this.vault.delete(newCredentialRef);
       throw error;
     }
   }
@@ -221,16 +249,28 @@ export class IntegrationsService {
     const connection = await this.find(id);
     if (!connection.enabled)
       throw new DomainError('INTEGRATION_DISABLED', '已禁用连接不能测试', { httpStatus: 409 });
+    const preserveActiveRobotState =
+      connection.type === 'dingtalk_robot' && Boolean(connection.pendingCredentialRef);
+    const testedCredentialFingerprint = requestHash({
+      connectionId: id,
+      credentialRef: connection.pendingCredentialRef ?? connection.credentialRef ?? 'none',
+      configJson: connection.configJson,
+    });
     await this.prisma.integrationConnection.update({
       where: { id },
-      data: { status: 'testing', lastTestedAt: new Date(), version: { increment: 1 } },
+      data: {
+        ...(preserveActiveRobotState ? {} : { status: 'testing' }),
+        lastTestedAt: new Date(),
+        version: { increment: 1 },
+      },
     });
     return this.queue.enqueue({
       type: 'integration.test',
       payloadRef: id,
       payloadSummary: { integrationType: connection.type, integrationId: id },
-      maxAttempts: 2,
-      dedupeKey: `integration.test:${id}:${connection.version}`,
+      maxAttempts: connection.type === 'dingtalk_robot' ? 1 : 2,
+      // 同一凭证的排队/执行中测试只允许一个；完成后仍可由用户再次显式发起。
+      dedupeKey: `integration.test:${id}:${testedCredentialFingerprint}`,
     });
   }
 
@@ -259,6 +299,9 @@ export class IntegrationsService {
       data: {
         credentialRef: null,
         credentialMask: null,
+        pendingCredentialRef: null,
+        pendingCredentialMask: null,
+        pendingCredentialCreatedAt: null,
         status: 'invalid',
         version: { increment: 1 },
       },
@@ -266,6 +309,7 @@ export class IntegrationsService {
     if (result.count !== 1)
       throw new DomainError(errorCodes.versionConflict, '集成配置版本已变化', { httpStatus: 409 });
     if (before.credentialRef) await this.vault.delete(before.credentialRef);
+    if (before.pendingCredentialRef) await this.vault.delete(before.pendingCredentialRef);
     const after = await this.find(id);
     await this.auditChange('integration.credential_revoked', before, after, context);
     return this.toPublic(after);
@@ -289,8 +333,18 @@ export class IntegrationsService {
         httpStatus: 422,
       });
     const normalizedUrl = baseUrl
-      ? normalizeHttpsBaseUrl(baseUrl, { allowPrivateNetwork: type !== 'ai' }).toString()
+      ? normalizeHttpsBaseUrl(baseUrl, {
+          allowPrivateNetwork: !['ai', 'dingtalk_log'].includes(type),
+          ...(type === 'dingtalk_log' ? { allowedHosts: ['oapi.dingtalk.com'] } : {}),
+        }).toString()
       : null;
+    if (type === 'dingtalk_log' && normalizedUrl !== 'https://oapi.dingtalk.com/') {
+      throw new DomainError(
+        'DINGTALK_LOG_BASE_URL_INVALID',
+        '钉钉正式日志基础地址必须严格为 https://oapi.dingtalk.com/',
+        { httpStatus: 422 },
+      );
+    }
     return { baseUrl: normalizedUrl, config: configSchemas[type].parse(config) };
   }
 
@@ -312,6 +366,10 @@ export class IntegrationsService {
     credential: Record<string, string>,
   ): Record<string, string> {
     const parsed = credentialSchemas[type].parse(credential) as Record<string, unknown>;
+    if (type === 'dingtalk_robot' && typeof parsed.webhook === 'string') {
+      // 保存前即阻断伪造主机、路径或额外查询参数，避免恶意地址进入凭证库。
+      validateDingTalkRobotWebhook(parsed.webhook);
+    }
     return Object.fromEntries(
       Object.entries(parsed).filter(
         (entry): entry is [string, string] => typeof entry[1] === 'string',
@@ -334,6 +392,8 @@ export class IntegrationsService {
       config: JSON.parse(connection.configJson) as unknown,
       lastTestedAt: connection.lastTestedAt?.toISOString() ?? null,
       lastSuccessAt: connection.lastSuccessAt?.toISOString() ?? null,
+      credentialReplacementPending: Boolean(connection.pendingCredentialRef),
+      pendingCredentialCreatedAt: connection.pendingCredentialCreatedAt?.toISOString() ?? null,
       version: connection.version,
       createdAt: connection.createdAt.toISOString(),
       updatedAt: connection.updatedAt.toISOString(),

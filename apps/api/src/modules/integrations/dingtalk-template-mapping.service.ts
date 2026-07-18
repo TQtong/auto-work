@@ -71,6 +71,61 @@ export class DingTalkTemplateMappingService {
         { httpStatus: 422, suggestedAction: 'reconfigure' },
       );
     }
+    const fields = [...input.fields].sort((left, right) => left.order - right.order);
+    if (fields.some((field, index) => field.internalField !== requiredInternalFields[index])) {
+      throw new DomainError(
+        'DINGTALK_TEMPLATE_FIELD_ORDER_INVALID',
+        '模板字段顺序必须严格对应周报六字段，避免提交时错填栏目',
+        { httpStatus: 422 },
+      );
+    }
+    const selectedTemplate = this.parseObject(discovery.selectedTemplate);
+    const selectedFields = Array.isArray(selectedTemplate.fields) ? selectedTemplate.fields : [];
+    const discoveredFacts = {
+      templateId: selectedTemplate.templateId,
+      templateName: selectedTemplate.templateName,
+      externalTemplateVersion: selectedTemplate.externalTemplateVersion ?? null,
+      templateHash: selectedTemplate.templateHash,
+      observedAt: discovery.observedAt,
+      expiresAt: discovery.expiresAt,
+      fields: selectedFields.map((field) => {
+        const value = this.parseObject(field);
+        return {
+          externalFieldId: value.externalFieldId,
+          externalFieldName: value.externalFieldName,
+          externalType: value.externalType,
+          order: value.order,
+          required: value.required,
+          maxLength: value.maxLength ?? null,
+        };
+      }),
+    };
+    const submittedFacts = {
+      templateId: input.templateId,
+      templateName: input.templateName,
+      externalTemplateVersion: input.externalTemplateVersion,
+      templateHash: input.templateHash,
+      observedAt: input.observedAt,
+      expiresAt: input.expiresAt,
+      fields: fields.map((field) => ({
+        externalFieldId: field.externalFieldId,
+        externalFieldName: field.externalFieldName,
+        externalType: field.externalType,
+        order: field.order,
+        required: field.required,
+        maxLength: field.maxLength,
+      })),
+    };
+    if (
+      selectedFields.length !== 6 ||
+      requestHash(discoveredFacts) !== requestHash(submittedFacts)
+    ) {
+      throw new DomainError(
+        'DINGTALK_TEMPLATE_DISCOVERED_FACTS_MISMATCH',
+        '模板标识、探测时间或六个外部字段事实与最近一次钉钉探测不一致',
+        { httpStatus: 422, suggestedAction: 'reconfigure' },
+      );
+    }
     const now = new Date();
     if (new Date(input.expiresAt) <= now) {
       throw new DomainError(
@@ -80,14 +135,6 @@ export class DingTalkTemplateMappingService {
           httpStatus: 422,
           suggestedAction: 'reconfigure',
         },
-      );
-    }
-    const fields = [...input.fields].sort((left, right) => left.order - right.order);
-    if (fields.some((field, index) => field.internalField !== requiredInternalFields[index])) {
-      throw new DomainError(
-        'DINGTALK_TEMPLATE_FIELD_ORDER_INVALID',
-        '模板字段顺序必须严格对应周报六字段，避免提交时错填栏目',
-        { httpStatus: 422 },
       );
     }
     const content = {

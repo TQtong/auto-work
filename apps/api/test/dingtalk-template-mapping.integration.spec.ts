@@ -55,9 +55,7 @@ describe('钉钉模板映射不可变版本与能力快照约束', () => {
         name: '研发日志',
         status: 'healthy',
         enabled: true,
-        capabilitiesJson: JSON.stringify({
-          templateDiscovery: { supported: true, snapshotHash: capabilitySnapshotHash },
-        }),
+        capabilitiesJson: capabilitiesFor(mappingInput()),
       },
     });
   }, 60_000);
@@ -80,11 +78,17 @@ describe('钉钉模板映射不可变版本与能力快照约束', () => {
 
     const replay = await mappings.save('dingtalk-log-1', firstInput, context);
     expect(replay).toMatchObject({ replayed: true, version: { id: first.version.id } });
-    const second = await mappings.save(
-      'dingtalk-log-1',
-      mappingInput({ externalTemplateVersion: '2026-08', templateHash: 'c'.repeat(64) }),
-      context,
-    );
+    const secondInput = mappingInput({
+      connectionVersion: 2,
+      externalTemplateVersion: '2026-08',
+      templateHash: 'c'.repeat(64),
+      capabilitySnapshotHash: 'd'.repeat(64),
+    });
+    await prisma.integrationConnection.update({
+      where: { id: 'dingtalk-log-1' },
+      data: { capabilitiesJson: capabilitiesFor(secondInput), version: { increment: 1 } },
+    });
+    const second = await mappings.save('dingtalk-log-1', secondInput, context);
     expect(second).toMatchObject({ replayed: false, version: { versionNo: 2 } });
     expect(await prisma.dingTalkTemplateMappingVersion.count()).toBe(2);
     expect(
@@ -101,14 +105,25 @@ describe('钉钉模板映射不可变版本与能力快照约束', () => {
   });
 
   it('拒绝伪造的能力快照、错序字段与非日志连接', async () => {
+    const currentVersion = 3;
+    const discoveredInput = mappingInput({ connectionVersion: currentVersion });
+    await prisma.integrationConnection.update({
+      where: { id: 'dingtalk-log-1' },
+      data: { capabilitiesJson: capabilitiesFor(discoveredInput), version: { increment: 1 } },
+    });
     await expect(
       mappings.save(
         'dingtalk-log-1',
-        mappingInput({ capabilitySnapshotHash: 'f'.repeat(64) }),
+        mappingInput({ connectionVersion: currentVersion, capabilitySnapshotHash: 'f'.repeat(64) }),
         context,
       ),
     ).rejects.toMatchObject({ code: 'DINGTALK_TEMPLATE_CAPABILITY_SNAPSHOT_MISMATCH' });
-    const wrongOrder = mappingInput();
+    const forgedField = mappingInput({ connectionVersion: currentVersion });
+    forgedField.fields[0]!.externalFieldName = '伪造字段';
+    await expect(mappings.save('dingtalk-log-1', forgedField, context)).rejects.toMatchObject({
+      code: 'DINGTALK_TEMPLATE_DISCOVERED_FACTS_MISMATCH',
+    });
+    const wrongOrder = mappingInput({ connectionVersion: currentVersion });
     wrongOrder.fields[0]!.order = 5;
     wrongOrder.fields[5]!.order = 0;
     await expect(mappings.save('dingtalk-log-1', wrongOrder, context)).rejects.toMatchObject({
@@ -139,6 +154,31 @@ describe('钉钉模板映射不可变版本与能力快照约束', () => {
         }),
       ),
       ...overrides,
+    });
+  }
+
+  function capabilitiesFor(input: ReturnType<typeof mappingInput>): string {
+    return JSON.stringify({
+      templateDiscovery: {
+        supported: true,
+        snapshotHash: input.capabilitySnapshotHash,
+        observedAt: input.observedAt,
+        expiresAt: input.expiresAt,
+        selectedTemplate: {
+          templateId: input.templateId,
+          templateName: input.templateName,
+          externalTemplateVersion: input.externalTemplateVersion,
+          templateHash: input.templateHash,
+          fields: input.fields.map((field) => ({
+            externalFieldId: field.externalFieldId,
+            externalFieldName: field.externalFieldName,
+            externalType: field.externalType,
+            order: field.order,
+            required: field.required,
+            maxLength: field.maxLength,
+          })),
+        },
+      },
     });
   }
 });

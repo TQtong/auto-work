@@ -40,6 +40,8 @@ export interface Integration {
   config: Record<string, unknown>;
   lastTestedAt: string | null;
   lastSuccessAt: string | null;
+  credentialReplacementPending: boolean;
+  pendingCredentialCreatedAt: string | null;
   version: number;
 }
 

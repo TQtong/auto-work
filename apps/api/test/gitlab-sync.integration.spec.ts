@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PrismaClient } from '@prisma/client';
@@ -12,12 +12,6 @@ import type { RepositoryInspectorService } from '../src/modules/repositories/rep
 import { RepositoryService } from '../src/modules/repositories/repository.service.js';
 
 const sha = '0123456789abcdef0123456789abcdef01234567';
-const migrations = [
-  '20260717090822_foundation',
-  '20260717100716_repository_read_model',
-  '20260717102840_gitlab_read_cache',
-];
-
 describe('GitLab 多资源缓存集成', () => {
   let tempDirectory: string;
   let prisma: PrismaClient;
@@ -30,8 +24,13 @@ describe('GitLab 多资源缓存集成', () => {
     prisma = new PrismaClient({
       datasourceUrl: `file:${join(tempDirectory, 'sync.db').replaceAll('\\', '/')}`,
     });
+    const migrationRoot = resolve('prisma/migrations');
+    const migrations = (await readdir(migrationRoot, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
     for (const migration of migrations) {
-      const sql = await readFile(resolve('prisma/migrations', migration, 'migration.sql'), 'utf8');
+      const sql = await readFile(join(migrationRoot, migration, 'migration.sql'), 'utf8');
       for (const statement of sql.split(/;\s*(?:\r?\n|$)/u).map((value) => value.trim())) {
         if (statement) await prisma.$executeRawUnsafe(statement);
       }

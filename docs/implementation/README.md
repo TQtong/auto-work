@@ -27,7 +27,9 @@
 | 04B1  | AI 三协议、真实连接测试、统一 usage/停止原因      | [阶段四 B1 实现与验证](./phase-4b1-ai-provider-protocols.md)         | implemented |
 | 04B2a | AI 白名单净化、引用事实校验、不可变生成留痕       | [阶段四 B2a 实现与验证](./phase-4b2a-ai-sanitization-persistence.md) | implemented |
 | 04B2b | AI 建议服务、版本采纳/拒绝、确定性降级与工作台    | [阶段四 B2b 实现与验证](./phase-4b2b-ai-suggestion-workflow.md)      | verified    |
-| 04C   | 钉钉探测、日志/机器人交付、重试与部分交付恢复     | 待提交                                                               | planned     |
+| 04C1  | 钉钉日志/机器人协议、模板探测与凭证安全轮换       | [阶段四 C1 实现与验证](./phase-4c1-dingtalk-capability-probes.md)    | implemented |
+| 04C2  | 正式日志创建、机器人摘要与双通道幂等              | 待提交                                                               | planned     |
+| 04C3  | 结果恢复、重试、计划任务、部分交付与降级          | 待提交                                                               | planned     |
 | 05    | 季度绩效、导出、运维与发布门禁                    | 待提交                                                               | planned     |
 
 每次增量必须同步更新本表，并在 PR 中保留对应提交、验证命令和人工检查结果。
