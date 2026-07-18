@@ -12,6 +12,7 @@ import { JobQueueService } from '../jobs/job-queue.service.js';
 import { SessionService } from '../session/session.service.js';
 import type { RequestAuditContext } from '../settings/profile.service.js';
 import { IntegrationProbeRegistry, type IntegrationType } from './integration-probe.registry.js';
+import { aiProviderConfigSchema } from '../ai/ai-provider.config.js';
 
 const configSchemas = {
   gitlab: z
@@ -42,21 +43,7 @@ const configSchemas = {
       quietWindowMinutes: z.number().int().min(0).max(1_440).default(30),
     })
     .strict(),
-  ai: z
-    .object({
-      protocol: z.enum(['openai_compatible', 'anthropic', 'gemini']),
-      model: z.string().trim().min(1).max(200),
-      metadataOnly: z.literal(true).default(true),
-      timeoutMs: z.number().int().min(1_000).max(300_000).default(60_000),
-      maxInputTokens: z.number().int().min(256).max(1_000_000).default(32_000),
-      maxOutputTokens: z.number().int().min(128).max(100_000).default(4_096),
-      allowedPurposes: z
-        .array(
-          z.enum(['weekly_report', 'evidence_suggestion', 'quarterly_review', 'score_suggestion']),
-        )
-        .min(1),
-    })
-    .strict(),
+  ai: aiProviderConfigSchema,
 } satisfies Record<IntegrationType, z.ZodType<Record<string, unknown>>>;
 
 const credentialSchemas: Record<IntegrationType, z.ZodType> = {

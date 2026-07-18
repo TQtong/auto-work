@@ -24,7 +24,8 @@
 | 04A2  | 工作日历、周报来源快照、不可变规则版本与来源链接  | [阶段四 A2 实现与验证](./phase-4a2-weekly-snapshot-core.md)      | implemented |
 | 04A3a | 周报编辑/恢复、附件、模板/收件人事实与确认内核    | [阶段四 A3a 实现与验证](./phase-4a3-weekly-edit-confirm-core.md) | implemented |
 | 04A3b | 完整周报工作台、版本交互、确认预检与浏览器验收    | [阶段四 A3b 实现与验证](./phase-4a3b-weekly-workbench.md)        | verified    |
-| 04B   | AI 三协议、脱敏、引用、建议版本与确定性降级       | 待提交                                                           | planned     |
+| 04B1  | AI 三协议、真实连接测试、统一 usage/停止原因      | [阶段四 B1 实现与验证](./phase-4b1-ai-provider-protocols.md)     | implemented |
+| 04B2  | AI 白名单净化、引用校验、建议版本与确定性降级     | 待提交                                                           | planned     |
 | 04C   | 钉钉探测、日志/机器人交付、重试与部分交付恢复     | 待提交                                                           | planned     |
 | 05    | 季度绩效、导出、运维与发布门禁                    | 待提交                                                           | planned     |
 

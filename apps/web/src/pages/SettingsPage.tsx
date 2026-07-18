@@ -4,6 +4,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Descriptions,
   Divider,
   Form,
@@ -43,6 +44,14 @@ interface IntegrationFormValues {
   groupId?: string;
   protocol?: 'openai_compatible' | 'anthropic' | 'gemini';
   model?: string;
+  aiTimeoutMs?: number;
+  aiMaxInputTokens?: number;
+  aiMaxOutputTokens?: number;
+  aiTemperaturePolicy?: 'deterministic' | 'provider_default';
+  aiTemperature?: number;
+  aiAllowedPurposes?: Array<
+    'weekly_report' | 'evidence_suggestion' | 'quarterly_review' | 'score_suggestion'
+  >;
   accountName?: string;
   authScheme?: 'bearer' | 'basic_pat';
   gitlabProjectRefs?: string;
@@ -518,6 +527,12 @@ function IntegrationSettings() {
             type: 'gitlab',
             authScheme: 'bearer',
             protocol: 'openai_compatible',
+            aiTimeoutMs: 60_000,
+            aiMaxInputTokens: 32_000,
+            aiMaxOutputTokens: 4_096,
+            aiTemperaturePolicy: 'deterministic',
+            aiTemperature: 0,
+            aiAllowedPurposes: ['weekly_report'],
             templateName: 'uTwin产研创新部周报',
             gitlabHistoryDays: 120,
           }}
@@ -625,20 +640,63 @@ function IntegrationFields({ type }: { type: Integration['type'] }) {
     );
   if (type === 'ai')
     return (
-      <div className="form-grid">
-        <Form.Item name="protocol" label="协议" rules={[{ required: true }]}>
-          <Select
+      <>
+        <Alert
+          type="info"
+          showIcon
+          message="AI 仅接收白名单元数据"
+          description="连接测试会真实调用所选模型验证结构化输出；系统不会向模型提供工具、源码、diff、附件或任何本机文件读取能力。"
+          style={{ marginBottom: 16 }}
+        />
+        <div className="form-grid">
+          <Form.Item name="protocol" label="协议" rules={[{ required: true }]}>
+            <Select
+              options={[
+                { value: 'openai_compatible', label: 'OpenAI-compatible' },
+                { value: 'anthropic', label: 'Anthropic' },
+                { value: 'gemini', label: 'Gemini' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="model" label="模型" rules={[{ required: true }]}>
+            <Input placeholder="必须是连接测试可实际调用的模型名称" />
+          </Form.Item>
+          <Form.Item name="aiTimeoutMs" label="请求超时（毫秒）" rules={[{ required: true }]}>
+            <InputNumber min={1_000} max={300_000} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="aiMaxInputTokens" label="最大输入 Token" rules={[{ required: true }]}>
+            <InputNumber min={256} max={1_000_000} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="aiMaxOutputTokens" label="最大输出 Token" rules={[{ required: true }]}>
+            <InputNumber min={128} max={100_000} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="aiTemperaturePolicy" label="温度策略" rules={[{ required: true }]}>
+            <Select
+              options={[
+                { value: 'deterministic', label: '固定温度（推荐）' },
+                { value: 'provider_default', label: '供应商默认' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="aiTemperature" label="固定温度" rules={[{ required: true }]}>
+            <InputNumber min={0} max={1} step={0.1} style={{ width: '100%' }} />
+          </Form.Item>
+        </div>
+        <Form.Item
+          name="aiAllowedPurposes"
+          label="允许用途"
+          rules={[{ required: true, message: '至少选择一个允许用途' }]}
+        >
+          <Checkbox.Group
             options={[
-              { value: 'openai_compatible', label: 'OpenAI-compatible' },
-              { value: 'anthropic', label: 'Anthropic' },
-              { value: 'gemini', label: 'Gemini' },
+              { value: 'weekly_report', label: '周报表述' },
+              { value: 'evidence_suggestion', label: '证据建议' },
+              { value: 'quarterly_review', label: '季度自评' },
+              { value: 'score_suggestion', label: '分数建议' },
             ]}
           />
         </Form.Item>
-        <Form.Item name="model" label="模型" rules={[{ required: true }]}>
-          <Input />
-        </Form.Item>
-      </div>
+      </>
     );
   return null;
 }
@@ -679,7 +737,7 @@ function CredentialFields({ type }: { type: Integration['type'] }) {
   );
 }
 
-function toIntegrationPayload(values: IntegrationFormValues) {
+export function toIntegrationPayload(values: IntegrationFormValues) {
   const common = {
     type: values.type,
     name: values.name,
@@ -731,15 +789,12 @@ function toIntegrationPayload(values: IntegrationFormValues) {
       protocol: values.protocol,
       model: values.model,
       metadataOnly: true,
-      timeoutMs: 60_000,
-      maxInputTokens: 32_000,
-      maxOutputTokens: 4_096,
-      allowedPurposes: [
-        'weekly_report',
-        'evidence_suggestion',
-        'quarterly_review',
-        'score_suggestion',
-      ],
+      timeoutMs: values.aiTimeoutMs ?? 60_000,
+      maxInputTokens: values.aiMaxInputTokens ?? 32_000,
+      maxOutputTokens: values.aiMaxOutputTokens ?? 4_096,
+      temperaturePolicy: values.aiTemperaturePolicy ?? 'deterministic',
+      temperature: values.aiTemperature ?? 0,
+      allowedPurposes: values.aiAllowedPurposes ?? ['weekly_report'],
     },
     credential: { apiKey: values.apiKey },
   };
