@@ -63,6 +63,13 @@ export class WeeklyReportDeliveryService {
         { httpStatus: 422, suggestedAction: 'reconfirm' },
       );
     }
+    const schedule = this.resolveDeliverySchedule(
+      reportId,
+      input.confirmationId,
+      input.confirmedVersionId,
+      facts.confirmedVersion.scheduleAt,
+      input.scheduledApproval,
+    );
     const targetSummary = {
       connectionId: connection.id,
       connectionName: connection.name,
@@ -76,6 +83,8 @@ export class WeeklyReportDeliveryService {
       ).length,
       groupDeliveryMode: 'template_defaults_only',
       attachmentCount: 0,
+      scheduledFor: schedule.scheduledFor.toISOString(),
+      scheduledApprovalHash: schedule.approvalHash,
     };
     return this.createIntent({
       reportId,
@@ -89,6 +98,9 @@ export class WeeklyReportDeliveryService {
       jobType: 'weekly-report.delivery',
       deliveryStateField: 'logDeliveryState',
       deliveryState: 'submitting',
+      scheduledFor: schedule.scheduledFor,
+      scheduleApprovedAt: schedule.approvedAt,
+      scheduleApprovalHash: schedule.approvalHash,
       context,
     });
   }
@@ -237,6 +249,9 @@ export class WeeklyReportDeliveryService {
     jobType: string;
     deliveryStateField: 'logDeliveryState' | 'robotDeliveryState';
     deliveryState: string;
+    scheduledFor?: Date;
+    scheduleApprovedAt?: Date | null;
+    scheduleApprovalHash?: string | null;
     robotNotification?: {
       notificationType: 'submission_success';
       businessObjectKey: string;
@@ -277,6 +292,9 @@ export class WeeklyReportDeliveryService {
             idempotencyRecordId: input.context.idempotencyRecordId,
             requestHash: input.requestHash,
             targetSummaryJson: JSON.stringify(input.targetSummary),
+            scheduledFor: input.scheduledFor ?? new Date(),
+            scheduleApprovedAt: input.scheduleApprovedAt ?? null,
+            scheduleApprovalHash: input.scheduleApprovalHash ?? null,
             jobId,
           },
         });
@@ -291,7 +309,7 @@ export class WeeklyReportDeliveryService {
               channel: input.channel,
               connectionId: input.connectionId,
             }),
-            scheduledAt: new Date(),
+            scheduledAt: input.scheduledFor ?? new Date(),
             maxAttempts: 1,
             dedupeKey: `weekly-report.delivery:${intent.id}`,
           },
@@ -307,7 +325,7 @@ export class WeeklyReportDeliveryService {
             contentHash: input.robotNotification.contentHash,
             messageFacts: input.robotNotification.messageFacts,
             quietWindowMinutes: input.robotNotification.quietWindowMinutes,
-            scheduledFor: new Date(),
+            scheduledFor: input.scheduledFor ?? new Date(),
             jobId,
           });
           if (reservation.disposition !== 'created') {
@@ -333,6 +351,8 @@ export class WeeklyReportDeliveryService {
             channel: input.channel,
             connectionId: input.connectionId,
             requestHash: input.requestHash,
+            scheduledFor: (input.scheduledFor ?? new Date()).toISOString(),
+            scheduleApprovalHash: input.scheduleApprovalHash ?? null,
           },
           clientSessionHash: this.security.sessionHash(input.context.sessionId),
         });
@@ -365,6 +385,11 @@ export class WeeklyReportDeliveryService {
       connectionId: string;
       channel: string;
       status: string;
+      scheduledFor: Date;
+      scheduleApprovedAt: Date | null;
+      scheduleApprovalHash: string | null;
+      cancelledAt: Date | null;
+      cancellationReason: string | null;
       jobId: string | null;
       externalId: string | null;
       externalUrl: string | null;
@@ -431,6 +456,45 @@ export class WeeklyReportDeliveryService {
         { httpStatus: 422, suggestedAction: 'reconfirm' },
       );
     }
+  }
+
+  private resolveDeliverySchedule(
+    reportId: string,
+    confirmationId: string,
+    confirmedVersionId: string,
+    frozenScheduleAt: Date | null,
+    approval: SubmitWeeklyReportLogInput['scheduledApproval'],
+  ) {
+    const now = new Date();
+    if (!frozenScheduleAt || frozenScheduleAt <= now) {
+      if (approval) {
+        throw new DomainError(
+          'WEEKLY_REPORT_SCHEDULE_APPROVAL_MISMATCH',
+          '当前确认版本没有未来预约时间，拒绝携带过期或多余的预约批准',
+          { httpStatus: 409, suggestedAction: 'refresh' },
+        );
+      }
+      return { scheduledFor: now, approvedAt: null, approvalHash: null };
+    }
+    if (!approval || new Date(approval.scheduledAt).getTime() !== frozenScheduleAt.getTime()) {
+      throw new DomainError(
+        'WEEKLY_REPORT_SCHEDULE_APPROVAL_REQUIRED',
+        '未来预约正式提交必须对当前确认版本的准确时间显式批准',
+        { httpStatus: 422, suggestedAction: 'reconfirm' },
+      );
+    }
+    const approvedAt = new Date();
+    return {
+      scheduledFor: frozenScheduleAt,
+      approvedAt,
+      approvalHash: requestHash({
+        reportId,
+        confirmationId,
+        confirmedVersionId,
+        scheduledAt: frozenScheduleAt.toISOString(),
+        confirmationPhrase: approval.confirmationPhrase,
+      }),
+    };
   }
 
   private async assertRecipientFacts(connectionId: string, recipients: unknown[]): Promise<void> {
@@ -542,6 +606,11 @@ export class WeeklyReportDeliveryService {
     connectionId: string;
     channel: string;
     status: string;
+    scheduledFor: Date;
+    scheduleApprovedAt: Date | null;
+    scheduleApprovalHash: string | null;
+    cancelledAt: Date | null;
+    cancellationReason: string | null;
     jobId: string | null;
     externalId: string | null;
     externalUrl: string | null;
@@ -592,6 +661,11 @@ export class WeeklyReportDeliveryService {
       connectionId: intent.connectionId,
       channel: intent.channel,
       status: intent.status,
+      scheduledFor: intent.scheduledFor.toISOString(),
+      scheduleApprovedAt: intent.scheduleApprovedAt?.toISOString() ?? null,
+      scheduleApprovalHash: intent.scheduleApprovalHash,
+      cancelledAt: intent.cancelledAt?.toISOString() ?? null,
+      cancellationReason: intent.cancellationReason,
       version: intent.version ?? 1,
       jobId: intent.jobId,
       externalId: intent.externalId,

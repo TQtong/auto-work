@@ -550,6 +550,35 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
       report: { status: 'confirmed', version: 4, confirmedVersionId: edited.version.id },
     });
     const confirmationId = confirmed.confirmation.id;
+    const scheduledJobId = 'weekly-confirmed-scheduled-job';
+    const scheduledIntentId = 'weekly-confirmed-scheduled-intent';
+    const scheduledFor = new Date('2026-07-20T09:00:00.000+08:00');
+    await prisma.job.create({
+      data: {
+        id: scheduledJobId,
+        type: 'weekly-report.delivery',
+        payloadRef: scheduledIntentId,
+        payloadSummary: JSON.stringify({ channel: 'dingtalk_log' }),
+        scheduledAt: scheduledFor,
+        maxAttempts: 1,
+      },
+    });
+    await prisma.deliveryIntent.create({
+      data: {
+        id: scheduledIntentId,
+        reportId: generated.report.id,
+        confirmationId,
+        confirmedVersionId: edited.version.id,
+        connectionId: 'dingtalk-log-1',
+        channel: 'dingtalk_log',
+        idempotencyRecordId: confirmContext.idempotencyRecordId,
+        requestHash: '5'.repeat(64),
+        scheduledFor,
+        scheduleApprovedAt: new Date(),
+        scheduleApprovalHash: '6'.repeat(64),
+        jobId: scheduledJobId,
+      },
+    });
 
     const removeAttachmentContext = await mutationContext('weekly-edit-remove-attachment', {
       action: 'remove-attachment-from-version',
@@ -576,6 +605,18 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
         where: { id: confirmationId },
       }),
     ).toMatchObject({ status: 'invalidated', invalidationReason: '正文或提交元数据已生成新版本' });
+    expect(
+      await prisma.deliveryIntent.findUniqueOrThrow({ where: { id: scheduledIntentId } }),
+    ).toMatchObject({
+      status: 'cancelled',
+      lastErrorCode: 'SCHEDULED_DELIVERY_CONFIRMATION_INVALIDATED',
+      cancellationReason: '确认版本已失效：正文或提交元数据已生成新版本',
+    });
+    expect(await prisma.job.findUniqueOrThrow({ where: { id: scheduledJobId } })).toMatchObject({
+      status: 'cancelled',
+      cancelRequested: true,
+      lastErrorCode: 'SCHEDULED_DELIVERY_CONFIRMATION_INVALIDATED',
+    });
     expect(
       (await attachments.remove(generated.report.id, attachment.id, context)).attachment,
     ).toMatchObject({

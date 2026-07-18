@@ -723,7 +723,12 @@ export interface WeeklyReportDeliveryIntent {
   confirmedVersionId: string;
   connectionId: string;
   channel: 'dingtalk_log' | 'dingtalk_robot';
-  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'unknown' | 'needs_review';
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'unknown' | 'needs_review' | 'cancelled';
+  scheduledFor: string;
+  scheduleApprovedAt: string | null;
+  scheduleApprovalHash: string | null;
+  cancelledAt: string | null;
+  cancellationReason: string | null;
   version: number;
   jobId: string | null;
   externalId: string | null;

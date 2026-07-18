@@ -211,6 +211,13 @@ export const submitWeeklyReportLogSchema = z
     confirmedVersionId: z.string().trim().min(1).max(100),
     recipientScopeHash: z.string().regex(/^[a-f0-9]{64}$/u),
     reportVersion: z.number().int().positive(),
+    scheduledApproval: z
+      .object({
+        scheduledAt: z.iso.datetime({ offset: true }),
+        confirmationPhrase: z.literal('我确认在计划时间自动提交钉钉正式日志'),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

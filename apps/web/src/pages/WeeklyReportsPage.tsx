@@ -519,6 +519,10 @@ export function WeeklyReportsPage() {
       confirmedVersionId: string;
       recipientScopeHash: string;
       reportVersion: number;
+      scheduledApproval?: {
+        scheduledAt: string;
+        confirmationPhrase: '我确认在计划时间自动提交钉钉正式日志';
+      };
     }) =>
       apiRequest<DeliveryRequestResult>(`/api/v1/weekly-reports/${input.reportId}/submit-log`, {
         method: 'POST',
@@ -528,6 +532,7 @@ export function WeeklyReportsPage() {
           confirmedVersionId: input.confirmedVersionId,
           recipientScopeHash: input.recipientScopeHash,
           reportVersion: input.reportVersion,
+          ...(input.scheduledApproval ? { scheduledApproval: input.scheduledApproval } : {}),
         }),
       }),
     onSuccess: async (response) => {
@@ -535,7 +540,9 @@ export function WeeklyReportsPage() {
       void messageApi.success(
         response.data.replayed
           ? '已返回原交付意图，不会重复创建钉钉正式日志'
-          : '正式日志交付已进入受控队列',
+          : dayjs(response.data.intent.scheduledFor).isAfter(dayjs().add(1, 'second'))
+            ? `正式日志已预约在 ${formatDateTime(response.data.intent.scheduledFor)} 执行`
+            : '正式日志交付已进入受控队列',
       );
     },
     onError: (error: Error) => void messageApi.error(error.message),
@@ -1163,8 +1170,9 @@ export function WeeklyReportsPage() {
 
   const confirmSubmitLog = () => {
     if (!report?.currentConfirmation || !report.confirmedVersionId || !version) return;
+    const futureSchedule = version.scheduleAt && dayjs(version.scheduleAt).isAfter(dayjs());
     Modal.confirm({
-      title: '提交钉钉正式日志？',
+      title: futureSchedule ? '批准预约提交钉钉正式日志？' : '提交钉钉正式日志？',
       icon: <ExclamationCircleOutlined />,
       width: 660,
       content: (
@@ -1172,8 +1180,16 @@ export function WeeklyReportsPage() {
           <Alert
             type="warning"
             showIcon
-            message="这是会在钉钉创建正式日志的外部写操作"
-            description="系统只使用当前确认冻结的六字段、模板和收件范围；未知结果不会自动重发。机器人通知不会替代正式日志。"
+            message={
+              futureSchedule
+                ? `这是预约在 ${formatDateTime(version.scheduleAt)} 执行的外部写操作`
+                : '这是会在钉钉创建正式日志的外部写操作'
+            }
+            description={
+              futureSchedule
+                ? '只有本次明确批准才会创建预约作业；执行前确认或版本变化会自动取消，绝不提交旧/新混合内容。未知结果不会自动重发。'
+                : '系统只使用当前确认冻结的六字段、模板和收件范围；未知结果不会自动重发。机器人通知不会替代正式日志。'
+            }
           />
           <Descriptions size="small" bordered column={1}>
             <Descriptions.Item label="冻结版本">v{version.versionNo}</Descriptions.Item>
@@ -1186,10 +1202,13 @@ export function WeeklyReportsPage() {
                 ? '无（当前正式日志适配器不支持可靠附件上传）'
                 : `${version.attachments.length} 个，当前提交将被阻断`}
             </Descriptions.Item>
+            <Descriptions.Item label="执行时间">
+              {futureSchedule ? formatDateTime(version.scheduleAt) : '立即进入受控队列'}
+            </Descriptions.Item>
           </Descriptions>
         </Space>
       ),
-      okText: '确认创建正式日志',
+      okText: futureSchedule ? '批准预约正式提交' : '确认创建正式日志',
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: () =>
@@ -1199,6 +1218,14 @@ export function WeeklyReportsPage() {
           confirmedVersionId: report.confirmedVersionId!,
           recipientScopeHash: report.currentConfirmation!.recipientScopeHash,
           reportVersion: report.version,
+          ...(futureSchedule
+            ? {
+                scheduledApproval: {
+                  scheduledAt: version.scheduleAt!,
+                  confirmationPhrase: '我确认在计划时间自动提交钉钉正式日志' as const,
+                },
+              }
+            : {}),
         }),
     });
   };
@@ -1669,6 +1696,21 @@ export function WeeklyReportsPage() {
                       ),
                     },
                     { title: '尝试次数', dataIndex: 'attemptCount', width: 100 },
+                    {
+                      title: '计划/批准',
+                      key: 'schedule',
+                      width: 210,
+                      render: (_value: unknown, item: WeeklyReportDeliveryIntent) => (
+                        <Space direction="vertical" size={0}>
+                          <Typography.Text>{formatDateTime(item.scheduledFor)}</Typography.Text>
+                          <Typography.Text type="secondary">
+                            {item.scheduleApprovedAt
+                              ? `批准于 ${formatDateTime(item.scheduleApprovedAt)}`
+                              : '立即提交'}
+                          </Typography.Text>
+                        </Space>
+                      ),
+                    },
                     {
                       title: '恢复状态',
                       dataIndex: 'recoveryStatus',

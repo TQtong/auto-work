@@ -50,6 +50,14 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
     }
     await context.reportProgress(10);
     const attempt = await this.startAttempt(intent);
+    if (!attempt) {
+      return {
+        intentId: intent.id,
+        channel: intent.channel,
+        status: 'cancelled',
+        reason: '当前确认或版本已变化，预约正式提交已在外部调用前取消',
+      };
+    }
     try {
       const providerResult =
         intent.channel === 'dingtalk_log'
@@ -216,6 +224,54 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
   private async startAttempt(intent: DeliveryIntent) {
     return this.prisma.$transaction(async (tx) => {
       const attemptNo = intent.attemptCount + 1;
+      const changed = await tx.deliveryIntent.updateMany({
+        where: {
+          id: intent.id,
+          version: intent.version,
+          status: intent.status,
+          ...(intent.channel === 'dingtalk_log'
+            ? {
+                confirmation: { status: 'active' },
+                report: {
+                  status: 'confirmed',
+                  currentConfirmationId: intent.confirmationId,
+                  confirmedVersionId: intent.confirmedVersionId,
+                },
+              }
+            : {}),
+        },
+        data: {
+          status: 'running',
+          attemptCount: { increment: 1 },
+          lastAttemptAt: new Date(),
+          lastErrorCode: null,
+          lastErrorSummary: null,
+          version: { increment: 1 },
+        },
+      });
+      if (changed.count !== 1) {
+        if (intent.channel === 'dingtalk_log') {
+          const cancelledAt = new Date();
+          const cancelled = await tx.deliveryIntent.updateMany({
+            where: { id: intent.id, version: intent.version, status: 'pending' },
+            data: {
+              status: 'cancelled',
+              cancelledAt,
+              cancellationReason: '执行前发现当前确认或冻结版本已变化',
+              lastErrorCode: 'SCHEDULED_DELIVERY_CONFIRMATION_INVALIDATED',
+              lastErrorSummary: '执行前发现当前确认或冻结版本已变化',
+              completedAt: cancelledAt,
+              version: { increment: 1 },
+            },
+          });
+          if (cancelled.count === 1) return null;
+        }
+        throw new DomainError(
+          'DELIVERY_INTENT_VERSION_CONFLICT',
+          '交付意图已被其他作业处理，当前作业不会重复调用外部平台',
+          { httpStatus: 409, suggestedAction: 'manual_review' },
+        );
+      }
       const attempt = await tx.deliveryAttempt.create({
         data: {
           id: newId(),
@@ -228,24 +284,6 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
           }),
         },
       });
-      const changed = await tx.deliveryIntent.updateMany({
-        where: { id: intent.id, version: intent.version, status: intent.status },
-        data: {
-          status: 'running',
-          attemptCount: { increment: 1 },
-          lastAttemptAt: new Date(),
-          lastErrorCode: null,
-          lastErrorSummary: null,
-          version: { increment: 1 },
-        },
-      });
-      if (changed.count !== 1) {
-        throw new DomainError(
-          'DELIVERY_INTENT_VERSION_CONFLICT',
-          '交付意图已被其他作业处理，当前作业不会重复调用外部平台',
-          { httpStatus: 409, suggestedAction: 'manual_review' },
-        );
-      }
       if (intent.channel === 'dingtalk_robot') {
         await tx.robotNotification.updateMany({
           where: { deliveryIntentId: intent.id, status: { in: ['pending', 'queued', 'failed'] } },

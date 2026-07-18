@@ -850,6 +850,105 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     expect(resolved).toMatchObject({ status: 'succeeded', recoveryStatus: 'manual_succeeded' });
   });
 
+  it('未来预约必须显式批准准确时间，确认失效后在外部调用前自动取消', async () => {
+    const scheduledAt = new Date(Date.now() + 60 * 60 * 1_000);
+    const fixture = await seedConfirmedReport({ scheduleAt: scheduledAt });
+    const createReport = vi.fn().mockResolvedValue({
+      reportId: 'scheduled-report-must-not-be-created',
+      requestId: 'scheduled-provider-request',
+    });
+    const runtime = createRuntime(createReport, vi.fn());
+
+    const missingApproval = await seedIdempotency(fixture.suffix, 'schedule-missing-approval');
+    await expect(
+      runtime.service.submitLog(
+        fixture.reportId,
+        {
+          confirmationId: fixture.confirmationId,
+          confirmedVersionId: fixture.versionId,
+          recipientScopeHash: recipientHash,
+          reportVersion: fixture.reportVersion,
+        },
+        context(missingApproval),
+      ),
+    ).rejects.toMatchObject({ code: 'WEEKLY_REPORT_SCHEDULE_APPROVAL_REQUIRED' });
+    expect(await prisma.deliveryIntent.count({ where: { reportId: fixture.reportId } })).toBe(0);
+
+    const mismatchedApproval = await seedIdempotency(
+      fixture.suffix,
+      'schedule-mismatched-approval',
+    );
+    await expect(
+      runtime.service.submitLog(
+        fixture.reportId,
+        {
+          confirmationId: fixture.confirmationId,
+          confirmedVersionId: fixture.versionId,
+          recipientScopeHash: recipientHash,
+          reportVersion: fixture.reportVersion,
+          scheduledApproval: {
+            scheduledAt: new Date(scheduledAt.getTime() + 1_000).toISOString(),
+            confirmationPhrase: '我确认在计划时间自动提交钉钉正式日志',
+          },
+        },
+        context(mismatchedApproval),
+      ),
+    ).rejects.toMatchObject({ code: 'WEEKLY_REPORT_SCHEDULE_APPROVAL_REQUIRED' });
+    expect(await prisma.deliveryIntent.count({ where: { reportId: fixture.reportId } })).toBe(0);
+
+    const approvedRequest = await seedIdempotency(fixture.suffix, 'schedule-approved');
+    const approved = await runtime.service.submitLog(
+      fixture.reportId,
+      {
+        confirmationId: fixture.confirmationId,
+        confirmedVersionId: fixture.versionId,
+        recipientScopeHash: recipientHash,
+        reportVersion: fixture.reportVersion,
+        scheduledApproval: {
+          scheduledAt: scheduledAt.toISOString(),
+          confirmationPhrase: '我确认在计划时间自动提交钉钉正式日志',
+        },
+      },
+      context(approvedRequest),
+    );
+    expect(approved).toMatchObject({
+      replayed: false,
+      intent: {
+        status: 'pending',
+        scheduledFor: scheduledAt.toISOString(),
+      },
+    });
+    expect(approved.intent.scheduleApprovedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+    expect(approved.intent.scheduleApprovalHash).toMatch(/^[a-f0-9]{64}$/u);
+    const queuedJob = await prisma.job.findFirstOrThrow({
+      where: { payloadRef: approved.intent.id },
+    });
+    expect(queuedJob.scheduledAt).toEqual(scheduledAt);
+    expect(createReport).not.toHaveBeenCalled();
+
+    // 模拟预约等待期间正文被编辑：旧确认一旦失效，执行器必须在创建尝试和外部调用前止损。
+    await prisma.weeklyReportConfirmation.update({
+      where: { id: fixture.confirmationId },
+      data: {
+        status: 'invalidated',
+        invalidatedAt: new Date(),
+        invalidationReason: '预约等待期间正文已编辑',
+      },
+    });
+    expect(await execute(runtime.handler, approved.intent.id)).toMatchObject({
+      status: 'cancelled',
+    });
+    expect(createReport).not.toHaveBeenCalled();
+    expect(await prisma.deliveryAttempt.count({ where: { intentId: approved.intent.id } })).toBe(0);
+    expect(
+      await prisma.deliveryIntent.findUniqueOrThrow({ where: { id: approved.intent.id } }),
+    ).toMatchObject({
+      status: 'cancelled',
+      cancellationReason: '执行前发现当前确认或冻结版本已变化',
+      lastErrorCode: 'SCHEDULED_DELIVERY_CONFIRMATION_INVALIDATED',
+    });
+  });
+
   it('拒绝带附件或已过期模板事实的正式提交', async () => {
     const withAttachment = await seedConfirmedReport({ hasAttachment: true });
     const runtime = createRuntime(vi.fn(), vi.fn());
@@ -998,6 +1097,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     warnings?: Array<Record<string, unknown>>;
     severeRiskCodes?: string[];
     quietWindowMinutes?: number;
+    scheduleAt?: Date;
   }) {
     sequence += 1;
     const suffix = String(sequence);
@@ -1155,6 +1255,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
         attachmentsJson: JSON.stringify(attachments),
         recipientScopeJson: JSON.stringify({ recipients }),
         templateMappingVersionId: mappingVersionId,
+        ...(options?.scheduleAt ? { scheduleAt: options.scheduleAt } : {}),
         sourceSnapshotId: snapshotId,
         contentHash: '3'.repeat(64),
         createdBy: 'local-user',

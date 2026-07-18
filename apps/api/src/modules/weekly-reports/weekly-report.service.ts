@@ -1199,6 +1199,39 @@ export class WeeklyReportService {
       where: { id: confirmation.id },
       data: { status: 'invalidated', invalidatedAt: new Date(), invalidationReason: reason },
     });
+    const pendingScheduled = await tx.deliveryIntent.findMany({
+      where: { confirmationId: confirmation.id, channel: 'dingtalk_log', status: 'pending' },
+      select: { id: true, jobId: true },
+    });
+    if (pendingScheduled.length === 0) return;
+    const cancelledAt = new Date();
+    const cancellationReason = `确认版本已失效：${reason}`.slice(0, 500);
+    // 尚未开始的预约正式提交必须与旧确认一起取消，绝不能把新正文混入旧批准。
+    await tx.deliveryIntent.updateMany({
+      where: { id: { in: pendingScheduled.map((intent) => intent.id) }, status: 'pending' },
+      data: {
+        status: 'cancelled',
+        cancelledAt,
+        cancellationReason,
+        lastErrorCode: 'SCHEDULED_DELIVERY_CONFIRMATION_INVALIDATED',
+        lastErrorSummary: cancellationReason,
+        completedAt: cancelledAt,
+        version: { increment: 1 },
+      },
+    });
+    const jobIds = pendingScheduled.flatMap((intent) => (intent.jobId ? [intent.jobId] : []));
+    if (jobIds.length > 0) {
+      await tx.job.updateMany({
+        where: { id: { in: jobIds }, status: 'queued' },
+        data: {
+          status: 'cancelled',
+          cancelRequested: true,
+          completedAt: cancelledAt,
+          lastErrorCode: 'SCHEDULED_DELIVERY_CONFIRMATION_INVALIDATED',
+          lastError: cancellationReason,
+        },
+      });
+    }
   }
 
   private warningFacts(value: string) {
