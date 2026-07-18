@@ -617,6 +617,7 @@ export interface WeeklyReportVersionSummary {
   id: string;
   versionNo: number;
   origin: 'rule' | 'ai' | 'manual' | 'restore';
+  aiGenerationId?: string | null;
   parentVersionId?: string | null;
   sourceSnapshotId?: string;
   contentHash: string;
@@ -768,6 +769,76 @@ export interface WeeklyReportVersion extends WeeklyReportVersionSummary {
   }>;
   changeSummary: Record<string, unknown>;
   createdBy: string;
+}
+
+export interface WeeklyAiGeneration {
+  id: string;
+  reportId: string;
+  baseVersionId: string;
+  baseReportVersion: number;
+  providerConnectionId: string;
+  providerConfigVersion: number;
+  purpose: 'weekly_report';
+  promptTemplateVersion: string;
+  sanitizationPolicyVersion: string;
+  retentionMode: 'hash_only' | 'sanitized_input';
+  requestedFields: Array<Exclude<keyof WeeklyReportVersion['fields'], 'reportDate'>>;
+  inputCategories: string[];
+  removedCategories: string[];
+  sanitizedInputHash: string | null;
+  protocol: 'openai_compatible' | 'anthropic' | 'gemini';
+  model: string;
+  providerRequestId: string | null;
+  stopReason: string | null;
+  usage: {
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    totalTokens?: number | null;
+    cacheReadTokens?: number | null;
+    cacheWriteTokens?: number | null;
+  };
+  durationMs: number | null;
+  status: 'succeeded' | 'failed' | 'blocked';
+  errorCode: string | null;
+  securityBlocks: string[];
+  adoptionStatus: 'pending' | 'adopted' | 'rejected' | 'not_applicable';
+  adoptedVersionId: string | null;
+  decisionReason: string | null;
+  decidedAt: string | null;
+  stale: boolean;
+  suggestionVersions: WeeklyReportVersionSummary[];
+  inputRefs?: Array<{
+    refId: string;
+    sourceType: 'base_field' | 'task' | 'evidence' | 'manual';
+    sourceId: string;
+    field: string | null;
+    contentHash: string;
+  }>;
+  rawOutput?: string | null;
+  parsedOutput?: {
+    fields?: Array<{
+      field: string;
+      paragraphs: Array<{ projectName: string | null; text: string; citations: string[] }>;
+    }>;
+  } | null;
+  createdBy: string;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface WeeklyAiGenerationList {
+  items: WeeklyAiGeneration[];
+  total: number;
+}
+
+export interface WeeklyAiSuggestionResult {
+  replayed: boolean;
+  fallback: boolean;
+  fallbackReasonCode?: string;
+  fallbackVersion?: { id: string; reportId: string };
+  generation: WeeklyAiGeneration;
+  suggestionVersion?: WeeklyReportVersionSummary;
+  report?: { id: string; currentVersionId: string; version: number };
 }
 
 export interface DingTalkTemplateFieldMapping {

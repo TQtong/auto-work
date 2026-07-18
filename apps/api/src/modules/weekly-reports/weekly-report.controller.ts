@@ -19,13 +19,17 @@ import { AuditService } from '../audit/audit.service.js';
 import { IdempotencyService } from '../idempotency/idempotency.service.js';
 import { SessionService } from '../session/session.service.js';
 import {
+  adoptWeeklyAiSuggestionSchema,
   confirmWeeklyReportSchema,
+  createWeeklyAiSuggestionSchema,
   editWeeklyReportSchema,
   generateWeeklyReportSchema,
   listWeeklyReportsQuerySchema,
+  rejectWeeklyAiSuggestionSchema,
   restoreWeeklyReportVersionSchema,
 } from './weekly-report.schemas.js';
 import { WeeklyReportAttachmentService } from './weekly-report-attachment.service.js';
+import { WeeklyReportAiService } from './weekly-report-ai.service.js';
 import { WeeklyReportService } from './weekly-report.service.js';
 
 const maxAttachmentBytes = 8 * 1024 * 1024;
@@ -34,6 +38,7 @@ const maxAttachmentBytes = 8 * 1024 * 1024;
 export class WeeklyReportController {
   public constructor(
     private readonly reports: WeeklyReportService,
+    private readonly ai: WeeklyReportAiService,
     private readonly attachments: WeeklyReportAttachmentService,
     private readonly idempotency: IdempotencyService,
     private readonly audit: AuditService,
@@ -81,6 +86,73 @@ export class WeeklyReportController {
     return apiResponse(
       await this.reports.getVersion(id, versionId),
       request.autoWork.correlationId,
+    );
+  }
+
+  @Post(':id/ai-suggestions')
+  public async createAiSuggestion(
+    @Param('id') id: string,
+    @Body() rawBody: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = createWeeklyAiSuggestionSchema.parse(rawBody);
+    return this.mutate(
+      `/api/v1/weekly-reports/${id}/ai-suggestions`,
+      key,
+      { id, ...input },
+      request,
+      (recordId) => this.ai.createSuggestion(id, input, this.context(request, recordId)),
+    );
+  }
+
+  @Get(':id/ai-generations')
+  public async listAiGenerations(@Param('id') id: string, @Req() request: FastifyRequest) {
+    return apiResponse(await this.ai.list(id), request.autoWork.correlationId);
+  }
+
+  @Get(':id/ai-generations/:generationId')
+  public async getAiGeneration(
+    @Param('id') id: string,
+    @Param('generationId') generationId: string,
+    @Req() request: FastifyRequest,
+  ) {
+    return apiResponse(await this.ai.get(id, generationId), request.autoWork.correlationId);
+  }
+
+  @Post(':id/ai-generations/:generationId/adopt')
+  public async adoptAiSuggestion(
+    @Param('id') id: string,
+    @Param('generationId') generationId: string,
+    @Body() rawBody: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = adoptWeeklyAiSuggestionSchema.parse(rawBody);
+    return this.mutate(
+      `/api/v1/weekly-reports/${id}/ai-generations/${generationId}/adopt`,
+      key,
+      { id, generationId, ...input },
+      request,
+      (recordId) => this.ai.adopt(id, generationId, input, this.context(request, recordId)),
+    );
+  }
+
+  @Post(':id/ai-generations/:generationId/reject')
+  public async rejectAiSuggestion(
+    @Param('id') id: string,
+    @Param('generationId') generationId: string,
+    @Body() rawBody: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = rejectWeeklyAiSuggestionSchema.parse(rawBody);
+    return this.mutate(
+      `/api/v1/weekly-reports/${id}/ai-generations/${generationId}/reject`,
+      key,
+      { id, generationId, ...input },
+      request,
+      (recordId) => this.ai.reject(id, generationId, input, this.context(request, recordId)),
     );
   }
 

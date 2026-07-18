@@ -307,6 +307,17 @@ export function validateWeeklyAiOutput(
   if (Buffer.byteLength(rawOutput, 'utf8') > weeklyAiMaximumRawOutputBytes) {
     throw outputError('AI_OUTPUT_TOO_LARGE', 'AI 输出超过 2 MiB 安全上限');
   }
+  const sensitiveCategories = detectSensitiveCategories(rawOutput);
+  if (sensitiveCategories.length > 0) {
+    // 供应商即使在安全输入下自行产生疑似秘密，也不得进入原始输出留存或建议版本。
+    throw new DomainError('AI_OUTPUT_SECURITY_BLOCKED', 'AI 输出被本地安全策略阻断', {
+      httpStatus: 422,
+      details: {
+        categories: sensitiveCategories,
+        policyVersion: weeklyAiSanitizationPolicyVersion,
+      },
+    });
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawOutput);

@@ -164,8 +164,52 @@ export const confirmWeeklyReportSchema = z
     }
   });
 
+export const createWeeklyAiSuggestionSchema = z
+  .object({
+    baseVersionId: z.string().trim().min(1).max(100),
+    reportVersion: z.number().int().positive(),
+    providerConnectionId: z.string().trim().min(1).max(100),
+    fields: z.array(weeklyFieldSchema).min(1).max(5),
+    consent: z
+      .object({
+        allowPeopleNames: z.boolean().default(false),
+        allowInternalUrls: z.boolean().default(false),
+        allowDescriptionSummaries: z.boolean().default(false),
+      })
+      .strict()
+      .default({
+        allowPeopleNames: false,
+        allowInternalUrls: false,
+        allowDescriptionSummaries: false,
+      }),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.fields).size !== value.fields.length) {
+      context.addIssue({ code: 'custom', message: 'AI 改写栏位不得重复' });
+    }
+  });
+
+export const adoptWeeklyAiSuggestionSchema = z
+  .object({
+    suggestionVersionId: z.string().trim().min(1).max(100),
+    baseVersionId: z.string().trim().min(1).max(100),
+    reportVersion: z.number().int().positive(),
+    decisionReason: z.string().trim().min(1).max(500),
+  })
+  .strict();
+
+export const rejectWeeklyAiSuggestionSchema = z
+  .object({
+    decisionReason: z.string().trim().min(1).max(500),
+  })
+  .strict();
+
 export type GenerateWeeklyReportInput = z.infer<typeof generateWeeklyReportSchema>;
 export type ListWeeklyReportsQuery = z.infer<typeof listWeeklyReportsQuerySchema>;
 export type EditWeeklyReportInput = z.infer<typeof editWeeklyReportSchema>;
 export type RestoreWeeklyReportVersionInput = z.infer<typeof restoreWeeklyReportVersionSchema>;
 export type ConfirmWeeklyReportInput = z.infer<typeof confirmWeeklyReportSchema>;
+export type CreateWeeklyAiSuggestionInput = z.infer<typeof createWeeklyAiSuggestionSchema>;
+export type AdoptWeeklyAiSuggestionInput = z.infer<typeof adoptWeeklyAiSuggestionSchema>;
+export type RejectWeeklyAiSuggestionInput = z.infer<typeof rejectWeeklyAiSuggestionSchema>;

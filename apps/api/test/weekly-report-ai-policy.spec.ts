@@ -148,6 +148,10 @@ describe('周报 AI 白名单净化与事实校验', () => {
     ['AI_OUTPUT_DATE_UNSUPPORTED', { text: '推进 Alpha 项目 AW-12，截止 2027-01-01。' }],
     ['AI_OUTPUT_PROJECT_UNSUPPORTED', { projectName: 'Imaginary' }],
     ['AI_OUTPUT_ACTIVE_CONTENT_REJECTED', { text: '<script>alert(1)</script>' }],
+    [
+      'AI_OUTPUT_SECURITY_BLOCKED',
+      { text: 'Authorization: Bearer provider-invented-secret-value' },
+    ],
   ])('拒绝无依据或主动内容：%s', (code, override) => {
     const sanitized = sanitizeWeeklyAiInput(input());
     const taskRef = sanitized.storedReferences.find((item) => item.sourceType === 'task')!.refId;

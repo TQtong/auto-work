@@ -1781,6 +1781,7 @@ export class WeeklyReportService {
       id: string;
       versionNo: number;
       origin: string;
+      aiGenerationId: string | null;
       contentHash: string;
       createdAt: Date;
     } | null;
@@ -1813,6 +1814,7 @@ export class WeeklyReportService {
     id: string;
     versionNo: number;
     origin: string;
+    aiGenerationId: string | null;
     contentHash: string;
     createdAt: Date;
   }) {
@@ -1820,6 +1822,7 @@ export class WeeklyReportService {
       id: version.id,
       versionNo: version.versionNo,
       origin: version.origin,
+      aiGenerationId: version.aiGenerationId,
       contentHash: version.contentHash,
       createdAt: version.createdAt.toISOString(),
     };
@@ -1848,6 +1851,7 @@ export class WeeklyReportService {
       versionNo: version.versionNo,
       origin: version.origin,
       parentVersionId: version.parentVersionId,
+      aiGenerationId: version.aiGenerationId,
       fields: {
         reportDate: version.reportDateText,
         recentGoals: version.recentGoalsText,

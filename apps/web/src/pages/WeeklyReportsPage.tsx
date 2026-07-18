@@ -8,6 +8,7 @@ import {
   PaperClipOutlined,
   RedoOutlined,
   ReloadOutlined,
+  RobotOutlined,
   SafetyCertificateOutlined,
   SaveOutlined,
   UndoOutlined,
@@ -50,6 +51,9 @@ import type {
   DingTalkTemplateMappingHistory,
   Integration,
   WeeklyReport,
+  WeeklyAiGeneration,
+  WeeklyAiGenerationList,
+  WeeklyAiSuggestionResult,
   WeeklyReportAttachment,
   WeeklyReportList,
   WeeklyReportVersion,
@@ -102,6 +106,21 @@ interface EditAction {
   source: 'autosave' | 'manual' | 'metadata' | 'attachment';
 }
 
+interface AiSuggestionFormValues {
+  providerConnectionId: string;
+  fields: Array<'recentGoals' | 'weeklyWork' | 'nextWeekPlans' | 'problems' | 'other'>;
+  allowPeopleNames: boolean;
+  allowInternalUrls: boolean;
+  allowDescriptionSummaries: boolean;
+}
+
+interface AiDecisionResult {
+  replayed: boolean;
+  generation: WeeklyAiGeneration;
+  adoptedVersion?: WeeklyReportVersionSummary;
+  report?: { id: string; currentVersionId: string; version: number; status: string };
+}
+
 const workflowItems = [
   { title: '采集数据' },
   { title: '生成周报' },
@@ -129,10 +148,13 @@ export function WeeklyReportsPage() {
     freshnessMode: 'require_fresh' | 'allow_stale';
     includeUnconfirmedEvidence: boolean;
   }>();
+  const [aiForm] = Form.useForm<AiSuggestionFormValues>();
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [generateOpen, setGenerateOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [selectedAiGenerationId, setSelectedAiGenerationId] = useState<string | null>(null);
   const [compareVersionId, setCompareVersionId] = useState<string | null>(null);
   const [acknowledgedWarningIds, setAcknowledgedWarningIds] = useState<string[]>([]);
   const [selectedMappingId, setSelectedMappingId] = useState<string | null>(null);
@@ -210,6 +232,33 @@ export function WeeklyReportsPage() {
     queryKey: ['integrations'],
     queryFn: () => apiRequest<Integration[]>('/api/v1/integrations'),
   });
+  const aiConnections = useMemo(
+    () =>
+      (integrations.data?.data ?? []).filter(
+        (connection) => connection.type === 'ai' && connection.enabled,
+      ),
+    [integrations.data],
+  );
+  const aiGenerations = useQuery({
+    queryKey: ['weekly-report-ai-generations', selectedReportId],
+    queryFn: () => {
+      if (!selectedReportId) throw new Error('尚未选择周报');
+      return apiRequest<WeeklyAiGenerationList>(
+        `/api/v1/weekly-reports/${selectedReportId}/ai-generations`,
+      );
+    },
+    enabled: Boolean(selectedReportId),
+  });
+  const aiGenerationDetail = useQuery({
+    queryKey: ['weekly-report-ai-generation', selectedReportId, selectedAiGenerationId],
+    queryFn: () => {
+      if (!selectedReportId || !selectedAiGenerationId) throw new Error('尚未选择 AI 生成记录');
+      return apiRequest<WeeklyAiGeneration>(
+        `/api/v1/weekly-reports/${selectedReportId}/ai-generations/${selectedAiGenerationId}`,
+      );
+    },
+    enabled: Boolean(selectedReportId && selectedAiGenerationId),
+  });
   const dingtalkConnections = useMemo(
     () =>
       (integrations.data?.data ?? []).filter((connection) => connection.type === 'dingtalk_log'),
@@ -257,6 +306,8 @@ export function WeeklyReportsPage() {
       queryClient.invalidateQueries({ queryKey: ['weekly-report-versions', reportId] }),
       queryClient.invalidateQueries({ queryKey: ['weekly-report-version', reportId] }),
       queryClient.invalidateQueries({ queryKey: ['weekly-report-attachments', reportId] }),
+      queryClient.invalidateQueries({ queryKey: ['weekly-report-ai-generations', reportId] }),
+      queryClient.invalidateQueries({ queryKey: ['weekly-report-ai-generation', reportId] }),
     ]);
   };
 
@@ -377,6 +428,113 @@ export function WeeklyReportsPage() {
     },
     onError: (error: Error) => void messageApi.error(error.message),
   });
+
+  const aiSuggestionMutation = useMutation({
+    mutationFn: (input: {
+      reportId: string;
+      baseVersionId: string;
+      reportVersion: number;
+      values: AiSuggestionFormValues;
+    }) =>
+      apiRequest<WeeklyAiSuggestionResult>(
+        `/api/v1/weekly-reports/${input.reportId}/ai-suggestions`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey('weekly-ai-suggestion') },
+          body: JSON.stringify({
+            baseVersionId: input.baseVersionId,
+            reportVersion: input.reportVersion,
+            providerConnectionId: input.values.providerConnectionId,
+            fields: input.values.fields,
+            consent: {
+              allowPeopleNames: input.values.allowPeopleNames,
+              allowInternalUrls: input.values.allowInternalUrls,
+              allowDescriptionSummaries: input.values.allowDescriptionSummaries,
+            },
+          }),
+        },
+      ),
+    onSuccess: async (response) => {
+      setSelectedAiGenerationId(response.data.generation.id);
+      if (response.data.report) await invalidateReport(response.data.report.id);
+      else if (response.data.generation.reportId) {
+        await invalidateReport(response.data.generation.reportId);
+      }
+      if (response.data.fallback) {
+        void messageApi.warning(
+          `AI 未改变正文，已回退当前版本：${response.data.fallbackReasonCode ?? '未知原因'}`,
+        );
+      } else {
+        void messageApi.success(
+          `已生成独立 AI 建议 v${response.data.suggestionVersion?.versionNo ?? '—'}，需人工比较后采纳`,
+        );
+      }
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+
+  const adoptAiMutation = useMutation({
+    mutationFn: (input: {
+      reportId: string;
+      generationId: string;
+      suggestionVersionId: string;
+      baseVersionId: string;
+      reportVersion: number;
+      decisionReason: string;
+    }) =>
+      apiRequest<AiDecisionResult>(
+        `/api/v1/weekly-reports/${input.reportId}/ai-generations/${input.generationId}/adopt`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey('weekly-ai-adopt') },
+          body: JSON.stringify({
+            suggestionVersionId: input.suggestionVersionId,
+            baseVersionId: input.baseVersionId,
+            reportVersion: input.reportVersion,
+            decisionReason: input.decisionReason,
+          }),
+        },
+      ),
+    onSuccess: async (response) => {
+      if (response.data.report) await invalidateReport(response.data.report.id);
+      setSelectedAiGenerationId(response.data.generation.id);
+      void messageApi.success(
+        `已人工采纳为 v${response.data.adoptedVersion?.versionNo ?? '—'}；AI 原建议仍完整保留`,
+      );
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+
+  const rejectAiMutation = useMutation({
+    mutationFn: (input: { reportId: string; generationId: string; decisionReason: string }) =>
+      apiRequest<AiDecisionResult>(
+        `/api/v1/weekly-reports/${input.reportId}/ai-generations/${input.generationId}/reject`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey('weekly-ai-reject') },
+          body: JSON.stringify({ decisionReason: input.decisionReason }),
+        },
+      ),
+    onSuccess: async (response) => {
+      if (response.data.generation.reportId) {
+        await invalidateReport(response.data.generation.reportId);
+      }
+      setSelectedAiGenerationId(response.data.generation.id);
+      void messageApi.success('已明确拒绝 AI 建议；当前正文未改变');
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+
+  useEffect(() => {
+    const healthy = aiConnections.find((connection) => connection.status === 'healthy');
+    if (!aiForm.getFieldValue('providerConnectionId') && healthy) {
+      aiForm.setFieldsValue({ providerConnectionId: healthy.id });
+    }
+  }, [aiConnections, aiForm]);
+
+  useEffect(() => {
+    setSelectedAiGenerationId(null);
+  }, [selectedReportId]);
 
   useEffect(() => {
     if (!version) return;
@@ -568,6 +726,68 @@ export function WeeklyReportsPage() {
     });
   };
 
+  const confirmAiDecision = (generation: WeeklyAiGeneration, decision: 'adopt' | 'reject') => {
+    if (!report || !version) return;
+    const suggestion = generation.suggestionVersions[0];
+    if (decision === 'adopt' && !suggestion) {
+      void messageApi.error('本次生成没有可采纳的 AI 建议版本');
+      return;
+    }
+    let reason =
+      decision === 'adopt' ? '已逐段核对引用、数字、日期和项目名' : '人工核对后不采用本次建议';
+    Modal.confirm({
+      title: decision === 'adopt' ? '显式采纳 AI 建议' : '明确拒绝 AI 建议',
+      icon: <ExclamationCircleOutlined />,
+      width: 620,
+      content: (
+        <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 12 }}>
+          <Alert
+            type={decision === 'adopt' ? 'warning' : 'info'}
+            showIcon
+            message={
+              decision === 'adopt'
+                ? '采纳会新建人工派生版本并切换当前正文；不会覆盖或删除 AI 原建议。'
+                : '拒绝只冻结本次人工决定，不改变当前正文。'
+            }
+          />
+          <Input.TextArea
+            aria-label="人工决定理由"
+            placeholder="请填写核对结论或不采用原因"
+            defaultValue={reason}
+            maxLength={500}
+            showCount
+            autoSize={{ minRows: 3, maxRows: 6 }}
+            onChange={(event) => {
+              reason = event.target.value.trim();
+            }}
+          />
+        </Space>
+      ),
+      okText: decision === 'adopt' ? '核对完成并采纳' : '确认拒绝',
+      okButtonProps: { danger: decision === 'reject' },
+      cancelText: '取消',
+      onOk: async () => {
+        if (!reason) throw new Error('必须填写人工决定理由');
+        if (decision === 'adopt') {
+          await adoptAiMutation.mutateAsync({
+            reportId: report.id,
+            generationId: generation.id,
+            suggestionVersionId: suggestion!.id,
+            baseVersionId: version.id,
+            reportVersion: report.version,
+            decisionReason: reason,
+          });
+        } else {
+          await rejectAiMutation.mutateAsync({
+            reportId: report.id,
+            generationId: generation.id,
+            decisionReason: reason,
+          });
+        }
+      },
+    });
+  };
+
   return (
     <Space direction="vertical" size={20} className="page-stack weekly-report-page">
       {holder}
@@ -728,6 +948,9 @@ export function WeeklyReportsPage() {
                       }}
                     >
                       重做
+                    </Button>
+                    <Button icon={<RobotOutlined />} onClick={() => setAiOpen(true)}>
+                      AI 建议与依据
                     </Button>
                     <Button icon={<HistoryOutlined />} onClick={() => setHistoryOpen(true)}>
                       历史
@@ -1250,6 +1473,345 @@ export function WeeklyReportsPage() {
       </Modal>
 
       <Drawer
+        title="AI 建议、净化边界与引用依据"
+        width={1040}
+        open={aiOpen}
+        onClose={() => setAiOpen(false)}
+      >
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <Alert
+            type="info"
+            showIcon
+            icon={<SafetyCertificateOutlined />}
+            message="规则版本始终是回退基线，AI 只能生成独立建议"
+            description="模型只接收冻结快照重新构造的白名单元数据。源码、diff、环境变量、凭证和附件正文没有发送路径；失败、拒绝、安全拦截或事实校验不通过时，当前规则/人工正文保持不变。"
+          />
+
+          <Card title="生成新的 AI 建议" size="small">
+            <Form<AiSuggestionFormValues>
+              form={aiForm}
+              layout="vertical"
+              initialValues={{
+                fields: ['recentGoals', 'weeklyWork', 'nextWeekPlans', 'problems', 'other'],
+                allowPeopleNames: false,
+                allowInternalUrls: false,
+                allowDescriptionSummaries: false,
+              }}
+              onFinish={(values) => {
+                if (!report || !version) return;
+                aiSuggestionMutation.mutate({
+                  reportId: report.id,
+                  baseVersionId: version.id,
+                  reportVersion: report.version,
+                  values,
+                });
+              }}
+            >
+              <Form.Item
+                name="providerConnectionId"
+                label="AI 连接（必须已通过真实连接测试）"
+                rules={[{ required: true, message: '请选择 AI 连接' }]}
+              >
+                <Select
+                  placeholder="选择健康的 AI 连接"
+                  options={aiConnections.map((connection) => ({
+                    value: connection.id,
+                    disabled: connection.status !== 'healthy',
+                    label: `${connection.name} · ${safeText(connection.config.protocol, '未知协议')} · ${safeText(connection.config.model, '未知模型')} · ${connection.status}`,
+                  }))}
+                />
+              </Form.Item>
+              {aiConnections.length === 0 && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="尚无 AI 连接"
+                  description="请先在设置页配置协议、模型、用途与凭证，并完成真实连接测试。"
+                  style={{ marginBottom: 16 }}
+                />
+              )}
+              <Form.Item
+                name="fields"
+                label="建议范围"
+                rules={[{ required: true, message: '至少选择一个正文栏位' }]}
+              >
+                <Checkbox.Group
+                  options={weeklyReportFields
+                    .filter((field) => field.key !== 'reportDate')
+                    .map((field) => ({ label: field.label, value: field.key }))}
+                />
+              </Form.Item>
+              <Divider titlePlacement="start" plain>
+                条件数据同意（默认全部关闭）
+              </Divider>
+              <Space direction="vertical" size={8}>
+                <Form.Item name="allowPeopleNames" valuePropName="checked" noStyle>
+                  <Checkbox>允许发送白名单事实中明确存在的人员姓名</Checkbox>
+                </Form.Item>
+                <Form.Item name="allowInternalUrls" valuePropName="checked" noStyle>
+                  <Checkbox>
+                    允许发送依据 HTTPS URL（用户名、密码、查询参数和片段仍会移除）
+                  </Checkbox>
+                </Form.Item>
+                <Form.Item name="allowDescriptionSummaries" valuePropName="checked" noStyle>
+                  <Checkbox>允许发送按政策生成且已同意的 Jira 描述摘要</Checkbox>
+                </Form.Item>
+              </Space>
+              <Alert
+                type="warning"
+                showIcon
+                message="秘密扫描优先于凭证读取和外部请求"
+                description="命中私钥、Authorization、token、连接串、凭证赋值、源码、diff 或客户高敏标记时会本地阻断；记录和页面只显示类别，不显示命中原文。"
+                style={{ marginTop: 16, marginBottom: 16 }}
+              />
+              <Button
+                type="primary"
+                htmlType="submit"
+                icon={<RobotOutlined />}
+                loading={aiSuggestionMutation.isPending}
+                disabled={
+                  !report || !version || aiConnections.every((item) => item.status !== 'healthy')
+                }
+              >
+                从当前冻结版本生成独立建议
+              </Button>
+            </Form>
+          </Card>
+
+          <Card
+            title={`生成与人工决定历史（${aiGenerations.data?.data.total ?? 0}）`}
+            size="small"
+            extra={
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                loading={aiGenerations.isFetching}
+                onClick={() => void aiGenerations.refetch()}
+              >
+                刷新
+              </Button>
+            }
+          >
+            {(aiGenerations.data?.data.items ?? []).length === 0 ? (
+              <Empty description="尚无 AI 生成尝试" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            ) : (
+              <List
+                dataSource={aiGenerations.data?.data.items ?? []}
+                renderItem={(generation) => {
+                  const suggestion = generation.suggestionVersions[0];
+                  return (
+                    <List.Item>
+                      <Card size="small" style={{ width: '100%' }}>
+                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                          <Space wrap>
+                            <Tag color={aiGenerationStatusColor(generation.status)}>
+                              {aiGenerationStatusLabel(generation.status)}
+                            </Tag>
+                            <Tag color={aiDecisionColor(generation.adoptionStatus)}>
+                              {aiDecisionLabel(generation.adoptionStatus)}
+                            </Tag>
+                            {generation.stale && <Tag color="orange">基线已变化</Tag>}
+                            {suggestion && <Tag color="blue">建议 v{suggestion.versionNo}</Tag>}
+                            <Typography.Text strong>
+                              {generation.protocol} · {generation.model}
+                            </Typography.Text>
+                            <Typography.Text type="secondary">
+                              {formatDateTime(generation.createdAt)} ·{' '}
+                              {generation.durationMs ?? '—'} ms
+                            </Typography.Text>
+                          </Space>
+                          <Typography.Text>
+                            范围：
+                            {generation.requestedFields.map(weeklyFieldLabel).join('、') || '—'}
+                          </Typography.Text>
+                          {generation.errorCode && (
+                            <Alert
+                              type={generation.status === 'blocked' ? 'warning' : 'error'}
+                              showIcon
+                              message={`未采用 AI 输出：${generation.errorCode}`}
+                              description={
+                                generation.securityBlocks.length > 0
+                                  ? `本地阻断类别：${generation.securityBlocks.join('、')}`
+                                  : '已保持当前规则/人工版本，编辑流程未被阻塞。'
+                              }
+                            />
+                          )}
+                          <Space wrap>
+                            <Button
+                              size="small"
+                              onClick={() => setSelectedAiGenerationId(generation.id)}
+                            >
+                              查看净化与引用依据
+                            </Button>
+                            {suggestion && (
+                              <Button
+                                size="small"
+                                icon={<DiffOutlined />}
+                                onClick={() => setCompareVersionId(suggestion.id)}
+                              >
+                                与当前版本比较
+                              </Button>
+                            )}
+                            {generation.adoptionStatus === 'pending' && suggestion && (
+                              <>
+                                <Button
+                                  size="small"
+                                  type="primary"
+                                  disabled={generation.stale || adoptAiMutation.isPending}
+                                  onClick={() => confirmAiDecision(generation, 'adopt')}
+                                >
+                                  核对后采纳
+                                </Button>
+                                <Button
+                                  size="small"
+                                  danger
+                                  loading={rejectAiMutation.isPending}
+                                  onClick={() => confirmAiDecision(generation, 'reject')}
+                                >
+                                  拒绝本次建议
+                                </Button>
+                              </>
+                            )}
+                          </Space>
+                          {generation.decisionReason && (
+                            <Typography.Text type="secondary">
+                              人工决定：{generation.decisionReason}（
+                              {formatDateTime(generation.decidedAt)}）
+                            </Typography.Text>
+                          )}
+                        </Space>
+                      </Card>
+                    </List.Item>
+                  );
+                }}
+              />
+            )}
+          </Card>
+
+          {selectedAiGenerationId && (
+            <Card
+              title="生成详情与逐段引用"
+              size="small"
+              loading={aiGenerationDetail.isLoading}
+              extra={
+                <Button size="small" onClick={() => setSelectedAiGenerationId(null)}>
+                  关闭详情
+                </Button>
+              }
+            >
+              {aiGenerationDetail.data?.data && (
+                <Space direction="vertical" size={14} style={{ width: '100%' }}>
+                  <Descriptions size="small" bordered column={2}>
+                    <Descriptions.Item label="配置版本">
+                      {aiGenerationDetail.data.data.providerConfigVersion}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="提示词版本">
+                      {aiGenerationDetail.data.data.promptTemplateVersion}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="净化策略版本">
+                      {aiGenerationDetail.data.data.sanitizationPolicyVersion}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="留存方式">
+                      {aiGenerationDetail.data.data.retentionMode}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="净化输入哈希" span={2}>
+                      <Typography.Text copyable code>
+                        {aiGenerationDetail.data.data.sanitizedInputHash ?? '阻断发生在哈希生成前'}
+                      </Typography.Text>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="供应商请求 ID">
+                      {aiGenerationDetail.data.data.providerRequestId ?? '—'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="停止原因">
+                      {aiGenerationDetail.data.data.stopReason ?? '—'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Token usage">
+                      输入 {aiGenerationDetail.data.data.usage.inputTokens ?? '—'} / 输出{' '}
+                      {aiGenerationDetail.data.data.usage.outputTokens ?? '—'} / 总计{' '}
+                      {aiGenerationDetail.data.data.usage.totalTokens ?? '—'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="已移除类别">
+                      {aiGenerationDetail.data.data.removedCategories.length > 0
+                        ? aiGenerationDetail.data.data.removedCategories.join('、')
+                        : '无'}
+                    </Descriptions.Item>
+                  </Descriptions>
+
+                  <Divider titlePlacement="start" plain>
+                    本次本地引用映射
+                  </Divider>
+                  <Table
+                    size="small"
+                    rowKey="refId"
+                    pagination={false}
+                    dataSource={aiGenerationDetail.data.data.inputRefs ?? []}
+                    columns={[
+                      {
+                        title: '引用 ID',
+                        dataIndex: 'refId',
+                        render: (value: string) => <Typography.Text code>{value}</Typography.Text>,
+                      },
+                      { title: '类型', dataIndex: 'sourceType', width: 110 },
+                      {
+                        title: '栏位',
+                        dataIndex: 'field',
+                        width: 130,
+                        render: (value: string | null) =>
+                          value ? weeklyFieldLabel(value) : '跨栏位事实',
+                      },
+                      { title: '来源对象', dataIndex: 'sourceId', ellipsis: true },
+                      { title: '内容哈希', dataIndex: 'contentHash', ellipsis: true },
+                    ]}
+                  />
+
+                  <Divider titlePlacement="start" plain>
+                    解析后的建议与逐段 citations
+                  </Divider>
+                  {(aiGenerationDetail.data.data.parsedOutput?.fields ?? []).map((field) => (
+                    <Card key={field.field} size="small" title={weeklyFieldLabel(field.field)}>
+                      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                        {field.paragraphs.map((paragraph, index) => (
+                          <div key={`${field.field}-${index}`}>
+                            {paragraph.projectName && (
+                              <Tag color="geekblue">{paragraph.projectName}</Tag>
+                            )}
+                            <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginTop: 8 }}>
+                              {paragraph.text}
+                            </Typography.Paragraph>
+                            <Space wrap>
+                              <Typography.Text type="secondary">依据：</Typography.Text>
+                              {paragraph.citations.map((citation) => (
+                                <Tag key={citation}>{citation}</Tag>
+                              ))}
+                            </Space>
+                          </div>
+                        ))}
+                      </Space>
+                    </Card>
+                  ))}
+
+                  <Collapse
+                    items={[
+                      {
+                        key: 'raw-output',
+                        label: '供应商原始输出（始终按纯文本显示）',
+                        children: (
+                          // React 会转义该字符串；这里绝不使用 dangerouslySetInnerHTML 或 Markdown 执行器。
+                          <pre className="weekly-diff-text">
+                            {aiGenerationDetail.data.data.rawOutput ?? '本次没有供应商原始输出'}
+                          </pre>
+                        ),
+                      },
+                    ]}
+                  />
+                </Space>
+              )}
+            </Card>
+          )}
+        </Space>
+      </Drawer>
+
+      <Drawer
         title="不可变版本历史"
         width={760}
         open={historyOpen}
@@ -1342,6 +1904,37 @@ export function WeeklyReportsPage() {
       </Drawer>
     </Space>
   );
+}
+
+function weeklyFieldLabel(field: string): string {
+  return weeklyReportFields.find((item) => item.key === field)?.label ?? field;
+}
+
+function aiGenerationStatusLabel(status: WeeklyAiGeneration['status']): string {
+  return {
+    succeeded: '输出已校验',
+    failed: '已失败并回退',
+    blocked: '本地安全阻断',
+  }[status];
+}
+
+function aiGenerationStatusColor(status: WeeklyAiGeneration['status']): string {
+  return { succeeded: 'green', failed: 'red', blocked: 'orange' }[status];
+}
+
+function aiDecisionLabel(status: WeeklyAiGeneration['adoptionStatus']): string {
+  return {
+    pending: '待人工决定',
+    adopted: '已采纳',
+    rejected: '已拒绝',
+    not_applicable: '未产生建议',
+  }[status];
+}
+
+function aiDecisionColor(status: WeeklyAiGeneration['adoptionStatus']): string {
+  return { pending: 'gold', adopted: 'blue', rejected: 'default', not_applicable: 'default' }[
+    status
+  ];
 }
 
 function editorFields(values: EditorValues): WeeklyReportVersion['fields'] {
