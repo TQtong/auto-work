@@ -48,8 +48,31 @@ export interface WeeklyReportReminderPolicy {
     scheduledFor: string;
     graceUntil: string;
   }>;
+  recentOccurrences: WeeklyReportReminderOccurrence[];
   createdAt: string | null;
   updatedAt: string | null;
+}
+
+export interface WeeklyReportReminderOccurrence {
+  id: string;
+  policyVersion: number;
+  reminderType: 'generation_reminder' | 'confirmation_reminder' | 'deadline_reminder';
+  cycleKey: string;
+  periodStart: string;
+  periodEnd: string;
+  reportDate: string;
+  scheduledFor: string;
+  graceUntil: string;
+  status: 'planned' | 'queued' | 'succeeded' | 'failed' | 'unknown' | 'skipped' | 'cancelled';
+  reportId: string | null;
+  notificationId: string | null;
+  jobId: string | null;
+  queuedAt: string | null;
+  skippedAt: string | null;
+  skipReason: string | null;
+  completedAt: string | null;
+  lastErrorCode: string | null;
+  version: number;
 }
 
 export interface WeeklyReportReminderClock {
@@ -787,11 +810,16 @@ export interface WeeklyReportDeliveryIntent {
 
 export interface WeeklyReportRobotNotification {
   id: string;
-  reportId: string;
+  reportId: string | null;
   connectionId: string;
   deliveryIntentId: string | null;
   notificationType:
-    'deadline_reminder' | 'submission_success' | 'submission_failure' | 'risk_alert';
+    | 'generation_reminder'
+    | 'confirmation_reminder'
+    | 'deadline_reminder'
+    | 'submission_success'
+    | 'submission_failure'
+    | 'risk_alert';
   stateVersion: number;
   status:
     'pending' | 'queued' | 'sending' | 'succeeded' | 'failed' | 'unknown' | 'skipped' | 'cancelled';

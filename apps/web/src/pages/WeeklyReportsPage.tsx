@@ -3216,6 +3216,8 @@ function deliveryStatusColor(status: string): string {
 
 function notificationTypeLabel(type: WeeklyReportRobotNotification['notificationType']): string {
   return {
+    generation_reminder: '生成提醒',
+    confirmation_reminder: '确认提醒',
     deadline_reminder: '截止提醒',
     submission_success: '提交成功摘要',
     submission_failure: '提交失败提醒',

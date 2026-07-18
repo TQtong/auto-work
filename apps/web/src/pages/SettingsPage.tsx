@@ -393,6 +393,47 @@ function ReminderPolicySettings() {
           ]}
         />
       </Card>
+      <Card title="提醒运行记录">
+        <Table
+          rowKey="id"
+          dataSource={policy.data?.data.recentOccurrences ?? []}
+          pagination={{ pageSize: 10, hideOnSinglePage: true }}
+          locale={{ emptyText: '策略启用并由调度器建立计划后显示运行记录' }}
+          columns={[
+            {
+              title: '类型',
+              dataIndex: 'reminderType',
+              render: (value: WeeklyReportReminderPolicy['upcoming'][number]['reminderType']) =>
+                reminderTypeLabels[value],
+            },
+            { title: '策略版本', dataIndex: 'policyVersion', width: 100 },
+            {
+              title: '周期',
+              render: (
+                _value: unknown,
+                row: WeeklyReportReminderPolicy['recentOccurrences'][number],
+              ) => `${row.periodStart} 至 ${row.periodEnd}`,
+            },
+            {
+              title: '计划时间',
+              dataIndex: 'scheduledFor',
+              render: (value: string) => new Date(value).toLocaleString('zh-CN'),
+            },
+            {
+              title: '状态',
+              dataIndex: 'status',
+              render: (value: string) => <StatusTag status={value} />,
+            },
+            {
+              title: '跳过/错误',
+              render: (
+                _value: unknown,
+                row: WeeklyReportReminderPolicy['recentOccurrences'][number],
+              ) => row.skipReason ?? row.lastErrorCode ?? '—',
+            },
+          ]}
+        />
+      </Card>
     </Space>
   );
 }

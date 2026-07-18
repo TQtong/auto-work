@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { WeeklyReportReminderPolicy } from '@prisma/client';
+import type { WeeklyReportReminderOccurrence, WeeklyReportReminderPolicy } from '@prisma/client';
 import { DomainError, errorCodes } from '@auto-work/contracts';
 import { buildWeeklyReminderSchedule, newId } from '@auto-work/domain';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
@@ -37,7 +37,7 @@ export class WeeklyReportReminderPolicyService {
     const row = await this.prisma.weeklyReportReminderPolicy.findUnique({
       where: { profileId: this.sessions.currentProfileId },
     });
-    return this.serialize(row, now);
+    return this.serialize(row, now, row ? await this.recentOccurrences(row.id) : []);
   }
 
   public async update(
@@ -107,6 +107,56 @@ export class WeeklyReportReminderPolicyService {
               ...data,
             },
           });
+      if (existing) {
+        const activeOccurrences = await tx.weeklyReportReminderOccurrence.findMany({
+          where: { policyId: existing.id, status: { in: ['planned', 'queued'] } },
+          include: { notification: true },
+        });
+        for (const occurrence of activeOccurrences) {
+          // 已进入 sending 的机器人请求无法撤回；其结果仍由通知 handler 和 unknown 恢复链收敛。
+          if (occurrence.notification?.status === 'sending') continue;
+          const cancellationReason = '提醒策略已由用户修改，旧版本计划已取消';
+          if (occurrence.jobId) {
+            await tx.job.updateMany({
+              where: { id: occurrence.jobId, status: 'queued' },
+              data: {
+                status: 'cancelled',
+                cancelRequested: true,
+                completedAt: now,
+                lastErrorCode: 'WEEKLY_REMINDER_POLICY_CHANGED',
+                lastError: cancellationReason,
+              },
+            });
+            await tx.job.updateMany({
+              where: { id: occurrence.jobId, status: 'running' },
+              data: {
+                cancelRequested: true,
+                lastErrorCode: 'WEEKLY_REMINDER_POLICY_CHANGED',
+                lastError: cancellationReason,
+              },
+            });
+          }
+          if (occurrence.notificationId) {
+            await tx.robotNotification.updateMany({
+              where: { id: occurrence.notificationId, status: { in: ['pending', 'queued'] } },
+              data: {
+                status: 'cancelled',
+                skipReason: cancellationReason,
+                version: { increment: 1 },
+              },
+            });
+          }
+          await tx.weeklyReportReminderOccurrence.updateMany({
+            where: { id: occurrence.id, status: occurrence.status, version: occurrence.version },
+            data: {
+              status: 'cancelled',
+              skipReason: cancellationReason,
+              completedAt: now,
+              version: { increment: 1 },
+            },
+          });
+        }
+      }
       await this.audit.recordInTransaction(tx, {
         actorId: this.sessions.currentProfileId,
         action: 'weekly_report.reminder_policy_updated',
@@ -120,10 +170,14 @@ export class WeeklyReportReminderPolicyService {
       });
       return saved;
     });
-    return this.serialize(row, now);
+    return this.serialize(row, now, await this.recentOccurrences(row.id));
   }
 
-  private serialize(row: WeeklyReportReminderPolicy | null, now: Date) {
+  private serialize(
+    row: WeeklyReportReminderPolicy | null,
+    now: Date,
+    occurrences: WeeklyReportReminderOccurrence[],
+  ) {
     const policy = row ? this.policyInput(row) : defaultPolicy;
     const upcoming = buildWeeklyReminderSchedule(policy, now, 3)
       .filter((plan) => plan.scheduledFor >= now)
@@ -138,9 +192,38 @@ export class WeeklyReportReminderPolicyService {
       version: row?.version ?? 0,
       ...policy,
       upcoming,
+      recentOccurrences: occurrences.map((occurrence) => ({
+        id: occurrence.id,
+        policyVersion: occurrence.policyVersion,
+        reminderType: occurrence.reminderType,
+        cycleKey: occurrence.cycleKey,
+        periodStart: occurrence.periodStart,
+        periodEnd: occurrence.periodEnd,
+        reportDate: occurrence.reportDate,
+        scheduledFor: occurrence.scheduledFor.toISOString(),
+        graceUntil: occurrence.graceUntil.toISOString(),
+        status: occurrence.status,
+        reportId: occurrence.reportId,
+        notificationId: occurrence.notificationId,
+        jobId: occurrence.jobId,
+        queuedAt: occurrence.queuedAt?.toISOString() ?? null,
+        skippedAt: occurrence.skippedAt?.toISOString() ?? null,
+        skipReason: occurrence.skipReason,
+        completedAt: occurrence.completedAt?.toISOString() ?? null,
+        lastErrorCode: occurrence.lastErrorCode,
+        version: occurrence.version,
+      })),
       createdAt: row?.createdAt.toISOString() ?? null,
       updatedAt: row?.updatedAt.toISOString() ?? null,
     };
+  }
+
+  private recentOccurrences(policyId: string): Promise<WeeklyReportReminderOccurrence[]> {
+    return this.prisma.weeklyReportReminderOccurrence.findMany({
+      where: { policyId },
+      orderBy: [{ scheduledFor: 'desc' }, { createdAt: 'desc' }],
+      take: 30,
+    });
   }
 
   private policyInput(row: WeeklyReportReminderPolicy) {

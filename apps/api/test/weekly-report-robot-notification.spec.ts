@@ -5,6 +5,26 @@ import {
 } from '../src/modules/weekly-reports/weekly-report-robot-notification.js';
 
 describe('周报机器人安全通知模板', () => {
+  it('生成和确认提醒不携带正文、链接或自动执行承诺', () => {
+    const generation = buildWeeklyReportRobotNotification({
+      type: 'generation_reminder',
+      periodStart: '2026-07-13',
+      periodEnd: '2026-07-17',
+    });
+    const confirmation = buildWeeklyReportRobotNotification({
+      type: 'confirmation_reminder',
+      periodStart: '2026-07-13',
+      periodEnd: '2026-07-17',
+      draftStatus: '编辑中',
+    });
+
+    expect(generation).toContain('尚未生成本周期周报');
+    expect(generation).toContain('不会自动生成或正式提交');
+    expect(confirmation).toContain('当前草稿状态：编辑中');
+    expect(confirmation).toContain('不会自动确认或正式提交');
+    expect(`${generation}\n${confirmation}`).not.toContain('localhost');
+  });
+
   it('提交成功摘要只含周期、状态、项目和正式日志 ID，不含六字段全文或本机链接', () => {
     const message = buildWeeklyReportRobotNotification({
       type: 'submission_success',

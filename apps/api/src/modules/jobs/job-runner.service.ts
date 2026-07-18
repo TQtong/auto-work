@@ -211,14 +211,27 @@ export class JobRunnerService implements OnApplicationBootstrap {
       return;
     }
     if (job.type === 'weekly-report.notification') {
-      await this.prisma.robotNotification.updateMany({
-        where: { id: job.payloadRef, status: 'sending' },
-        data: {
-          status: 'unknown',
-          lastErrorCode: 'RESULT_REQUIRES_REVIEW',
-          lastErrorSummary: '通知作业中断，无法确认机器人是否已经接收消息',
-          version: { increment: 1 },
-        },
+      const notificationId = job.payloadRef;
+      await this.prisma.$transaction(async (tx) => {
+        const completedAt = new Date();
+        await tx.robotNotification.updateMany({
+          where: { id: notificationId, status: 'sending' },
+          data: {
+            status: 'unknown',
+            lastErrorCode: 'RESULT_REQUIRES_REVIEW',
+            lastErrorSummary: '通知作业中断，无法确认机器人是否已经接收消息',
+            version: { increment: 1 },
+          },
+        });
+        await tx.weeklyReportReminderOccurrence.updateMany({
+          where: { notificationId, status: 'queued' },
+          data: {
+            status: 'unknown',
+            completedAt,
+            lastErrorCode: 'RESULT_REQUIRES_REVIEW',
+            version: { increment: 1 },
+          },
+        });
       });
       return;
     }

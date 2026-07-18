@@ -1,8 +1,24 @@
 export type WeeklyReportRobotNotificationType =
-  'deadline_reminder' | 'submission_success' | 'submission_failure' | 'risk_alert';
+  | 'generation_reminder'
+  | 'confirmation_reminder'
+  | 'deadline_reminder'
+  | 'submission_success'
+  | 'submission_failure'
+  | 'risk_alert';
 
 const shortText = z.string().min(1).max(500);
 export const weeklyReportRobotNotificationFactsSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('generation_reminder'),
+    periodStart: shortText,
+    periodEnd: shortText,
+  }),
+  z.object({
+    type: z.literal('confirmation_reminder'),
+    periodStart: shortText,
+    periodEnd: shortText,
+    draftStatus: shortText,
+  }),
   z.object({
     type: z.literal('submission_success'),
     periodStart: shortText,
@@ -43,6 +59,22 @@ export function buildWeeklyReportRobotNotification(
   input: WeeklyReportRobotNotificationFacts,
 ): string {
   const period = `周期：${safeLine(input.periodStart, 20)} 至 ${safeLine(input.periodEnd, 20)}`;
+  if (input.type === 'generation_reminder') {
+    return [
+      'Auto Work 周报生成提醒',
+      period,
+      '当前状态：尚未生成本周期周报',
+      '请在本机 Auto Work 检查来源后生成草稿；本提醒不会自动生成或正式提交。',
+    ].join('\n');
+  }
+  if (input.type === 'confirmation_reminder') {
+    return [
+      'Auto Work 周报确认提醒',
+      period,
+      `当前草稿状态：${safeLine(input.draftStatus, 80)}`,
+      '请在本机 Auto Work 核对来源、正文和接收范围后确认；本提醒不会自动确认或正式提交。',
+    ].join('\n');
+  }
   if (input.type === 'submission_success') {
     const projects = normalizeList(input.projectNames, 3, 80);
     return [

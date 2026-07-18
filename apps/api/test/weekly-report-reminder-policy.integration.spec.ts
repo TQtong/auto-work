@@ -114,6 +114,20 @@ describe('周报提醒策略、工作周与 Asia/Shanghai 预览', () => {
       graceMinutes: 90,
     });
     expect(await prisma.auditEvent.count({ where: { targetId: saved.id! } })).toBe(1);
+    const plannedOccurrence = await prisma.weeklyReportReminderOccurrence.create({
+      data: {
+        id: 'policy-update-planned-occurrence',
+        policyId: saved.id!,
+        policyVersion: saved.version,
+        reminderType: 'generation_reminder',
+        cycleKey: '2026-07-20:2026-07-24',
+        periodStart: '2026-07-20',
+        periodEnd: '2026-07-24',
+        reportDate: '2026-07-24',
+        scheduledFor: new Date('2026-07-24T06:00:00.000Z'),
+        graceUntil: new Date('2026-07-24T07:30:00.000Z'),
+      },
+    });
 
     await expect(
       service.update({ ...input, enabled: false }, context(), new Date('2026-07-15T00:00:00.000Z')),
@@ -124,6 +138,14 @@ describe('周报提醒策略、工作周与 Asia/Shanghai 预览', () => {
       new Date('2026-07-15T00:00:00.000Z'),
     );
     expect(disabled).toMatchObject({ version: 2, enabled: false });
+    expect(
+      await prisma.weeklyReportReminderOccurrence.findUniqueOrThrow({
+        where: { id: plannedOccurrence.id },
+      }),
+    ).toMatchObject({
+      status: 'cancelled',
+      skipReason: '提醒策略已由用户修改，旧版本计划已取消',
+    });
   });
 
   it('拒绝提醒顺序倒置，且不会把无效策略写入数据库', async () => {

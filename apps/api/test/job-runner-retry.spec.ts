@@ -123,6 +123,14 @@ describe('持久化作业重试分类', () => {
         }) => Promise<Record<string, never>>
       >()
       .mockResolvedValue({});
+    const occurrenceUpdate = vi
+      .fn<
+        (input: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => Promise<{ count: number }>
+      >()
+      .mockResolvedValue({ count: 1 });
     const expiredJobs = [
       { id: 'notification-job', type: 'weekly-report.notification', payloadRef: 'notice-1' },
       { id: 'delivery-job', type: 'weekly-report.delivery', payloadRef: 'intent-1' },
@@ -147,6 +155,7 @@ describe('持久化作业重试分类', () => {
           deliveryIntent: { updateMany: intentUpdate },
           weeklyReport: { update: reportUpdate },
           robotNotification: { updateMany: notificationUpdate },
+          weeklyReportReminderOccurrence: { updateMany: occurrenceUpdate },
         }),
       ),
     } as unknown as PrismaService;
@@ -162,6 +171,10 @@ describe('持久化作业重试分类', () => {
       status: 'sending',
     });
     expect(notificationUpdate.mock.calls[0]?.[0].data).toMatchObject({ status: 'unknown' });
+    expect(occurrenceUpdate.mock.calls[0]?.[0]).toMatchObject({
+      where: { notificationId: 'notice-1', status: 'queued' },
+      data: { status: 'unknown', lastErrorCode: 'RESULT_REQUIRES_REVIEW' },
+    });
     expect(intentUpdate.mock.calls[0]?.[0].where).toEqual({
       id: 'intent-1',
       status: 'running',

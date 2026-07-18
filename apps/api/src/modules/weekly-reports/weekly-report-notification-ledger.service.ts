@@ -5,7 +5,7 @@ import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import type { WeeklyReportRobotNotificationType } from './weekly-report-robot-notification.js';
 
 export interface ReserveRobotNotificationInput {
-  reportId: string;
+  reportId?: string | null;
   connectionId: string;
   deliveryIntentId?: string | null;
   notificationType: WeeklyReportRobotNotificationType;
@@ -72,7 +72,7 @@ export class WeeklyReportNotificationLedgerService {
       const notification = await tx.robotNotification.create({
         data: {
           id: newId(),
-          reportId: input.reportId,
+          reportId: input.reportId ?? null,
           connectionId: input.connectionId,
           deliveryIntentId: input.deliveryIntentId ?? null,
           notificationType: input.notificationType,

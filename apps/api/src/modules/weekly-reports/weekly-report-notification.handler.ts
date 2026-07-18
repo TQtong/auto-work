@@ -160,25 +160,38 @@ export class WeeklyReportNotificationHandler implements JobHandler, OnModuleInit
       errorSummary: string | null;
     },
   ): Promise<void> {
-    const changed = await this.prisma.robotNotification.updateMany({
-      where: { id, status: 'sending' },
-      data: {
-        status,
-        providerRequestId: result.providerRequestId,
-        providerCallCount: result.providerCallCount,
-        retryDelaysJson: JSON.stringify(result.retryDelaysMs),
-        lastErrorCode: result.errorCode,
-        lastErrorSummary: result.errorSummary,
-        sentAt: status === 'succeeded' ? new Date() : null,
-        version: { increment: 1 },
-      },
-    });
-    if (changed.count !== 1) {
-      throw new DomainError('ROBOT_NOTIFICATION_RESULT_CONFLICT', '通知结果落库发生并发冲突', {
-        httpStatus: 409,
-        suggestedAction: 'manual_review',
+    await this.prisma.$transaction(async (tx) => {
+      const completedAt = new Date();
+      const changed = await tx.robotNotification.updateMany({
+        where: { id, status: 'sending' },
+        data: {
+          status,
+          providerRequestId: result.providerRequestId,
+          providerCallCount: result.providerCallCount,
+          retryDelaysJson: JSON.stringify(result.retryDelaysMs),
+          lastErrorCode: result.errorCode,
+          lastErrorSummary: result.errorSummary,
+          sentAt: status === 'succeeded' ? completedAt : null,
+          version: { increment: 1 },
+        },
       });
-    }
+      if (changed.count !== 1) {
+        throw new DomainError('ROBOT_NOTIFICATION_RESULT_CONFLICT', '通知结果落库发生并发冲突', {
+          httpStatus: 409,
+          suggestedAction: 'manual_review',
+        });
+      }
+      // 调度 occurrence 与通知账本同事务收敛，设置页不会长期停留在 queued 假象。
+      await tx.weeklyReportReminderOccurrence.updateMany({
+        where: { notificationId: id, status: 'queued' },
+        data: {
+          status,
+          completedAt,
+          lastErrorCode: result.errorCode,
+          version: { increment: 1 },
+        },
+      });
+    });
   }
 
   private classify(error: unknown) {
