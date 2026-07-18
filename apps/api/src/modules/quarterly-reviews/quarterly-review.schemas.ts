@@ -90,3 +90,155 @@ export const updateScoreItemsSchema = z
       context.addIssue({ code: 'custom', message: '评分指标不得重复' });
     }
   });
+
+export const collectQuarterlyReviewSchema = z
+  .object({
+    reviewVersion: z.number().int().positive(),
+    sources: z
+      .object({
+        tasks: z.boolean().default(true),
+        evidence: z.boolean().default(true),
+        confirmedWeeklyReports: z.boolean().default(true),
+      })
+      .strict()
+      .default({ tasks: true, evidence: true, confirmedWeeklyReports: true }),
+    freshnessPolicy: z
+      .object({
+        mode: z.enum(['require_fresh', 'allow_stale']),
+        maximumAgeHours: z
+          .number()
+          .int()
+          .min(1)
+          .max(24 * 90),
+      })
+      .strict()
+      .default({ mode: 'allow_stale', maximumAgeHours: 168 }),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.sources.tasks && !value.sources.evidence && !value.sources.confirmedWeeklyReports) {
+      context.addIssue({ code: 'custom', message: '至少选择一种季度成果来源' });
+    }
+  });
+
+const achievementFields = z
+  .object({
+    projectId: z.string().trim().min(1).max(100).nullable(),
+    title: z.string().trim().min(1).max(500),
+    situation: z.string().trim().min(1).max(10_000),
+    action: z.string().trim().min(1).max(20_000),
+    result: z.string().trim().min(1).max(20_000),
+    impact: z.string().trim().min(1).max(20_000),
+    contributionBoundary: z.string().trim().min(1).max(5_000),
+    periodStart: businessDate,
+    periodEnd: businessDate,
+  })
+  .strict();
+
+export const createManualAchievementSchema = achievementFields.extend({
+  reviewVersion: z.number().int().positive(),
+});
+
+export const updateAchievementSchema = achievementFields.extend({
+  reviewVersion: z.number().int().positive(),
+  version: z.number().int().positive(),
+  changeReason: z.string().trim().min(2).max(500),
+});
+
+export const updateAchievementSelectionSchema = z
+  .object({
+    reviewVersion: z.number().int().positive(),
+    actions: z
+      .array(
+        z
+          .object({
+            achievementId: z.string().trim().min(1).max(100),
+            version: z.number().int().positive(),
+            status: z.enum(['candidate', 'selected', 'excluded', 'needs_evidence']),
+            reason: z.string().trim().min(2).max(500),
+            sortOrder: z.number().int().min(0).max(100_000),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(500),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      new Set(value.actions.map((action) => action.achievementId)).size !== value.actions.length
+    ) {
+      context.addIssue({ code: 'custom', message: '成果选择动作不得重复' });
+    }
+  });
+
+export const listAchievementsSchema = z
+  .object({
+    status: z.enum(['candidate', 'selected', 'excluded', 'needs_evidence']).optional(),
+    projectId: z.string().trim().min(1).max(100).optional(),
+    sourceType: z.enum(['collected', 'manual']).optional(),
+    evidenceSourceType: z
+      .enum([
+        'task',
+        'branch',
+        'commit',
+        'merge_request',
+        'pipeline',
+        'tag',
+        'release',
+        'weekly_report',
+        'manual_link',
+      ])
+      .optional(),
+    evidenceStatus: z.enum(['complete', 'partial', 'needs_evidence']).optional(),
+    metricId: z.string().trim().min(1).max(100).optional(),
+    month: z
+      .string()
+      .regex(/^\d{4}-(?:0[1-9]|1[0-2])$/u)
+      .optional(),
+    cursor: z.string().trim().min(1).max(100).optional(),
+    limit: z.coerce.number().int().min(1).max(200).default(100),
+  })
+  .strict();
+
+export const listQuarterlyCollectionSnapshotsSchema = z
+  .object({ limit: z.coerce.number().int().min(1).max(100).default(20) })
+  .strict();
+
+export const addAchievementEvidenceSchema = z
+  .object({
+    reviewVersion: z.number().int().positive(),
+    achievementVersion: z.number().int().positive(),
+    sourceType: z.literal('manual_link'),
+    title: z.string().trim().min(1).max(500),
+    externalKey: z.string().trim().max(500).nullable(),
+    url: z.url().max(2_000).nullable(),
+    eventAt: z.iso.datetime({ offset: true }).nullable(),
+    availabilityState: z.enum(['available', 'unavailable', 'unknown']).default('available'),
+    summary: z.record(z.string(), z.unknown()).default({}),
+    contributionAngle: z.string().trim().min(2).max(2_000),
+    primaryEvidence: z.boolean().default(false),
+  })
+  .strict();
+
+export const updateAchievementMetricsSchema = z
+  .object({
+    reviewVersion: z.number().int().positive(),
+    achievementVersion: z.number().int().positive(),
+    links: z
+      .array(
+        z
+          .object({
+            metricId: z.string().trim().min(1).max(100),
+            contribution: z.string().trim().min(2).max(2_000),
+          })
+          .strict(),
+      )
+      .max(100),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.links.map((link) => link.metricId)).size !== value.links.length) {
+      context.addIssue({ code: 'custom', message: '成果指标映射不得重复' });
+    }
+  });

@@ -1527,12 +1527,15 @@ model AchievementMetricLink {
   achievementId String            @map("achievement_id")
   metricId      String            @map("metric_id")
   contribution  String
+  active        Boolean           @default(true)
+  version       Int               @default(1)
+  supersededAt  DateTime?         @map("superseded_at")
   createdBy     String            @map("created_by")
   createdAt     DateTime          @default(now()) @map("created_at")
   achievement   Achievement       @relation(fields: [achievementId], references: [id], onDelete: Restrict)
   metric        PerformanceMetric @relation(fields: [metricId], references: [id], onDelete: Restrict)
 
-  @@unique([achievementId, metricId])
+  @@unique([achievementId, metricId, version])
   @@index([metricId])
   @@map("achievement_metric_link")
 }

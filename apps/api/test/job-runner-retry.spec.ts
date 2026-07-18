@@ -34,6 +34,7 @@ describe('持久化作业重试分类', () => {
       {} as JobRegistryService,
       {} as InstanceLeaseService,
     );
+    const onTerminalFailure = vi.fn().mockResolvedValue(undefined);
     const handler: JobHandler = {
       type: 'test',
       concurrency: 1,
@@ -41,6 +42,7 @@ describe('持久化作业重试分类', () => {
       execute: vi
         .fn()
         .mockRejectedValue(new DomainError('NON_RETRYABLE', '测试错误', { retryable })),
+      onTerminalFailure,
     };
     const execute = (
       runner as unknown as {
@@ -53,6 +55,14 @@ describe('持久化作业重试分类', () => {
       status,
       lastErrorCode: errorCode,
     });
+    expect(onTerminalFailure).toHaveBeenCalledTimes(retryable ? 0 : 1);
+    if (!retryable) {
+      expect(onTerminalFailure).toHaveBeenCalledWith({
+        jobId: job.id,
+        payloadRef: null,
+        errorCode: 'NON_RETRYABLE',
+      });
+    }
   });
 
   it('含外部副作用的人工复核作业即使达到最大次数也进入 unknown 而不标记可重放失败', async () => {

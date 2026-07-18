@@ -12,6 +12,14 @@ export interface JobHandler<TResult = unknown> {
   concurrency: number;
   recovery: 'safe_replay' | 'manual_review';
   execute(context: JobExecutionContext): Promise<TResult>;
+  /** 排队中的作业尚未进入 execute，领域聚合仍可能需要撤销“运行中”状态。 */
+  onQueuedCancellation?(context: { jobId: string; payloadRef: string | null }): Promise<void>;
+  /** 安全重试耗尽或出现不可重试错误后，领域聚合必须离开临时运行状态。 */
+  onTerminalFailure?(context: {
+    jobId: string;
+    payloadRef: string | null;
+    errorCode: string;
+  }): Promise<void>;
 }
 
 @Injectable()

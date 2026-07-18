@@ -142,6 +142,13 @@ export class JobRunnerService implements OnApplicationBootstrap {
       const safeReplay = handler.recovery === 'safe_replay' && retryable && !exhausted;
       const terminalNonRetryable = handler.recovery === 'safe_replay' && !retryable;
       const requiresManualReview = handler.recovery === 'manual_review';
+      const terminalErrorCode = requiresManualReview
+        ? 'RESULT_REQUIRES_REVIEW'
+        : terminalNonRetryable && error instanceof DomainError
+          ? error.code
+          : exhausted
+            ? 'MAX_ATTEMPTS_EXCEEDED'
+            : 'RESULT_REQUIRES_REVIEW';
       await this.prisma.job.update({
         where: { id: jobId },
         data: safeReplay
@@ -164,18 +171,23 @@ export class JobRunnerService implements OnApplicationBootstrap {
               completedAt: new Date(),
               leaseOwner: null,
               leaseUntil: null,
-              lastErrorCode: requiresManualReview
-                ? 'RESULT_REQUIRES_REVIEW'
-                : terminalNonRetryable
-                  ? error.code
-                  : exhausted
-                    ? 'MAX_ATTEMPTS_EXCEEDED'
-                    : 'RESULT_REQUIRES_REVIEW',
+              lastErrorCode: terminalErrorCode,
               lastError: this.safeError(error),
             },
       });
       if (handler.recovery === 'manual_review' && job.payloadRef) {
         await this.markManualReviewTarget(job, 'execution_failed');
+      }
+      if (!safeReplay && handler.onTerminalFailure) {
+        try {
+          await handler.onTerminalFailure({
+            jobId,
+            payloadRef: job.payloadRef,
+            errorCode: terminalErrorCode,
+          });
+        } catch (callbackError) {
+          this.logger.error(`作业 ${jobId} 的领域失败收尾未完成：${this.safeError(callbackError)}`);
+        }
       }
       this.logger.warn(`作业 ${jobId} 执行失败：${this.safeError(error)}`);
     } finally {

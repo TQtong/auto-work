@@ -243,6 +243,8 @@ function ProfileSettings() {
               options={[
                 { value: 'git_name', label: 'Git 作者名称' },
                 { value: 'git_email', label: 'Git 作者邮箱' },
+                { value: 'gitlab_user_id', label: 'GitLab 用户 ID' },
+                { value: 'gitlab_username', label: 'GitLab 用户名' },
                 { value: 'jira_account_id', label: 'Jira Account ID' },
                 { value: 'jira_username', label: 'Jira 用户名' },
               ]}

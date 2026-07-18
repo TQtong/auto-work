@@ -8,6 +8,7 @@ import type { PrismaService } from '../src/infrastructure/database/prisma.servic
 import type { LocalSecurityService } from '../src/infrastructure/http/local-security.service.js';
 import { AuditService } from '../src/modules/audit/audit.service.js';
 import { QuarterlyReviewService } from '../src/modules/quarterly-reviews/quarterly-review.service.js';
+import { QuarterlyCompletenessService } from '../src/modules/quarterly-reviews/quarterly-completeness.service.js';
 import type { SessionService } from '../src/modules/session/session.service.js';
 
 describe('季度评审周期、指标模板与用户评分内核', () => {
@@ -46,6 +47,7 @@ describe('季度评审周期、指标模板与用户评分内核', () => {
       {
         sessionHash: (value: string) => createHash('sha256').update(value).digest('hex'),
       } as LocalSecurityService,
+      new QuarterlyCompletenessService(),
     );
   }, 60_000);
 
@@ -169,6 +171,10 @@ describe('季度评审周期、指标模板与用户评分内核', () => {
     const detail = await service.get(review.id);
     expect(detail.scores.map((score) => score.userScore)).toEqual([4.5, 4, 3.5]);
     expect(detail.scores.every((score) => score.aiSuggestedScore === null)).toBe(true);
+    expect(detail.completeness).toMatchObject({
+      scoreReasonCoverage: 1,
+      materialCompletenessOnly: true,
+    });
   });
 
   it('不完整评分也不能绕过单项步长、范围和理由校验', async () => {

@@ -19,9 +19,15 @@ export interface UpdateProfileInput {
 }
 
 export interface AddAliasInput {
-  aliasType: 'git_name' | 'git_email' | 'jira_account_id' | 'jira_username';
+  aliasType:
+    | 'git_name'
+    | 'git_email'
+    | 'gitlab_user_id'
+    | 'gitlab_username'
+    | 'jira_account_id'
+    | 'jira_username';
   value: string;
-  source: 'user' | 'git_config' | 'jira_connection';
+  source: 'user' | 'git_config' | 'gitlab_connection' | 'jira_connection';
   enabled: boolean;
 }
 
@@ -158,6 +164,8 @@ export class ProfileService {
 
   private normalizeAlias(type: AddAliasInput['aliasType'], value: string): string {
     const normalized = value.trim().normalize('NFKC');
-    return type === 'git_email' || type.startsWith('jira_') ? normalized.toLowerCase() : normalized;
+    return type === 'git_email' || type.endsWith('_username') || type.startsWith('jira_')
+      ? normalized.toLowerCase()
+      : normalized;
   }
 }

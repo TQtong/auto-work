@@ -15,6 +15,7 @@ import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import { LocalSecurityService } from '../../infrastructure/http/local-security.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { SessionService } from '../session/session.service.js';
+import { QuarterlyCompletenessService } from './quarterly-completeness.service.js';
 
 interface MutationContext {
   correlationId: string;
@@ -41,6 +42,7 @@ export class QuarterlyReviewService {
     private readonly sessions: SessionService,
     private readonly audit: AuditService,
     private readonly security: LocalSecurityService,
+    private readonly completeness: QuarterlyCompletenessService,
   ) {}
 
   public async list(input: { status?: string | undefined; limit: number }) {
@@ -288,6 +290,14 @@ export class QuarterlyReviewService {
       });
       if (!version)
         throw new DomainError(errorCodes.notFound, '指标模板版本不存在', { httpStatus: 404 });
+      if (review.metricTemplateVersionId === version.id) {
+        return {
+          reviewId,
+          templateVersionId: version.id,
+          reviewVersion: review.version,
+          replayed: true,
+        };
+      }
       await this.invalidateConfirmation(tx, review, '指标模板版本发生变化');
       for (const metric of version.metrics) {
         await tx.scoreItem.upsert({
@@ -301,15 +311,40 @@ export class QuarterlyReviewService {
           },
         });
       }
-      const updated = await tx.quarterlyReview.update({
-        where: { id: reviewId },
+      const obsoleteLinks = await tx.achievementMetricLink.findMany({
+        where: {
+          active: true,
+          achievement: { reviewId },
+          metric: { templateVersionId: { not: version.id } },
+        },
+        select: { id: true, achievementId: true },
+      });
+      if (obsoleteLinks.length > 0) {
+        await tx.achievementMetricLink.updateMany({
+          where: { id: { in: obsoleteLinks.map((link) => link.id) }, active: true },
+          data: { active: false, supersededAt: new Date() },
+        });
+        const changedAchievementIds = [...new Set(obsoleteLinks.map((link) => link.achievementId))];
+        await tx.achievement.updateMany({
+          where: { id: { in: changedAchievementIds }, reviewId },
+          data: { version: { increment: 1 } },
+        });
+      }
+      const completeness = await this.completeness.calculate(tx, reviewId, {
+        metricTemplateVersionId: version.id,
+      });
+      const changed = await tx.quarterlyReview.updateMany({
+        where: { id: reviewId, version: input.reviewVersion },
         data: {
           metricTemplateVersionId: version.id,
           status: 'scoring',
           currentConfirmationId: null,
+          completenessJson: JSON.stringify(completeness),
           version: { increment: 1 },
         },
       });
+      if (changed.count !== 1) this.versionConflict(input.reviewVersion);
+      const updated = await tx.quarterlyReview.findUniqueOrThrow({ where: { id: reviewId } });
       await this.audit.recordInTransaction(tx, {
         actorId: this.sessions.currentProfileId,
         action: 'quarterly_review.metric_template_bound',
@@ -317,7 +352,11 @@ export class QuarterlyReviewService {
         targetId: reviewId,
         correlationId: context.correlationId,
         outcome: 'succeeded',
-        after: { templateVersionId: version.id, templateContentHash: version.contentHash },
+        after: {
+          templateVersionId: version.id,
+          templateContentHash: version.contentHash,
+          invalidatedMetricLinkCount: obsoleteLinks.length,
+        },
         clientSessionHash: this.security.sessionHash(context.sessionId),
       });
       return { reviewId, templateVersionId: version.id, reviewVersion: updated.version };
@@ -435,10 +474,18 @@ export class QuarterlyReviewService {
         });
       }
       await this.invalidateConfirmation(tx, review, '用户评分或理由发生变化');
-      const updated = await tx.quarterlyReview.update({
-        where: { id: reviewId },
-        data: { status: 'scoring', currentConfirmationId: null, version: { increment: 1 } },
+      const completeness = await this.completeness.calculate(tx, reviewId);
+      const changed = await tx.quarterlyReview.updateMany({
+        where: { id: reviewId, version: input.reviewVersion },
+        data: {
+          status: 'scoring',
+          currentConfirmationId: null,
+          completenessJson: JSON.stringify(completeness),
+          version: { increment: 1 },
+        },
       });
+      if (changed.count !== 1) this.versionConflict(input.reviewVersion);
+      const updated = await tx.quarterlyReview.findUniqueOrThrow({ where: { id: reviewId } });
       await this.audit.recordInTransaction(tx, {
         actorId: this.sessions.currentProfileId,
         action: 'quarterly_review.scores_updated',

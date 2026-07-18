@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { DomainError } from '@auto-work/contracts';
 import { newId } from '@auto-work/domain';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
+import { JobRegistryService } from './job-registry.service.js';
 
 export interface EnqueueJobInput {
   type: string;
@@ -16,7 +17,10 @@ export interface EnqueueJobInput {
 
 @Injectable()
 export class JobQueueService {
-  public constructor(private readonly prisma: PrismaService) {}
+  public constructor(
+    private readonly prisma: PrismaService,
+    private readonly registry: JobRegistryService,
+  ) {}
 
   public async enqueue(input: EnqueueJobInput) {
     if (input.dedupeKey) {
@@ -69,6 +73,10 @@ export class JobQueueService {
       await this.prisma.job.update({
         where: { id: job.id },
         data: { status: 'cancelled', cancelRequested: true, completedAt: new Date() },
+      });
+      await this.registry.get(job.type)?.onQueuedCancellation?.({
+        jobId: job.id,
+        payloadRef: job.payloadRef,
       });
       return;
     }

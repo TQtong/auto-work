@@ -15,9 +15,16 @@ const updateProfileSchema = z
 
 const addAliasSchema = z
   .object({
-    aliasType: z.enum(['git_name', 'git_email', 'jira_account_id', 'jira_username']),
+    aliasType: z.enum([
+      'git_name',
+      'git_email',
+      'gitlab_user_id',
+      'gitlab_username',
+      'jira_account_id',
+      'jira_username',
+    ]),
     value: z.string().trim().min(1).max(320),
-    source: z.enum(['user', 'git_config', 'jira_connection']).default('user'),
+    source: z.enum(['user', 'git_config', 'gitlab_connection', 'jira_connection']).default('user'),
     enabled: z.boolean().default(false),
   })
   .strict();
