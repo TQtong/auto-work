@@ -325,10 +325,7 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
         // 即使数据库中的历史证据被异常数据污染，也只允许追加合法的退避毫秒数。
         const priorDelays = notification
           ? this.parseArray(notification.retryDelaysJson).flatMap((value) =>
-              typeof value === 'number' &&
-              Number.isInteger(value) &&
-              value >= 0 &&
-              value <= 30_000
+              typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 30_000
                 ? [value]
                 : [],
             )

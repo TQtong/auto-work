@@ -22,6 +22,10 @@ import {
   message,
 } from 'antd';
 import { useEffect, useState } from 'react';
+import {
+  weeklyReportWarningRuleCatalog,
+  type WeeklyReportWarningRuleCode,
+} from '@auto-work/contracts';
 import { apiRequest } from '../api/client.js';
 import type { GitLabProjectCache, IdentityAlias, Integration, UserProfile } from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
@@ -43,6 +47,8 @@ interface IntegrationFormValues {
   templateName?: string;
   robotName?: string;
   groupId?: string;
+  robotQuietWindowMinutes?: number;
+  severeRiskCodes?: WeeklyReportWarningRuleCode[];
   protocol?: 'openai_compatible' | 'anthropic' | 'gemini';
   model?: string;
   aiTimeoutMs?: number;
@@ -238,10 +244,15 @@ function ProfileSettings() {
 function IntegrationSettings() {
   const queryClient = useQueryClient();
   const [form] = Form.useForm<IntegrationFormValues>();
+  const [robotRiskForm] = Form.useForm<{
+    quietWindowMinutes: number;
+    severeRiskCodes: WeeklyReportWarningRuleCode[];
+  }>();
   const selectedType = Form.useWatch('type', form);
   const [open, setOpen] = useState(false);
   const [cacheConnection, setCacheConnection] = useState<Integration | null>(null);
   const [jiraConnection, setJiraConnection] = useState<Integration | null>(null);
+  const [robotRiskConnection, setRobotRiskConnection] = useState<Integration | null>(null);
   const [messageApi, holder] = message.useMessage();
   useEffect(() => {
     form.setFieldValue(
@@ -278,6 +289,32 @@ function IntegrationSettings() {
       form.resetFields();
       await refresh();
       void messageApi.success('连接已创建，请执行能力测试');
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+  const saveRobotRiskRules = useMutation({
+    mutationFn: (values: {
+      quietWindowMinutes: number;
+      severeRiskCodes: WeeklyReportWarningRuleCode[];
+    }) => {
+      if (!robotRiskConnection) throw new Error('尚未选择机器人连接');
+      return apiRequest<Integration>(`/api/v1/integrations/${robotRiskConnection.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          version: robotRiskConnection.version,
+          // 更新非秘密风险策略时保留机器人名称和群标识，不触碰保险箱凭证。
+          config: {
+            ...robotRiskConnection.config,
+            quietWindowMinutes: values.quietWindowMinutes,
+            severeRiskCodes: values.severeRiskCodes,
+          },
+        }),
+      });
+    },
+    onSuccess: async () => {
+      setRobotRiskConnection(null);
+      await refresh();
+      void messageApi.success('机器人严重风险规则与静默窗口已保存');
     },
     onError: (error: Error) => void messageApi.error(error.message),
   });
@@ -469,6 +506,20 @@ function IntegrationSettings() {
                     </Button>
                   </>
                 )}
+                {row.type === 'dingtalk_robot' && (
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      setRobotRiskConnection(row);
+                      robotRiskForm.setFieldsValue({
+                        quietWindowMinutes: robotQuietWindowMinutes(row.config),
+                        severeRiskCodes: robotSevereRiskCodes(row.config),
+                      });
+                    }}
+                  >
+                    严重风险规则
+                  </Button>
+                )}
                 <Popconfirm
                   title="禁用后定时同步和外部调用都会停止，历史记录仍保留。"
                   onConfirm={() => action.mutate({ row, kind: 'disable' })}
@@ -553,6 +604,45 @@ function IntegrationSettings() {
       </Modal>
       <JiraSettingsModal connection={jiraConnection} onClose={() => setJiraConnection(null)} />
       <Modal
+        title={`${robotRiskConnection?.name ?? '机器人'} · 严重风险规则`}
+        width={720}
+        open={Boolean(robotRiskConnection)}
+        onCancel={() => setRobotRiskConnection(null)}
+        onOk={() => robotRiskForm.submit()}
+        confirmLoading={saveRobotRiskRules.isPending}
+        destroyOnHidden
+      >
+        <Alert
+          type="warning"
+          showIcon
+          message="风险通知默认关闭，只有这里显式启用的规则才允许发送"
+          description="保存配置不会立即发消息。周报工作台仍需人工选择当前版本中的具体 warning 并确认；每次最多三项，完整周报与附件永不进入机器人正文。"
+          style={{ marginBottom: 16 }}
+        />
+        <Form
+          form={robotRiskForm}
+          layout="vertical"
+          onFinish={(values) => saveRobotRiskRules.mutate(values)}
+        >
+          <Form.Item name="severeRiskCodes" label="允许作为严重风险通知的规则">
+            <Checkbox.Group
+              options={weeklyReportWarningRuleCatalog.map((rule) => ({
+                value: rule.code,
+                label: `${rule.label}（${rule.code}）— ${rule.description}`,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item
+            name="quietWindowMinutes"
+            label="相同正文静默合并窗口（分钟）"
+            extra="0 表示不按正文静默合并；状态版本去重始终生效。最大 1440 分钟。"
+            rules={[{ required: true }]}
+          >
+            <InputNumber min={0} max={1_440} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
         title="新建外部连接"
         width={680}
         open={open}
@@ -576,6 +666,8 @@ function IntegrationSettings() {
             aiAllowedPurposes: ['weekly_report'],
             templateName: 'uTwin产研创新部周报',
             gitlabHistoryDays: 120,
+            robotQuietWindowMinutes: 30,
+            severeRiskCodes: [],
           }}
           onFinish={(values) => create.mutate(values)}
         >
@@ -699,6 +791,27 @@ function IntegrationFields({ type }: { type: Integration['type'] }) {
             <Input />
           </Form.Item>
         </div>
+        <Form.Item
+          name="severeRiskCodes"
+          label="严重风险规则（默认关闭）"
+          extra="只有选中的规则才会在周报工作台成为可发送风险；发送前仍需人工选择具体 warning。"
+        >
+          <Select
+            mode="multiple"
+            allowClear
+            options={weeklyReportWarningRuleCatalog.map((rule) => ({
+              value: rule.code,
+              label: `${rule.label}（${rule.code}）`,
+            }))}
+          />
+        </Form.Item>
+        <Form.Item
+          name="robotQuietWindowMinutes"
+          label="相同通知静默窗口（分钟）"
+          rules={[{ required: true }]}
+        >
+          <InputNumber min={0} max={1_440} precision={0} style={{ width: '100%' }} />
+        </Form.Item>
       </>
     );
   if (type === 'ai')
@@ -848,7 +961,12 @@ export function toIntegrationPayload(values: IntegrationFormValues) {
   if (values.type === 'dingtalk_robot')
     return {
       ...common,
-      config: { robotName: values.robotName, groupId: values.groupId, quietWindowMinutes: 30 },
+      config: {
+        robotName: values.robotName,
+        groupId: values.groupId,
+        quietWindowMinutes: values.robotQuietWindowMinutes ?? 30,
+        severeRiskCodes: values.severeRiskCodes ?? [],
+      },
       credential: { webhook: values.webhook, secret: values.secret },
     };
   return {
@@ -866,4 +984,27 @@ export function toIntegrationPayload(values: IntegrationFormValues) {
     },
     credential: { apiKey: values.apiKey },
   };
+}
+
+export function robotSevereRiskCodes(
+  config: Record<string, unknown>,
+): WeeklyReportWarningRuleCode[] {
+  const allowed = new Set<string>(weeklyReportWarningRuleCatalog.map((rule) => rule.code));
+  return Array.isArray(config.severeRiskCodes)
+    ? [
+        ...new Set(
+          config.severeRiskCodes.filter(
+            (code): code is WeeklyReportWarningRuleCode =>
+              typeof code === 'string' && allowed.has(code),
+          ),
+        ),
+      ]
+    : [];
+}
+
+function robotQuietWindowMinutes(config: Record<string, unknown>): number {
+  const value = config.quietWindowMinutes;
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 1_440
+    ? value
+    : 30;
 }

@@ -1,14 +1,27 @@
 import { Injectable } from '@nestjs/common';
 import type { RobotNotification } from '@prisma/client';
-import { DomainError, errorCodes } from '@auto-work/contracts';
+import {
+  DomainError,
+  errorCodes,
+  weeklyReportWarningRuleCatalog,
+  weeklyReportWarningRuleCodes,
+  type WeeklyReportWarningRuleCode,
+} from '@auto-work/contracts';
 import { newId, requestHash } from '@auto-work/domain';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import { LocalSecurityService } from '../../infrastructure/http/local-security.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { SessionService } from '../session/session.service.js';
-import type { NotifyWeeklyReportFailureInput } from './weekly-report.schemas.js';
+import type {
+  NotifyWeeklyReportFailureInput,
+  NotifyWeeklyReportRiskInput,
+} from './weekly-report.schemas.js';
 import { WeeklyReportNotificationLedgerService } from './weekly-report-notification-ledger.service.js';
-import { buildWeeklyReportRobotNotification } from './weekly-report-robot-notification.js';
+import {
+  buildWeeklyReportRobotNotification,
+  type WeeklyReportRobotNotificationFacts,
+  type WeeklyReportRobotNotificationType,
+} from './weekly-report-robot-notification.js';
 
 interface NotificationContext {
   correlationId: string;
@@ -77,18 +90,132 @@ export class WeeklyReportNotificationService {
       stage: '钉钉正式日志提交',
       safeErrorSummary: this.safeError(failedIntent.lastErrorSummary ?? failedIntent.lastErrorCode),
     };
-    const message = buildWeeklyReportRobotNotification(facts);
-    const jobId = newId();
-    const reservation = await this.prisma.$transaction(async (tx) => {
-      const reserved = await this.ledger.reserveInTransaction(tx, {
+    return this.queueNotification(
+      {
         reportId,
         connectionId: robot.id,
         notificationType: 'submission_failure',
         businessObjectKey: `delivery-intent:${failedIntent.id}`,
         stateVersion: failedIntent.version,
-        contentHash: requestHash({ notificationType: 'submission_failure', message }),
-        messageFacts: facts,
+        facts,
         quietWindowMinutes,
+        auditAction: 'weekly_report.failure_notification_requested',
+        auditFacts: { failedDeliveryIntentId: failedIntent.id },
+      },
+      context,
+    );
+  }
+
+  public async notifyRisk(
+    reportId: string,
+    input: NotifyWeeklyReportRiskInput,
+    context: NotificationContext,
+  ) {
+    const [report, version, robot] = await Promise.all([
+      this.prisma.weeklyReport.findFirst({
+        where: { id: reportId, ownerProfileId: this.sessions.currentProfileId, archivedAt: null },
+      }),
+      this.prisma.weeklyReportVersion.findFirst({
+        where: { id: input.versionId, reportId },
+      }),
+      this.prisma.integrationConnection.findUnique({ where: { id: input.robotConnectionId } }),
+    ]);
+    if (!report || !version) {
+      throw new DomainError(errorCodes.notFound, '周报或当前版本不存在', { httpStatus: 404 });
+    }
+    if (report.version !== input.reportVersion || report.currentVersionId !== version.id) {
+      throw new DomainError(errorCodes.versionConflict, '周报当前版本已变化，请刷新风险清单', {
+        httpStatus: 409,
+        suggestedAction: 'refresh',
+      });
+    }
+    this.assertRobot(robot);
+    const config = this.object(robot.configJson);
+    const configuredCodes = this.severeRiskCodes(config.severeRiskCodes);
+    if (configuredCodes.length === 0) {
+      throw new DomainError(
+        'WEEKLY_REPORT_SEVERE_RISK_RULES_DISABLED',
+        '目标机器人尚未配置任何严重风险规则',
+        { httpStatus: 422, suggestedAction: 'reconfigure' },
+      );
+    }
+    const warnings = this.warningFacts(version.warningsJson);
+    const warningById = new Map(warnings.map((warning) => [warning.id, warning]));
+    const selected = input.warningIds.map((warningId) => warningById.get(warningId));
+    if (selected.some((warning) => !warning)) {
+      throw new DomainError(
+        'WEEKLY_REPORT_RISK_WARNING_INVALID',
+        '风险清单包含不属于当前版本的 warning，请刷新后重试',
+        { httpStatus: 409, suggestedAction: 'refresh' },
+      );
+    }
+    const selectedWarnings = (selected as Array<(typeof warnings)[number]>).sort((left, right) =>
+      left.id.localeCompare(right.id),
+    );
+    const unconfiguredCodes = selectedWarnings
+      .map((warning) => warning.code)
+      .filter((code) => !configuredCodes.includes(code as WeeklyReportWarningRuleCode));
+    if (unconfiguredCodes.length > 0) {
+      throw new DomainError(
+        'WEEKLY_REPORT_RISK_RULE_NOT_CONFIGURED',
+        '所选 warning 不属于目标机器人已启用的严重风险规则',
+        { httpStatus: 422, details: { unconfiguredCodes }, suggestedAction: 'reconfigure' },
+      );
+    }
+    // 消息事实完全从服务端当前版本提取，客户端只能提交 warning ID，不能注入任意正文。
+    const facts = {
+      type: 'risk_alert' as const,
+      periodStart: report.periodStart,
+      periodEnd: report.periodEnd,
+      riskSummaries: this.safeRiskSummaries(selectedWarnings.map((warning) => warning.code)),
+    };
+    const selectedWarningIds = selectedWarnings.map((warning) => warning.id);
+    return this.queueNotification(
+      {
+        reportId,
+        connectionId: robot.id,
+        notificationType: 'risk_alert',
+        businessObjectKey: `weekly-report-risk:${reportId}:${requestHash(selectedWarningIds)}`,
+        stateVersion: version.versionNo,
+        facts,
+        quietWindowMinutes: this.quietWindowMinutes(config.quietWindowMinutes),
+        auditAction: 'weekly_report.risk_notification_requested',
+        auditFacts: {
+          versionId: version.id,
+          warningIds: selectedWarningIds,
+          warningCodes: selectedWarnings.map((warning) => warning.code),
+        },
+      },
+      context,
+    );
+  }
+
+  private async queueNotification(
+    input: {
+      reportId: string;
+      connectionId: string;
+      notificationType: WeeklyReportRobotNotificationType;
+      businessObjectKey: string;
+      stateVersion: number;
+      facts: WeeklyReportRobotNotificationFacts;
+      quietWindowMinutes: number;
+      auditAction: string;
+      auditFacts: Record<string, unknown>;
+    },
+    context: NotificationContext,
+  ) {
+    const message = buildWeeklyReportRobotNotification(input.facts);
+    const jobId = newId();
+    return this.prisma.$transaction(async (tx) => {
+      const reserved = await this.ledger.reserveInTransaction(tx, {
+        reportId: input.reportId,
+        connectionId: input.connectionId,
+        notificationType: input.notificationType,
+        businessObjectKey: input.businessObjectKey,
+        stateVersion: input.stateVersion,
+        contentHash: requestHash({ notificationType: input.notificationType, message }),
+        messageFacts: input.facts,
+        quietWindowMinutes: input.quietWindowMinutes,
         scheduledFor: new Date(),
         jobId,
       });
@@ -99,10 +226,10 @@ export class WeeklyReportNotificationService {
             type: 'weekly-report.notification',
             payloadRef: reserved.notification.id,
             payloadSummary: JSON.stringify({
-              reportId,
+              reportId: input.reportId,
               notificationId: reserved.notification.id,
-              notificationType: 'submission_failure',
-              connectionId: robot.id,
+              notificationType: input.notificationType,
+              connectionId: input.connectionId,
             }),
             scheduledAt: new Date(),
             maxAttempts: 1,
@@ -126,23 +253,22 @@ export class WeeklyReportNotificationService {
       });
       await this.audit.recordInTransaction(tx, {
         actorId: this.sessions.currentProfileId,
-        action: 'weekly_report.failure_notification_requested',
+        action: input.auditAction,
         targetType: 'robot_notification',
         targetId: reserved.notification.id,
         correlationId: context.correlationId,
         outcome: 'succeeded',
         after: {
-          reportId,
-          failedDeliveryIntentId: failedIntent.id,
-          connectionId: robot.id,
+          reportId: input.reportId,
+          connectionId: input.connectionId,
           disposition: reserved.disposition,
           contentHash: reserved.notification.contentHash,
+          ...input.auditFacts,
         },
         clientSessionHash: this.security.sessionHash(context.sessionId),
       });
       return response;
     });
-    return reservation;
   }
 
   private assertRobot(
@@ -152,6 +278,7 @@ export class WeeklyReportNotificationService {
       enabled: boolean;
       status: string;
       credentialRef: string | null;
+      pendingCredentialRef: string | null;
       configJson: string;
     } | null,
   ): asserts robot is NonNullable<typeof robot> {
@@ -160,9 +287,10 @@ export class WeeklyReportNotificationService {
       robot.type !== 'dingtalk_robot' ||
       !robot.enabled ||
       robot.status !== 'healthy' ||
-      !robot.credentialRef
+      !robot.credentialRef ||
+      robot.pendingCredentialRef
     ) {
-      throw new DomainError('DINGTALK_ROBOT_NOT_HEALTHY', '失败提醒要求已启用且测试健康的机器人', {
+      throw new DomainError('DINGTALK_ROBOT_NOT_HEALTHY', '业务提醒要求已启用且测试健康的机器人', {
         httpStatus: 422,
         suggestedAction: 'reconfigure',
       });
@@ -208,6 +336,60 @@ export class WeeklyReportNotificationService {
     return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 1_440
       ? value
       : 30;
+  }
+
+  private severeRiskCodes(value: unknown): WeeklyReportWarningRuleCode[] {
+    const allowed = new Set<string>(weeklyReportWarningRuleCodes);
+    return Array.isArray(value)
+      ? [
+          ...new Set(
+            value.filter(
+              (item): item is WeeklyReportWarningRuleCode =>
+                typeof item === 'string' && allowed.has(item),
+            ),
+          ),
+        ]
+      : [];
+  }
+
+  private warningFacts(value: string) {
+    let values: unknown = [];
+    try {
+      values = JSON.parse(value) as unknown;
+    } catch {
+      values = [];
+    }
+    if (!Array.isArray(values)) return [];
+    return values.flatMap((warning) => {
+      if (!warning || typeof warning !== 'object' || Array.isArray(warning)) return [];
+      const fact = warning as Record<string, unknown>;
+      if (typeof fact.code !== 'string' || typeof fact.message !== 'string') return [];
+      const message = fact.message
+        .replace(/[\0\r\n\t]/gu, ' ')
+        .replace(/\s+/gu, ' ')
+        .trim();
+      if (!message) return [];
+      return [
+        {
+          id: requestHash(fact),
+          code: fact.code,
+          message: message.slice(0, 160),
+        },
+      ];
+    });
+  }
+
+  private safeRiskSummaries(codes: string[]): string[] {
+    const catalog = new Map<string, string>(
+      weeklyReportWarningRuleCatalog.map((rule) => [rule.code, rule.label]),
+    );
+    const counts = new Map<string, number>();
+    for (const code of codes) counts.set(code, (counts.get(code) ?? 0) + 1);
+    // 群消息只透露规则类别和数量，任务标题、客户名称及来源正文只留在本机工作台。
+    return [...counts.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([code, count]) => `${catalog.get(code) ?? '严重风险'}（${code}，选中 ${count} 项）`)
+      .slice(0, 3);
   }
 
   private safeError(value: string | null): string {

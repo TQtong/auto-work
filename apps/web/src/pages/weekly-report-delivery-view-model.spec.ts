@@ -5,6 +5,7 @@ import {
   deliveryRecoveryOutcomeLabel,
   deliveryRecoveryStatusLabel,
   canNotifyFormalLogFailure,
+  eligibleSevereRiskWarnings,
 } from './weekly-report-delivery-view-model.js';
 
 describe('周报交付恢复视图模型', () => {
@@ -41,6 +42,25 @@ describe('周报交付恢复视图模型', () => {
     expect(canNotifyFormalLogFailure(intent({ channel: 'dingtalk_robot', status: 'failed' }))).toBe(
       false,
     );
+  });
+
+  it('严重风险选择仅包含机器人已配置且属于当前版本的 warning', () => {
+    const warnings = [
+      {
+        id: 'a'.repeat(64),
+        code: 'SOURCE_UNAVAILABLE',
+        message: 'Jira 当前不可用',
+        blocking: false,
+      },
+      { id: 'b'.repeat(64), code: 'SOURCE_STALE', message: '缓存过期', blocking: false },
+      { id: 'c'.repeat(64), code: 'UNCONFIRMED_EVIDENCE', message: '证据待确认', blocking: false },
+    ];
+    expect(
+      eligibleSevereRiskWarnings(warnings, {
+        severeRiskCodes: ['SOURCE_UNAVAILABLE', 'UNSUPPORTED_FORGED_CODE'],
+      }),
+    ).toEqual([warnings[0]]);
+    expect(eligibleSevereRiskWarnings(warnings, { severeRiskCodes: [] })).toEqual([]);
   });
 
   function intent(override: Partial<WeeklyReportDeliveryIntent> = {}): WeeklyReportDeliveryIntent {

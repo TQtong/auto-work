@@ -201,10 +201,7 @@ export class WeeklyReportNotificationHandler implements JobHandler, OnModuleInit
     const retryDelaysMs = Array.isArray(details.retryDelaysMs)
       ? details.retryDelaysMs.filter(
           (value): value is number =>
-            typeof value === 'number' &&
-            Number.isInteger(value) &&
-            value >= 0 &&
-            value <= 30_000,
+            typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 30_000,
         )
       : [];
     return {

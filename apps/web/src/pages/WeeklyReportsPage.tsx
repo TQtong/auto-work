@@ -68,6 +68,7 @@ import {
   canNotifyFormalLogFailure,
   deliveryRecoveryOutcomeLabel,
   deliveryRecoveryStatusLabel,
+  eligibleSevereRiskWarnings,
 } from './weekly-report-delivery-view-model.js';
 import {
   compareWeeklyFields,
@@ -216,6 +217,8 @@ export function WeeklyReportsPage() {
   const [selectedRecipientIds, setSelectedRecipientIds] = useState<string[]>([]);
   const [selectedSchedule, setSelectedSchedule] = useState<Dayjs | null>(null);
   const [selectedRobotConnectionId, setSelectedRobotConnectionId] = useState<string | null>(null);
+  const [riskNotificationOpen, setRiskNotificationOpen] = useState(false);
+  const [selectedRiskWarningIds, setSelectedRiskWarningIds] = useState<string[]>([]);
   const [manualResolutionIntent, setManualResolutionIntent] =
     useState<WeeklyReportDeliveryIntent | null>(null);
   const [deliveryRetryIntent, setDeliveryRetryIntent] = useState<WeeklyReportDeliveryIntent | null>(
@@ -596,6 +599,42 @@ export function WeeklyReportsPage() {
     onError: (error: Error) => void messageApi.error(error.message),
   });
 
+  const notifyRiskMutation = useMutation({
+    mutationFn: (input: {
+      reportId: string;
+      robotConnectionId: string;
+      versionId: string;
+      warningIds: string[];
+      reportVersion: number;
+    }) =>
+      apiRequest<NotificationRequestResult>(
+        `/api/v1/weekly-reports/${input.reportId}/notifications/risk`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey('weekly-notify-risk') },
+          body: JSON.stringify({
+            robotConnectionId: input.robotConnectionId,
+            versionId: input.versionId,
+            warningIds: input.warningIds,
+            reportVersion: input.reportVersion,
+          }),
+        },
+      ),
+    onSuccess: async (response, input) => {
+      setRiskNotificationOpen(false);
+      setSelectedRiskWarningIds([]);
+      await invalidateReport(input.reportId);
+      void messageApi.success(
+        response.data.disposition === 'created'
+          ? '严重风险提醒已进入独立通知队列'
+          : response.data.disposition === 'coalesced'
+            ? '相同风险提醒仍在静默窗口，已合并且不会重复发送'
+            : '当前版本的相同风险提醒已经存在，不会重复发送',
+      );
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+
   const reconcileDeliveryMutation = useMutation({
     mutationFn: (input: { reportId: string; intentId: string; intentVersion: number }) =>
       apiRequest<DeliveryRecoveryResult>(
@@ -832,6 +871,11 @@ export function WeeklyReportsPage() {
   }, [selectedReportId]);
 
   useEffect(() => {
+    setRiskNotificationOpen(false);
+    setSelectedRiskWarningIds([]);
+  }, [selectedReportId, currentVersionId, selectedRobotConnectionId]);
+
+  useEffect(() => {
     if (!version) return;
     form.setFieldsValue({
       reportDate: dayjs(version.fields.reportDate),
@@ -910,6 +954,13 @@ export function WeeklyReportsPage() {
       : [];
   const deliveryItems = deliveries.data?.data ?? [];
   const notificationItems = notifications.data?.data ?? [];
+  const selectedRobotConnection = healthyRobotConnections.find(
+    (connection) => connection.id === selectedRobotConnectionId,
+  );
+  const severeRiskWarnings = eligibleSevereRiskWarnings(
+    version?.warnings ?? [],
+    selectedRobotConnection?.config ?? null,
+  );
   const logIntent = deliveryItems.find((intent) => intent.channel === 'dingtalk_log') ?? null;
   const selectedRobotIntent =
     deliveryItems.find(
@@ -933,6 +984,8 @@ export function WeeklyReportsPage() {
     Boolean(selectedRobotIntent);
   const failureNotificationBlocked =
     !report || !canNotifyFormalLogFailure(logIntent) || !selectedRobotConnectionId;
+  const riskNotificationBlocked =
+    !report || !version || !selectedRobotConnectionId || severeRiskWarnings.length === 0;
 
   const saveFieldsNow = () => {
     if (!report || !version) return;
@@ -1509,6 +1562,17 @@ export function WeeklyReportsPage() {
                   onClick={confirmNotifyFailure}
                 >
                   发送失败提醒
+                </Button>
+                <Button
+                  icon={<ExclamationCircleOutlined />}
+                  disabled={riskNotificationBlocked}
+                  loading={notifyRiskMutation.isPending}
+                  onClick={() => {
+                    setSelectedRiskWarningIds([]);
+                    setRiskNotificationOpen(true);
+                  }}
+                >
+                  发送严重风险提醒
                 </Button>
               </Space>
 
@@ -2512,6 +2576,81 @@ export function WeeklyReportsPage() {
             )}
           </Space>
         )}
+      </Modal>
+
+      <Modal
+        title="选择当前版本的严重风险"
+        width={760}
+        open={riskNotificationOpen}
+        onCancel={() => setRiskNotificationOpen(false)}
+        okText="确认发送风险短摘要"
+        cancelText="取消"
+        confirmLoading={notifyRiskMutation.isPending}
+        okButtonProps={{
+          danger: true,
+          disabled: selectedRiskWarningIds.length < 1 || selectedRiskWarningIds.length > 3,
+        }}
+        onOk={() => {
+          if (
+            !report ||
+            !version ||
+            !selectedRobotConnectionId ||
+            selectedRiskWarningIds.length < 1 ||
+            selectedRiskWarningIds.length > 3
+          )
+            return;
+          notifyRiskMutation.mutate({
+            reportId: report.id,
+            robotConnectionId: selectedRobotConnectionId,
+            versionId: version.id,
+            warningIds: selectedRiskWarningIds,
+            reportVersion: report.version,
+          });
+        }}
+      >
+        <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <Alert
+            type="warning"
+            showIcon
+            message="只发送已配置规则对应的当前版本 warning，最多三项"
+            description="正文由服务端从当前不可变版本提取并生成固定短模板；页面不能提交任意风险文字，六字段全文、附件、凭证和本机链接不会外发。"
+          />
+          <Typography.Text>
+            目标机器人：{selectedRobotConnection?.name ?? selectedRobotConnectionId ?? '未选择'}
+          </Typography.Text>
+          {severeRiskWarnings.length === 0 ? (
+            <Empty description="当前版本没有符合机器人严重规则配置的 warning" />
+          ) : (
+            <Checkbox.Group
+              value={selectedRiskWarningIds}
+              onChange={(values) => setSelectedRiskWarningIds(values.slice(0, 3))}
+              style={{ width: '100%' }}
+            >
+              <Space direction="vertical" style={{ width: '100%' }}>
+                {severeRiskWarnings.map((warning) => (
+                  <Card size="small" key={warning.id}>
+                    <Checkbox
+                      value={warning.id}
+                      disabled={
+                        selectedRiskWarningIds.length >= 3 &&
+                        !selectedRiskWarningIds.includes(warning.id)
+                      }
+                    >
+                      <Space wrap>
+                        <Tag color="red">{warning.code}</Tag>
+                        <Typography.Text>{warning.message}</Typography.Text>
+                      </Space>
+                    </Checkbox>
+                  </Card>
+                ))}
+              </Space>
+            </Checkbox.Group>
+          )}
+          <Typography.Text type="secondary">
+            已选择 {selectedRiskWarningIds.length}/3
+            项；状态版本去重和机器人静默窗口仍会在服务端生效。
+          </Typography.Text>
+        </Space>
       </Modal>
 
       <Drawer

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { DomainError } from '@auto-work/contracts';
+import { requestHash } from '@auto-work/domain';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../src/infrastructure/database/prisma.service.js';
 import type { LocalSecurityService } from '../src/infrastructure/http/local-security.service.js';
@@ -411,6 +412,170 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       execute(runtime.notificationHandler, queued.notification.id),
     ).rejects.toMatchObject({ code: 'ROBOT_NOTIFICATION_NOT_EXECUTABLE' });
     expect(sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it('严重风险提醒只采用当前版本已配置 warning，并按状态版本去重和静默合并', async () => {
+    const riskWarnings = [
+      {
+        code: 'SOURCE_UNAVAILABLE',
+        message: 'Jira 来源当前不可用，请核对同步状态',
+        sourceRefs: [{ type: 'task', id: 'task-risk-1' }],
+        blocking: false,
+      },
+      {
+        code: 'SOURCE_STALE',
+        message: 'Git 证据缓存已经过期，请刷新后确认',
+        sourceRefs: [{ type: 'evidence', id: 'evidence-risk-2' }],
+        blocking: false,
+      },
+      {
+        code: 'UNCONFIRMED_EVIDENCE',
+        message: '这条未配置规则不得发送',
+        sourceRefs: [],
+        blocking: false,
+      },
+    ];
+    const fixture = await seedConfirmedReport({
+      warnings: riskWarnings,
+      severeRiskCodes: ['SOURCE_UNAVAILABLE', 'SOURCE_STALE'],
+      quietWindowMinutes: 30,
+    });
+    const sendText = vi.fn().mockResolvedValue({
+      requestId: 'risk-notification-request',
+      timestamp: Date.now(),
+      providerCallCount: 1,
+      retryDelaysMs: [],
+    });
+    const runtime = createRuntime(vi.fn(), sendText);
+    const warningIds = riskWarnings.slice(0, 2).map((warning) => requestHash(warning));
+    const firstRecord = await seedIdempotency(fixture.suffix, 'risk-notification-first');
+    const first = await runtime.notifications.notifyRisk(
+      fixture.reportId,
+      {
+        robotConnectionId: fixture.robotConnectionId,
+        versionId: fixture.versionId,
+        warningIds,
+        reportVersion: fixture.reportVersion,
+      },
+      context(firstRecord),
+    );
+    expect(first.disposition).toBe('created');
+    await execute(runtime.notificationHandler, first.notification.id);
+
+    expect(sendText).toHaveBeenCalledOnce();
+    const sent = sendText.mock.calls[0]![0] as Parameters<DingTalkRobotClient['sendText']>[0];
+    expect(sent.text).toContain('来源不可用（SOURCE_UNAVAILABLE，选中 1 项）');
+    expect(sent.text).toContain('来源数据过期（SOURCE_STALE，选中 1 项）');
+    expect(sent.text).not.toContain('Jira 来源当前不可用');
+    expect(sent.text).not.toContain('Git 证据缓存已经过期');
+    expect(sent.text).not.toContain('这条未配置规则不得发送');
+    expect(sent.text).not.toContain('仅正式日志可见的完整工作正文');
+
+    const duplicateRecord = await seedIdempotency(fixture.suffix, 'risk-notification-duplicate');
+    const duplicate = await runtime.notifications.notifyRisk(
+      fixture.reportId,
+      {
+        robotConnectionId: fixture.robotConnectionId,
+        versionId: fixture.versionId,
+        warningIds: [...warningIds].reverse(),
+        reportVersion: fixture.reportVersion,
+      },
+      context(duplicateRecord),
+    );
+    expect(duplicate).toMatchObject({
+      disposition: 'duplicate',
+      notification: { id: first.notification.id },
+    });
+
+    const baseVersion = await prisma.weeklyReportVersion.findUniqueOrThrow({
+      where: { id: fixture.versionId },
+    });
+    const nextVersionId = `${fixture.versionId}-risk-next`;
+    await prisma.weeklyReportVersion.create({
+      data: {
+        id: nextVersionId,
+        reportId: baseVersion.reportId,
+        versionNo: 2,
+        origin: 'manual',
+        parentVersionId: baseVersion.id,
+        reportDateText: baseVersion.reportDateText,
+        recentGoalsText: baseVersion.recentGoalsText,
+        weeklyWorkText: baseVersion.weeklyWorkText,
+        nextWeekPlansText: baseVersion.nextWeekPlansText,
+        problemsText: baseVersion.problemsText,
+        otherText: baseVersion.otherText,
+        fieldsJson: baseVersion.fieldsJson,
+        warningsJson: baseVersion.warningsJson,
+        attachmentsJson: baseVersion.attachmentsJson,
+        recipientScopeJson: baseVersion.recipientScopeJson,
+        templateMappingVersionId: baseVersion.templateMappingVersionId,
+        scheduleAt: baseVersion.scheduleAt,
+        sourceSnapshotId: baseVersion.sourceSnapshotId,
+        contentHash: '7'.repeat(64),
+        changeSummaryJson: JSON.stringify({ kind: 'risk-quiet-window-test' }),
+        createdBy: 'local-user',
+      },
+    });
+    const nextReport = await prisma.weeklyReport.update({
+      where: { id: fixture.reportId },
+      data: { currentVersionId: nextVersionId, version: { increment: 1 } },
+    });
+    const coalescedRecord = await seedIdempotency(fixture.suffix, 'risk-notification-coalesced');
+    const coalesced = await runtime.notifications.notifyRisk(
+      fixture.reportId,
+      {
+        robotConnectionId: fixture.robotConnectionId,
+        versionId: nextVersionId,
+        warningIds,
+        reportVersion: nextReport.version,
+      },
+      context(coalescedRecord),
+    );
+    expect(coalesced).toMatchObject({
+      disposition: 'coalesced',
+      notification: { id: first.notification.id, coalescedCount: 1 },
+    });
+    expect(sendText).toHaveBeenCalledOnce();
+  });
+
+  it('严重风险提醒拒绝伪造 warning ID 和未配置规则', async () => {
+    const riskWarnings = [
+      { code: 'SOURCE_UNAVAILABLE', message: '允许的风险', sourceRefs: [], blocking: false },
+      { code: 'SOURCE_STALE', message: '未配置的风险', sourceRefs: [], blocking: false },
+    ];
+    const fixture = await seedConfirmedReport({
+      warnings: riskWarnings,
+      severeRiskCodes: ['SOURCE_UNAVAILABLE'],
+    });
+    const runtime = createRuntime(vi.fn(), vi.fn());
+    const forgedRecord = await seedIdempotency(fixture.suffix, 'risk-forged-warning');
+    await expect(
+      runtime.notifications.notifyRisk(
+        fixture.reportId,
+        {
+          robotConnectionId: fixture.robotConnectionId,
+          versionId: fixture.versionId,
+          warningIds: ['f'.repeat(64)],
+          reportVersion: fixture.reportVersion,
+        },
+        context(forgedRecord),
+      ),
+    ).rejects.toMatchObject({ code: 'WEEKLY_REPORT_RISK_WARNING_INVALID' });
+
+    const unconfiguredRecord = await seedIdempotency(fixture.suffix, 'risk-unconfigured-warning');
+    await expect(
+      runtime.notifications.notifyRisk(
+        fixture.reportId,
+        {
+          robotConnectionId: fixture.robotConnectionId,
+          versionId: fixture.versionId,
+          warningIds: [requestHash(riskWarnings[1]!)],
+          reportVersion: fixture.reportVersion,
+        },
+        context(unconfiguredRecord),
+      ),
+    ).rejects.toMatchObject({ code: 'WEEKLY_REPORT_RISK_RULE_NOT_CONFIGURED' });
+    expect(await prisma.robotNotification.count({ where: { reportId: fixture.reportId } })).toBe(0);
   });
 
   it('超时结果进入 unknown 且重复请求不会盲目创建第二次外部调用', async () => {
@@ -830,6 +995,9 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
   async function seedConfirmedReport(options?: {
     hasAttachment?: boolean;
     expiredMapping?: boolean;
+    warnings?: Array<Record<string, unknown>>;
+    severeRiskCodes?: string[];
+    quietWindowMinutes?: number;
   }) {
     sequence += 1;
     const suffix = String(sequence);
@@ -868,7 +1036,12 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
           enabled: true,
           status: 'healthy',
           capabilitiesJson: JSON.stringify({ fullReportForbidden: true }),
-          configJson: JSON.stringify({ robotName: '研发群机器人', groupId: 'group-1' }),
+          configJson: JSON.stringify({
+            robotName: '研发群机器人',
+            groupId: 'group-1',
+            quietWindowMinutes: options?.quietWindowMinutes ?? 30,
+            severeRiskCodes: options?.severeRiskCodes ?? [],
+          }),
         },
       ],
     });
@@ -978,6 +1151,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
         problemsText: '暂无',
         otherText: '无',
         fieldsJson: '{}',
+        warningsJson: JSON.stringify(options?.warnings ?? []),
         attachmentsJson: JSON.stringify(attachments),
         recipientScopeJson: JSON.stringify({ recipients }),
         templateMappingVersionId: mappingVersionId,

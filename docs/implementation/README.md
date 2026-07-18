@@ -33,7 +33,7 @@
 | 04C3b1   | 机器人 429/5xx 有界重试与调用证据                 | [阶段四 C3b1 实现与验证](./phase-4c3b1-dingtalk-robot-retry.md)              | implemented |
 | 04C3b2a  | 通知账本、安全模板、状态版本去重与静默合并        | [阶段四 C3b2a 实现与验证](./phase-4c3b2a-robot-notification-ledger.md)       | implemented |
 | 04C3b2b1 | 明确失败提醒、独立通知作业/API 与页面账本         | [阶段四 C3b2b1 实现与验证](./phase-4c3b2b1-failure-notification-workflow.md) | implemented |
-| 04C3b2b2 | 严重风险规则配置、风险通知触发与页面选择          | 待提交                                                                       | planned     |
+| 04C3b2b2 | 严重风险规则配置、风险通知触发与页面选择          | [阶段四 C3b2b2 实现与验证](./phase-4c3b2b2-severe-risk-notification.md)      | verified    |
 | 04C3b3   | 提醒调度、休眠补偿与复制导出降级                  | 待提交                                                                       | planned     |
 | 05       | 季度绩效、导出、运维与发布门禁                    | 待提交                                                                       | planned     |
 

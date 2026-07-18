@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
-import { DomainError, errorCodes } from '@auto-work/contracts';
+import { DomainError, errorCodes, weeklyReportWarningRuleCodes } from '@auto-work/contracts';
 import { newId, normalizeHttpsBaseUrl, requestHash } from '@auto-work/domain';
 import type { CredentialVault } from '../../infrastructure/vault/credential-vault.js';
 import { CREDENTIAL_VAULT } from '../../infrastructure/vault/credential-vault.js';
@@ -43,6 +43,11 @@ const configSchemas = {
       robotName: z.string().trim().min(1).max(100),
       groupId: z.string().trim().min(1).max(200),
       quietWindowMinutes: z.number().int().min(0).max(1_440).default(30),
+      severeRiskCodes: z
+        .array(z.enum(weeklyReportWarningRuleCodes))
+        .max(weeklyReportWarningRuleCodes.length)
+        .refine((codes) => new Set(codes).size === codes.length, '严重风险规则不得重复')
+        .default([]),
     })
     .strict(),
   ai: aiProviderConfigSchema,

@@ -28,6 +28,7 @@ import {
   notifyWeeklyReportGroupSchema,
   notifyWeeklyReportFailureSchema,
   reconcileWeeklyReportDeliverySchema,
+  notifyWeeklyReportRiskSchema,
   rejectWeeklyAiSuggestionSchema,
   resolveWeeklyReportDeliverySchema,
   restoreWeeklyReportVersionSchema,
@@ -87,6 +88,24 @@ export class WeeklyReportController {
   @Get(':id/notifications')
   public async notificationList(@Param('id') id: string, @Req() request: FastifyRequest) {
     return apiResponse(await this.notifications.list(id), request.autoWork.correlationId);
+  }
+
+  @Post(':id/notifications/risk')
+  @HttpCode(202)
+  public async notifyRisk(
+    @Param('id') id: string,
+    @Body() rawBody: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = notifyWeeklyReportRiskSchema.parse(rawBody);
+    return this.mutate(
+      `/api/v1/weekly-reports/${id}/notifications/risk`,
+      key,
+      { id, ...input },
+      request,
+      (recordId) => this.notifications.notifyRisk(id, input, this.context(request, recordId)),
+    );
   }
 
   @Get(':id')

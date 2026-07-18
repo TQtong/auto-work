@@ -231,6 +231,23 @@ export const notifyWeeklyReportFailureSchema = z
   })
   .strict();
 
+export const notifyWeeklyReportRiskSchema = z
+  .object({
+    robotConnectionId: z.string().trim().min(1).max(100),
+    versionId: z.string().trim().min(1).max(100),
+    warningIds: z
+      .array(z.string().regex(/^[a-f0-9]{64}$/u))
+      .min(1)
+      .max(3),
+    reportVersion: z.number().int().positive(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.warningIds).size !== value.warningIds.length) {
+      context.addIssue({ code: 'custom', message: '严重风险 warning ID 不得重复' });
+    }
+  });
+
 export const reconcileWeeklyReportDeliverySchema = z
   .object({
     intentVersion: z.number().int().positive(),
@@ -282,6 +299,7 @@ export type RejectWeeklyAiSuggestionInput = z.infer<typeof rejectWeeklyAiSuggest
 export type SubmitWeeklyReportLogInput = z.infer<typeof submitWeeklyReportLogSchema>;
 export type NotifyWeeklyReportGroupInput = z.infer<typeof notifyWeeklyReportGroupSchema>;
 export type NotifyWeeklyReportFailureInput = z.infer<typeof notifyWeeklyReportFailureSchema>;
+export type NotifyWeeklyReportRiskInput = z.infer<typeof notifyWeeklyReportRiskSchema>;
 export type ReconcileWeeklyReportDeliveryInput = z.infer<
   typeof reconcileWeeklyReportDeliverySchema
 >;

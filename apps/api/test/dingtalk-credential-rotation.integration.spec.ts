@@ -138,6 +138,12 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
       credentialMask: null,
       credentialReplacementPending: true,
       status: 'unknown',
+      config: {
+        robotName: '研发机器人',
+        groupId: 'group-1',
+        quietWindowMinutes: 30,
+        severeRiskCodes: [],
+      },
     });
     expect(createdRow).toMatchObject({ credentialRef: null });
     expect(firstPendingReference).not.toBeNull();
@@ -165,6 +171,27 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
     expect(queuedTests[0]).toMatchObject({ maxAttempts: 1 });
     expect(queuedTests[1]!.dedupeKey).toBe(queuedTests[0]!.dedupeKey);
     probeSpy.mockRestore();
+  });
+
+  it('严重风险规则只接受共享目录代码，拒绝客户端自造规则', async () => {
+    await expect(
+      integrations.create(
+        {
+          type: 'dingtalk_robot',
+          name: '伪造风险规则机器人',
+          config: {
+            robotName: '风险机器人',
+            groupId: 'group-risk-invalid',
+            quietWindowMinutes: 30,
+            severeRiskCodes: ['CLIENT_FORGED_RULE'],
+          },
+        },
+        { correlationId: 'risk-rule-invalid', sessionId: 'rotation-session' },
+      ),
+    ).rejects.toThrow();
+    expect(
+      await prisma.integrationConnection.count({ where: { name: '伪造风险规则机器人' } }),
+    ).toBe(0);
   });
 
   it('固定消息测试成功后原子提升新凭证并清除旧保险箱引用', async () => {

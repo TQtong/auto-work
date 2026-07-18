@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { toIntegrationPayload } from './SettingsPage.js';
+import { robotSevereRiskCodes, toIntegrationPayload } from './SettingsPage.js';
 
 describe('AI 连接配置视图模型', () => {
   it('完整提交协议、模型、超时、Token、温度、用途和一次性密钥', () => {
@@ -77,11 +77,29 @@ describe('AI 连接配置视图模型', () => {
       type: 'dingtalk_robot',
       name: '研发通知',
       baseUrl: undefined,
-      config: { robotName: '研发机器人', groupId: 'group-1', quietWindowMinutes: 30 },
+      config: {
+        robotName: '研发机器人',
+        groupId: 'group-1',
+        quietWindowMinutes: 30,
+        severeRiskCodes: [],
+      },
       credential: {
         webhook: 'https://oapi.dingtalk.com/robot/send?access_token=token',
         secret: 'secret-value',
       },
     });
+  });
+
+  it('机器人严重风险配置仅保留共享目录中的规则并去重', () => {
+    expect(
+      robotSevereRiskCodes({
+        severeRiskCodes: [
+          'SOURCE_UNAVAILABLE',
+          'FORGED_RULE',
+          'SOURCE_UNAVAILABLE',
+          'AI_GENERATED_CONTENT',
+        ],
+      }),
+    ).toEqual(['SOURCE_UNAVAILABLE', 'AI_GENERATED_CONTENT']);
   });
 });
