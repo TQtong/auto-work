@@ -26,4 +26,8 @@ export default tseslint.config(
       '@typescript-eslint/no-floating-promises': 'error',
     },
   },
+  {
+    ...tseslint.configs.disableTypeChecked,
+    files: ['scripts/benchmarks/*.mjs'],
+  },
 );

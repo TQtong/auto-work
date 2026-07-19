@@ -10,12 +10,12 @@
   "scripts": {
     "build": "pnpm -r --if-present build",
     "dev": "pnpm --parallel --filter @auto-work/api --filter @auto-work/web dev",
-    "lint": "pnpm -r --if-present lint",
+    "lint": "pnpm -r --if-present lint && eslint scripts/benchmarks/*.mjs",
     "test": "pnpm -r --if-present test",
     "test:coverage": "pnpm -r --if-present test:coverage",
     "typecheck": "pnpm --filter @auto-work/contracts build && pnpm --filter @auto-work/domain build && pnpm --filter @auto-work/api typecheck && pnpm --filter @auto-work/web typecheck",
-    "format": "prettier --write package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs .prettierrc.json apps packages scripts/release .github docs/operations README.md",
-    "format:check": "prettier --check package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs .prettierrc.json apps packages scripts/release .github docs/operations README.md",
+    "format": "prettier --write package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs .prettierrc.json apps packages scripts/release scripts/benchmarks .github docs/operations README.md",
+    "format:check": "prettier --check package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs .prettierrc.json apps packages scripts/release scripts/benchmarks .github docs/operations README.md",
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "db:generate": "pnpm --filter @auto-work/api prisma:generate",
     "db:migrate": "pnpm --filter @auto-work/api prisma:migrate",
@@ -26,6 +26,7 @@
     "security:secrets": "node scripts/release/scan-secrets.mjs",
     "sbom:generate": "node scripts/release/generate-sbom.mjs",
     "sbom:validate": "node scripts/release/validate-sbom.mjs",
+    "benchmark:nfr": "pnpm build && node scripts/benchmarks/nfr-performance.mjs",
     "release:package": "pnpm build && node scripts/release/create-release.mjs",
     "release:gate": "node scripts/release/release-gate.mjs"
   },
