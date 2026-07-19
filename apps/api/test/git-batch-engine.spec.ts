@@ -202,7 +202,7 @@ describe.runIf(process.platform === 'win32')('受限 Git 批次动作引擎', ()
     expect(git(repositoryDirectory, ['branch', '--show-current'], true).trim()).toBe(
       '功能/中文-branch',
     );
-  });
+  }, 15_000); // 真实 Git 仓库会执行预览、快照校验和分支切换，Windows CI 不应沿用纯单元测试的 5 秒预算。
 
   it('创建并切换分支前阻断脏工作区，预览与执行均不会覆盖修改', async () => {
     await writeFile(join(repositoryDirectory, '中文 文件.txt'), '尚未提交的修改\n', 'utf8');

@@ -9,7 +9,7 @@
     "start": "node dist/main.js",
     "lint": "eslint src test",
     "test": "pnpm run test:main && pnpm run test:windows-vault",
-    "test:main": "vitest run --exclude test/windows-dpapi-vault.spec.ts",
+    "test:main": "vitest run --exclude test/windows-dpapi-vault.spec.ts --maxWorkers=1",
     "test:windows-vault": "vitest run test/windows-dpapi-vault.spec.ts --maxWorkers=1",
     "test:coverage": "vitest run --coverage --maxWorkers=1",
     "typecheck": "tsc -p tsconfig.json --noEmit",
