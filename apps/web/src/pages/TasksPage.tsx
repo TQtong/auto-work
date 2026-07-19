@@ -4,9 +4,14 @@ import {
   Alert,
   Button,
   Card,
+  Collapse,
+  DatePicker,
   Descriptions,
   Drawer,
   Empty,
+  Input,
+  Pagination,
+  Segmented,
   Select,
   Space,
   Table,
@@ -15,13 +20,15 @@ import {
   Typography,
   message,
 } from 'antd';
-import { useMemo, useState } from 'react';
+import type { TableColumnsType } from 'antd';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest } from '../api/client.js';
-import type { Integration, TaskDetail, TaskSummary } from '../api/types.js';
+import type { Integration, ProjectSummary, TaskDetail, TaskSummary } from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
 import { ExcelImportModal } from './ExcelImportModal.js';
 import { TaskEvidencePanel } from './TaskEvidencePanel.js';
 import { evidenceStateLabel } from './evidence-view-model.js';
+import { buildTaskQuery, groupTasksByParent } from './task-view-model.js';
 
 const statusOptions = [
   { value: 'planned', label: '计划中' },
@@ -36,9 +43,20 @@ export function TasksPage() {
   const queryClient = useQueryClient();
   const [messageApi, holder] = message.useMessage();
   const [status, setStatus] = useState<string>();
+  const [rawStatus, setRawStatus] = useState<string>();
   const [currentUser, setCurrentUser] = useState<string>('true');
   const [connectionId, setConnectionId] = useState<string>();
+  const [projectId, setProjectId] = useState<string>();
+  const [parentIssueKey, setParentIssueKey] = useState<string>();
+  const [sprintId, setSprintId] = useState<string>();
+  const [source, setSource] = useState<string>();
   const [evidenceState, setEvidenceState] = useState<string>();
+  const [visibility, setVisibility] = useState('visible');
+  const [dateRange, setDateRange] = useState<[string, string] | undefined>();
+  const [viewMode, setViewMode] = useState<'list' | 'parent'>('list');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const pageCursors = useRef(new Map<number, string | undefined>([[1, undefined]]));
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [excelImportOpen, setExcelImportOpen] = useState(false);
   const integrations = useQuery({
@@ -49,19 +67,41 @@ export function TasksPage() {
     () => (integrations.data?.data ?? []).filter((item) => item.type === 'jira'),
     [integrations.data],
   );
-  const queryString = new URLSearchParams({
-    limit: '100',
-    visibility: 'visible',
-    ...(status ? { status } : {}),
-    ...(currentUser ? { currentUser } : {}),
-    ...(connectionId ? { connectionId } : {}),
-    ...(evidenceState ? { evidenceState } : {}),
-  }).toString();
+  const projects = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => apiRequest<ProjectSummary[]>('/api/v1/projects'),
+  });
+  const queryString = buildTaskQuery(
+    {
+      status,
+      rawStatus,
+      currentUser,
+      connectionId,
+      projectId,
+      parentIssueKey,
+      sprintId,
+      source,
+      evidenceState,
+      visibility,
+      dateFrom: dateRange?.[0],
+      dateTo: dateRange?.[1],
+    },
+    { limit: pageSize, cursor: pageCursors.current.get(page) },
+  );
   const tasks = useQuery({
-    queryKey: ['tasks', status, currentUser, connectionId, evidenceState],
+    queryKey: ['tasks', queryString],
     queryFn: () => apiRequest<TaskSummary[]>(`/api/v1/tasks?${queryString}`),
     refetchInterval: 15_000,
   });
+  useEffect(() => {
+    const nextCursor = tasks.data?.page?.nextCursor;
+    if (nextCursor) pageCursors.current.set(page + 1, nextCursor);
+  }, [page, tasks.data?.page?.nextCursor]);
+
+  const resetPagination = () => {
+    pageCursors.current = new Map([[1, undefined]]);
+    setPage(1);
+  };
   const detail = useQuery({
     queryKey: ['task-detail', selectedTaskId],
     queryFn: () => {
@@ -91,6 +131,101 @@ export function TasksPage() {
     },
     { total: 0 } as Record<string, number>,
   );
+  const parentGroups = groupTasksByParent(taskItems);
+  const taskColumns: TableColumnsType<TaskSummary> = [
+    {
+      title: '任务',
+      width: 380,
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          <Space>
+            <Typography.Text strong>{row.issueKey ?? '本地补充'}</Typography.Text>
+            <Tag>{row.issueType ?? row.source}</Tag>
+          </Space>
+          <Typography.Text>{row.title}</Typography.Text>
+          {row.parent.issueKey && (
+            <Typography.Text type="secondary">
+              父任务：{row.parent.issueKey} · {row.parent.title}
+            </Typography.Text>
+          )}
+          {row.sprints.length > 0 && (
+            <Typography.Text type="secondary">
+              Sprint：
+              {row.sprints.map((sprint) => sprint.name ?? sprint.id ?? sprint.raw).join('、')}
+            </Typography.Text>
+          )}
+        </Space>
+      ),
+    },
+    {
+      title: '状态',
+      width: 170,
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          <StatusTag status={row.status.normalized} />
+          <Typography.Text type="secondary">原始：{row.status.rawName ?? '未返回'}</Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: '排期',
+      width: 180,
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>开始 {row.schedule.plannedStartDate ?? '—'}</Typography.Text>
+          <Typography.Text>到期 {row.schedule.dueDate ?? '—'}</Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: '工时',
+      width: 150,
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>预估 {seconds(row.worklog.originalEstimateSeconds)}</Typography.Text>
+          <Typography.Text>已耗 {seconds(row.worklog.timeSpentSeconds)}</Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: '来源 / 经办人',
+      width: 180,
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          <Tag color={row.source === 'jira' ? 'blue' : 'default'}>{row.source.toUpperCase()}</Tag>
+          <Typography.Text>{row.assigneeName ?? '未分配'}</Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: '证据',
+      width: 180,
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          <Tag color={evidenceStateColor(row.evidence.state)}>
+            {evidenceStateLabel(row.evidence.state)}
+          </Tag>
+          <Typography.Text type="secondary">
+            确认 {row.evidence.counts.confirmed} · 待处理{' '}
+            {row.evidence.counts.suggested + row.evidence.needsRevalidation}
+          </Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: '最后观测',
+      dataIndex: 'lastObservedAt',
+      width: 190,
+      render: (value: string) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{new Date(value).toLocaleString('zh-CN')}</Typography.Text>
+          {Date.now() - new Date(value).getTime() > 15 * 60_000 && (
+            <Tag color="gold">缓存可能过期</Tag>
+          )}
+        </Space>
+      ),
+    },
+  ];
 
   return (
     <Space direction="vertical" size={20} style={{ width: '100%' }}>
@@ -110,19 +245,19 @@ export function TasksPage() {
       />
       <div className="summary-grid">
         <Card size="small">
-          <Typography.Text type="secondary">当前筛选</Typography.Text>
-          <Typography.Title level={3}>{counts.total}</Typography.Title>
+          <Typography.Text type="secondary">筛选总数</Typography.Text>
+          <Typography.Title level={3}>{tasks.data?.total ?? 0}</Typography.Title>
         </Card>
         <Card size="small">
-          <Typography.Text type="secondary">进行中</Typography.Text>
+          <Typography.Text type="secondary">本页进行中</Typography.Text>
           <Typography.Title level={3}>{counts.in_progress ?? 0}</Typography.Title>
         </Card>
         <Card size="small">
-          <Typography.Text type="secondary">已完成</Typography.Text>
+          <Typography.Text type="secondary">本页已完成</Typography.Text>
           <Typography.Title level={3}>{counts.done ?? 0}</Typography.Title>
         </Card>
         <Card size="small">
-          <Typography.Text type="secondary">其他/待映射</Typography.Text>
+          <Typography.Text type="secondary">本页其他/待映射</Typography.Text>
           <Typography.Title level={3}>{counts.other ?? 0}</Typography.Title>
         </Card>
       </div>
@@ -139,13 +274,80 @@ export function TasksPage() {
             allowClear
             placeholder="统一状态"
             value={status}
-            onChange={setStatus}
+            onChange={(value) => {
+              setStatus(value);
+              resetPagination();
+            }}
             options={statusOptions}
             style={{ width: 160 }}
           />
           <Select
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            placeholder="项目"
+            value={projectId}
+            onChange={(value) => {
+              setProjectId(value);
+              resetPagination();
+            }}
+            options={(projects.data?.data ?? []).map((project) => ({
+              value: project.id,
+              label: `${project.name}${project.jiraProjectKey ? ` (${project.jiraProjectKey})` : ''}`,
+            }))}
+            style={{ width: 220 }}
+          />
+          <Input
+            allowClear
+            placeholder="Jira 原始状态（精确）"
+            value={rawStatus}
+            onChange={(event) => {
+              setRawStatus(event.target.value || undefined);
+              resetPagination();
+            }}
+            style={{ width: 200 }}
+          />
+          <Input
+            allowClear
+            placeholder="父任务 Key"
+            value={parentIssueKey}
+            onChange={(event) => {
+              setParentIssueKey(event.target.value || undefined);
+              resetPagination();
+            }}
+            style={{ width: 170 }}
+          />
+          <Input
+            allowClear
+            placeholder="Sprint ID / 名称"
+            value={sprintId}
+            onChange={(event) => {
+              setSprintId(event.target.value || undefined);
+              resetPagination();
+            }}
+            style={{ width: 180 }}
+          />
+          <Select
+            allowClear
+            placeholder="来源"
+            value={source}
+            onChange={(value) => {
+              setSource(value);
+              resetPagination();
+            }}
+            options={[
+              { value: 'jira', label: 'Jira' },
+              { value: 'excel', label: 'Excel' },
+              { value: 'manual', label: '人工' },
+            ]}
+            style={{ width: 130 }}
+          />
+          <Select
             value={currentUser}
-            onChange={setCurrentUser}
+            onChange={(value) => {
+              setCurrentUser(value);
+              resetPagination();
+            }}
             options={[
               { value: 'true', label: '仅当前用户' },
               { value: '', label: '全部经办人' },
@@ -157,7 +359,10 @@ export function TasksPage() {
             allowClear
             placeholder="Jira 连接"
             value={connectionId}
-            onChange={setConnectionId}
+            onChange={(value) => {
+              setConnectionId(value);
+              resetPagination();
+            }}
             options={jiraConnections.map((item) => ({ value: item.id, label: item.name }))}
             style={{ width: 220 }}
           />
@@ -165,7 +370,10 @@ export function TasksPage() {
             allowClear
             placeholder="证据状态"
             value={evidenceState}
-            onChange={setEvidenceState}
+            onChange={(value) => {
+              setEvidenceState(value);
+              resetPagination();
+            }}
             style={{ width: 170 }}
             options={[
               { value: 'none', label: '无证据' },
@@ -175,6 +383,30 @@ export function TasksPage() {
               { value: 'expired', label: '已失效' },
               { value: 'needs_revalidation', label: '需要复核' },
             ]}
+          />
+          <DatePicker.RangePicker
+            onChange={(dates) => {
+              setDateRange(
+                dates?.[0] && dates[1]
+                  ? [dates[0].format('YYYY-MM-DD'), dates[1].format('YYYY-MM-DD')]
+                  : undefined,
+              );
+              resetPagination();
+            }}
+            placeholder={['到期日起', '到期日止']}
+          />
+          <Select
+            value={visibility}
+            onChange={(value) => {
+              setVisibility(value);
+              resetPagination();
+            }}
+            options={[
+              { value: 'visible', label: '当前可见' },
+              { value: 'out_of_scope', label: '超出范围' },
+              { value: 'unavailable', label: '来源不可用' },
+            ]}
+            style={{ width: 150 }}
           />
           {jiraConnections.map((connection) => (
             <Button
@@ -201,101 +433,88 @@ export function TasksPage() {
             style={{ marginBottom: 16 }}
           />
         )}
-        <Table<TaskSummary>
-          rowKey="id"
-          loading={tasks.isLoading}
-          dataSource={taskItems}
-          locale={{ emptyText: <Empty description="当前筛选没有缓存任务" /> }}
-          scroll={{ x: 1100 }}
-          pagination={{ pageSize: 20, showSizeChanger: true }}
-          onRow={(row) => ({ onClick: () => setSelectedTaskId(row.id) })}
-          columns={[
-            {
-              title: '任务',
-              width: 380,
-              render: (_, row) => (
-                <Space direction="vertical" size={0}>
-                  <Space>
-                    <Typography.Text strong>{row.issueKey ?? '本地补充'}</Typography.Text>
-                    <Tag>{row.issueType ?? row.source}</Tag>
-                  </Space>
-                  <Typography.Text>{row.title}</Typography.Text>
-                  {row.parent.issueKey && (
-                    <Typography.Text type="secondary">
-                      父任务：{row.parent.issueKey} · {row.parent.title}
-                    </Typography.Text>
-                  )}
-                </Space>
-              ),
-            },
-            {
-              title: '状态',
-              width: 170,
-              render: (_, row) => (
-                <Space direction="vertical" size={0}>
-                  <StatusTag status={row.status.normalized} />
-                  <Typography.Text type="secondary">
-                    原始：{row.status.rawName ?? '未返回'}
-                  </Typography.Text>
-                </Space>
-              ),
-            },
-            {
-              title: '排期',
-              width: 180,
-              render: (_, row) => (
-                <Space direction="vertical" size={0}>
-                  <Typography.Text>开始 {row.schedule.plannedStartDate ?? '—'}</Typography.Text>
-                  <Typography.Text>到期 {row.schedule.dueDate ?? '—'}</Typography.Text>
-                </Space>
-              ),
-            },
-            {
-              title: '工时',
-              width: 150,
-              render: (_, row) => (
-                <Space direction="vertical" size={0}>
-                  <Typography.Text>
-                    预估 {seconds(row.worklog.originalEstimateSeconds)}
-                  </Typography.Text>
-                  <Typography.Text>已耗 {seconds(row.worklog.timeSpentSeconds)}</Typography.Text>
-                </Space>
-              ),
-            },
-            {
-              title: '来源 / 经办人',
-              width: 180,
-              render: (_, row) => (
-                <Space direction="vertical" size={0}>
-                  <Tag color={row.source === 'jira' ? 'blue' : 'default'}>
-                    {row.source.toUpperCase()}
-                  </Tag>
-                  <Typography.Text>{row.assigneeName ?? '未分配'}</Typography.Text>
-                </Space>
-              ),
-            },
-            {
-              title: '证据',
-              width: 180,
-              render: (_, row) => (
-                <Space direction="vertical" size={0}>
-                  <Tag color={evidenceStateColor(row.evidence.state)}>
-                    {evidenceStateLabel(row.evidence.state)}
-                  </Tag>
-                  <Typography.Text type="secondary">
-                    确认 {row.evidence.counts.confirmed} · 待处理{' '}
-                    {row.evidence.counts.suggested + row.evidence.needsRevalidation}
-                  </Typography.Text>
-                </Space>
-              ),
-            },
-            {
-              title: '最后观测',
-              dataIndex: 'lastObservedAt',
-              render: (value: string) => new Date(value).toLocaleString('zh-CN'),
-            },
-          ]}
-        />
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <Segmented
+            value={viewMode}
+            onChange={(value) => setViewMode(value as 'list' | 'parent')}
+            options={[
+              { value: 'list', label: '任务列表' },
+              { value: 'parent', label: '按父任务分组' },
+            ]}
+          />
+          {viewMode === 'list' ? (
+            <Table<TaskSummary>
+              rowKey="id"
+              loading={tasks.isLoading}
+              dataSource={taskItems}
+              locale={{ emptyText: <Empty description="当前筛选没有缓存任务" /> }}
+              scroll={{ x: 1230 }}
+              pagination={{
+                current: page,
+                pageSize,
+                total: tasks.data?.total ?? 0,
+                simple: true,
+                showSizeChanger: true,
+                pageSizeOptions: [20, 50, 100],
+                showTotal: (total) => `共 ${total} 条本地事实`,
+                onChange: (nextPage, nextPageSize) => {
+                  if (nextPageSize !== pageSize) {
+                    setPageSize(nextPageSize);
+                    resetPagination();
+                  } else if (pageCursors.current.has(nextPage)) {
+                    setPage(nextPage);
+                  }
+                },
+              }}
+              onRow={(row) => ({ onClick: () => setSelectedTaskId(row.id) })}
+              columns={taskColumns}
+            />
+          ) : parentGroups.length === 0 ? (
+            <Empty description="当前筛选没有缓存任务" />
+          ) : (
+            <>
+              <Collapse
+                items={parentGroups.map((group) => ({
+                  key: group.key,
+                  label: (
+                    <Space>
+                      <Typography.Text strong>{group.issueKey ?? '无父任务'}</Typography.Text>
+                      <Typography.Text>{group.title}</Typography.Text>
+                      <Tag>{group.tasks.length} 项</Tag>
+                    </Space>
+                  ),
+                  children: (
+                    <Table<TaskSummary>
+                      rowKey="id"
+                      dataSource={group.tasks}
+                      columns={taskColumns}
+                      pagination={false}
+                      scroll={{ x: 1230 }}
+                      onRow={(row) => ({ onClick: () => setSelectedTaskId(row.id) })}
+                    />
+                  ),
+                }))}
+              />
+              <Pagination
+                current={page}
+                pageSize={pageSize}
+                total={tasks.data?.total ?? 0}
+                simple
+                showSizeChanger
+                pageSizeOptions={[20, 50, 100]}
+                showTotal={(total) => `共 ${total} 条本地事实`}
+                onChange={(nextPage, nextPageSize) => {
+                  if (nextPageSize !== pageSize) {
+                    setPageSize(nextPageSize);
+                    resetPagination();
+                  } else if (pageCursors.current.has(nextPage)) {
+                    setPage(nextPage);
+                  }
+                }}
+              />
+            </>
+          )}
+        </Space>
       </Card>
       <Drawer
         title={detail.data?.data.issueKey ?? '任务详情'}

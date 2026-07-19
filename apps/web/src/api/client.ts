@@ -2,6 +2,7 @@ export interface ApiEnvelope<T> {
   data: T;
   meta: { correlationId: string; asOf?: string; stale?: boolean };
   page?: { cursor?: string; nextCursor?: string; hasMore: boolean; limit: number };
+  total?: number;
 }
 
 export interface ApiErrorPayload {
