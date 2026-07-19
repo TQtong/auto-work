@@ -673,11 +673,9 @@ describe('证据关系确认、拒绝、撤销与过期', () => {
       await createQuarterlyReference('local-user', 'a');
       await createQuarterlyReference('other-user', 'b');
 
-      const tasks = new TasksController(
-        prisma as unknown as PrismaService,
-        undefined,
-        { currentProfileId: 'local-user' } as SessionService,
-      );
+      const tasks = new TasksController(prisma as unknown as PrismaService, undefined, {
+        currentProfileId: 'local-user',
+      } as SessionService);
       const detail = await tasks.detail('task-1', request);
 
       expect(detail.data.weeklyReportReferences).toMatchObject([

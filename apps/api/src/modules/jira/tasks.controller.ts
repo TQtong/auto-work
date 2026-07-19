@@ -272,9 +272,7 @@ export class TasksController {
         evidenceLinks: { select: { status: true, revalidationState: true } },
         reportSourceLinks: {
           // 只回看当前本机用户自己的周报版本，避免历史资料跨用户串读。
-          ...(ownerProfileId
-            ? { where: { version: { report: { ownerProfileId } } } }
-            : {}),
+          ...(ownerProfileId ? { where: { version: { report: { ownerProfileId } } } } : {}),
           orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
           take: 100,
           select: {
@@ -307,9 +305,7 @@ export class TasksController {
         },
         achievementEvidences: {
           // 绩效引用以成果证据为入口，保留成果和季度评审的双层上下文。
-          ...(ownerProfileId
-            ? { where: { achievement: { review: { ownerProfileId } } } }
-            : {}),
+          ...(ownerProfileId ? { where: { achievement: { review: { ownerProfileId } } } } : {}),
           orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
           take: 100,
           select: {

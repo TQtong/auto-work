@@ -735,93 +735,99 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
             children: (
               <Space direction="vertical" size={16} style={{ width: '100%' }}>
                 <Card title="本地字段覆盖与来源">
-        <Table
-          rowKey="fieldName"
-          size="small"
-          pagination={false}
-          dataSource={editableTaskFields.map((field) => {
-            const provenance = task.fieldProvenances.find(
-              (item) => item.fieldName === field.fieldName && item.active,
-            );
-            return { ...field, value: taskFieldValue(task, field.fieldName), provenance };
-          })}
-          columns={[
-            { title: '字段', dataIndex: 'label' },
-            { title: '当前值', dataIndex: 'value', render: displayTaskFieldValue },
-            {
-              title: '生效来源',
-              render: (_, row) => (
-                <Space>
-                  <Tag color={sourceTagColor(row.provenance?.sourceType)}>
-                    {row.provenance?.sourceType ?? '未记录'}
-                  </Tag>
-                  {row.provenance?.conflictDetectedAt && <Tag color="red">与 Jira 冲突</Tag>}
-                </Space>
-              ),
-            },
-            {
-              title: '原因 / 有效期',
-              render: (_, row) => (
-                <Space direction="vertical" size={0}>
-                  <Typography.Text>{row.provenance?.reason ?? '—'}</Typography.Text>
-                  <Typography.Text type="secondary">
-                    {row.provenance?.expiresAt
-                      ? `至 ${new Date(row.provenance.expiresAt).toLocaleString('zh-CN')}`
-                      : '无人工有效期'}
-                  </Typography.Text>
-                </Space>
-              ),
-            },
-            {
-              title: '操作',
-              render: (_, row) => (
-                <Space>
-                  <Button size="small" onClick={() => openOverride(row.fieldName)}>
-                    {row.provenance?.sourceType === 'manual' ? '调整覆盖' : '人工覆盖'}
-                  </Button>
-                  {row.provenance?.sourceType === 'manual' && row.provenance.active && (
-                    <Button
-                      size="small"
-                      danger
-                      onClick={() => {
-                        revokeForm.resetFields();
-                        setRevokeField(row.fieldName);
-                      }}
-                    >
-                      撤销
-                    </Button>
-                  )}
-                </Space>
-              ),
-            },
-          ]}
-        />
+                  <Table
+                    rowKey="fieldName"
+                    size="small"
+                    pagination={false}
+                    dataSource={editableTaskFields.map((field) => {
+                      const provenance = task.fieldProvenances.find(
+                        (item) => item.fieldName === field.fieldName && item.active,
+                      );
+                      return { ...field, value: taskFieldValue(task, field.fieldName), provenance };
+                    })}
+                    columns={[
+                      { title: '字段', dataIndex: 'label' },
+                      { title: '当前值', dataIndex: 'value', render: displayTaskFieldValue },
+                      {
+                        title: '生效来源',
+                        render: (_, row) => (
+                          <Space>
+                            <Tag color={sourceTagColor(row.provenance?.sourceType)}>
+                              {row.provenance?.sourceType ?? '未记录'}
+                            </Tag>
+                            {row.provenance?.conflictDetectedAt && (
+                              <Tag color="red">与 Jira 冲突</Tag>
+                            )}
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: '原因 / 有效期',
+                        render: (_, row) => (
+                          <Space direction="vertical" size={0}>
+                            <Typography.Text>{row.provenance?.reason ?? '—'}</Typography.Text>
+                            <Typography.Text type="secondary">
+                              {row.provenance?.expiresAt
+                                ? `至 ${new Date(row.provenance.expiresAt).toLocaleString('zh-CN')}`
+                                : '无人工有效期'}
+                            </Typography.Text>
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: '操作',
+                        render: (_, row) => (
+                          <Space>
+                            <Button size="small" onClick={() => openOverride(row.fieldName)}>
+                              {row.provenance?.sourceType === 'manual' ? '调整覆盖' : '人工覆盖'}
+                            </Button>
+                            {row.provenance?.sourceType === 'manual' && row.provenance.active && (
+                              <Button
+                                size="small"
+                                danger
+                                onClick={() => {
+                                  revokeForm.resetFields();
+                                  setRevokeField(row.fieldName);
+                                }}
+                              >
+                                撤销
+                              </Button>
+                            )}
+                          </Space>
+                        ),
+                      },
+                    ]}
+                  />
                 </Card>
                 <Descriptions bordered column={2} size="small">
-        <Descriptions.Item label="标题" span={2}>
-          {task.title}
-        </Descriptions.Item>
-        <Descriptions.Item label="统一状态">
-          <StatusTag status={task.status.normalized} />
-        </Descriptions.Item>
-        <Descriptions.Item label="Jira 原状态">
-          {task.status.rawName ?? '未返回'} ({task.status.rawId ?? '无 ID'})
-        </Descriptions.Item>
-        <Descriptions.Item label="主来源">
-          <Tag>{task.source.toUpperCase()}</Tag>
-        </Descriptions.Item>
-        <Descriptions.Item label="映射版本">
-          {task.mappingVersion ? `v${task.mappingVersion.versionNo}` : '无'}
-        </Descriptions.Item>
-        <Descriptions.Item label="经办人">{task.assigneeName ?? '未分配'}</Descriptions.Item>
-        <Descriptions.Item label="可见性">{task.visibilityState}</Descriptions.Item>
-        <Descriptions.Item label="计划开始">
-          {task.schedule.plannedStartDate ?? '—'}
-        </Descriptions.Item>
-        <Descriptions.Item label="到期日">{task.schedule.dueDate ?? '—'}</Descriptions.Item>
-        <Descriptions.Item label="描述策略" span={2}>
-          不持久化 Jira description，仅保存任务视图所需字段
-        </Descriptions.Item>
+                  <Descriptions.Item label="标题" span={2}>
+                    {task.title}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="统一状态">
+                    <StatusTag status={task.status.normalized} />
+                  </Descriptions.Item>
+                  <Descriptions.Item label="Jira 原状态">
+                    {task.status.rawName ?? '未返回'} ({task.status.rawId ?? '无 ID'})
+                  </Descriptions.Item>
+                  <Descriptions.Item label="主来源">
+                    <Tag>{task.source.toUpperCase()}</Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="映射版本">
+                    {task.mappingVersion ? `v${task.mappingVersion.versionNo}` : '无'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="经办人">
+                    {task.assigneeName ?? '未分配'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="可见性">{task.visibilityState}</Descriptions.Item>
+                  <Descriptions.Item label="计划开始">
+                    {task.schedule.plannedStartDate ?? '—'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="到期日">
+                    {task.schedule.dueDate ?? '—'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="描述策略" span={2}>
+                    不持久化 Jira description，仅保存任务视图所需字段
+                  </Descriptions.Item>
                 </Descriptions>
               </Space>
             ),
@@ -831,66 +837,66 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
             label: '来源与字段',
             children: (
               <div>
-        <Typography.Title level={4}>字段来源与合并决定</Typography.Title>
-        {task.fieldProvenances.length === 0 ? (
-          <Empty description="尚无逐字段来源记录" />
-        ) : (
-          <Table
-            rowKey="id"
-            size="small"
-            pagination={{ pageSize: 8 }}
-            dataSource={task.fieldProvenances}
-            columns={[
-              {
-                title: '字段',
-                dataIndex: 'fieldName',
-                render: (value: string) => taskFieldLabel(value),
-              },
-              {
-                title: '当前来源',
-                render: (_, row) => (
-                  <Space>
-                    <Tag color={row.sourceType === 'jira' ? 'blue' : 'green'}>
-                      {row.sourceType.toUpperCase()}
-                    </Tag>
-                    <Tag color={row.active ? 'success' : 'default'}>
-                      {row.active ? '当前生效' : '历史'}
-                    </Tag>
-                  </Space>
-                ),
-              },
-              {
-                title: '决定 / 值',
-                render: (_, row) => (
-                  <Space direction="vertical" size={0}>
-                    <Typography.Text>{provenanceDecision(row.decision)}</Typography.Text>
-                    <Typography.Text code>{displaySourceValue(row.value)}</Typography.Text>
-                  </Space>
-                ),
-              },
-              {
-                title: '原因',
-                dataIndex: 'reason',
-                render: (value: string | null) => value ?? '—',
-              },
-              {
-                title: '生效 / 失效',
-                render: (_, row) => (
-                  <Space direction="vertical" size={0}>
-                    <Typography.Text>
-                      {new Date(row.effectiveAt).toLocaleString('zh-CN')}
-                    </Typography.Text>
-                    <Typography.Text type="secondary">
-                      {row.supersededAt
-                        ? `失效 ${new Date(row.supersededAt).toLocaleString('zh-CN')}`
-                        : '仍在生效'}
-                    </Typography.Text>
-                  </Space>
-                ),
-              },
-            ]}
-          />
-        )}
+                <Typography.Title level={4}>字段来源与合并决定</Typography.Title>
+                {task.fieldProvenances.length === 0 ? (
+                  <Empty description="尚无逐字段来源记录" />
+                ) : (
+                  <Table
+                    rowKey="id"
+                    size="small"
+                    pagination={{ pageSize: 8 }}
+                    dataSource={task.fieldProvenances}
+                    columns={[
+                      {
+                        title: '字段',
+                        dataIndex: 'fieldName',
+                        render: (value: string) => taskFieldLabel(value),
+                      },
+                      {
+                        title: '当前来源',
+                        render: (_, row) => (
+                          <Space>
+                            <Tag color={row.sourceType === 'jira' ? 'blue' : 'green'}>
+                              {row.sourceType.toUpperCase()}
+                            </Tag>
+                            <Tag color={row.active ? 'success' : 'default'}>
+                              {row.active ? '当前生效' : '历史'}
+                            </Tag>
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: '决定 / 值',
+                        render: (_, row) => (
+                          <Space direction="vertical" size={0}>
+                            <Typography.Text>{provenanceDecision(row.decision)}</Typography.Text>
+                            <Typography.Text code>{displaySourceValue(row.value)}</Typography.Text>
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: '原因',
+                        dataIndex: 'reason',
+                        render: (value: string | null) => value ?? '—',
+                      },
+                      {
+                        title: '生效 / 失效',
+                        render: (_, row) => (
+                          <Space direction="vertical" size={0}>
+                            <Typography.Text>
+                              {new Date(row.effectiveAt).toLocaleString('zh-CN')}
+                            </Typography.Text>
+                            <Typography.Text type="secondary">
+                              {row.supersededAt
+                                ? `失效 ${new Date(row.supersededAt).toLocaleString('zh-CN')}`
+                                : '仍在生效'}
+                            </Typography.Text>
+                          </Space>
+                        ),
+                      },
+                    ]}
+                  />
+                )}
               </div>
             ),
           },
@@ -899,8 +905,8 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
             label: '证据',
             children: (
               <div>
-        <Typography.Title level={4}>任务与 Git/GitLab 证据</Typography.Title>
-        <TaskEvidencePanel task={task} />
+                <Typography.Title level={4}>任务与 Git/GitLab 证据</Typography.Title>
+                <TaskEvidencePanel task={task} />
               </div>
             ),
           },
@@ -910,71 +916,72 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
             children: (
               <Space direction="vertical" size={20} style={{ width: '100%' }}>
                 <div>
-        <Typography.Title level={4}>状态观测时间线</Typography.Title>
-        {task.statusEvents.length === 0 ? (
-          <Empty description="尚无状态变化观测" />
-        ) : (
-          <Timeline
-            items={task.statusEvents.map((event) => ({
-              color: 'blue',
-              children: (
-                <div>
-                  <Typography.Text strong>
-                    {event.from.name ?? '首次观测'} → {event.to.name ?? event.to.normalized}
-                  </Typography.Text>
-                  <br />
-                  <Typography.Text type="secondary">
-                    观测于 {new Date(event.observedAt).toLocaleString('zh-CN')}
-                    {event.observedIntervalStart
-                      ? `；发生区间起点 ${new Date(event.observedIntervalStart).toLocaleString('zh-CN')}`
-                      : ''}
-                  </Typography.Text>
+                  <Typography.Title level={4}>状态观测时间线</Typography.Title>
+                  {task.statusEvents.length === 0 ? (
+                    <Empty description="尚无状态变化观测" />
+                  ) : (
+                    <Timeline
+                      items={task.statusEvents.map((event) => ({
+                        color: 'blue',
+                        children: (
+                          <div>
+                            <Typography.Text strong>
+                              {event.from.name ?? '首次观测'} →{' '}
+                              {event.to.name ?? event.to.normalized}
+                            </Typography.Text>
+                            <br />
+                            <Typography.Text type="secondary">
+                              观测于 {new Date(event.observedAt).toLocaleString('zh-CN')}
+                              {event.observedIntervalStart
+                                ? `；发生区间起点 ${new Date(event.observedIntervalStart).toLocaleString('zh-CN')}`
+                                : ''}
+                            </Typography.Text>
+                          </div>
+                        ),
+                      }))}
+                    />
+                  )}
                 </div>
-              ),
-            }))}
-          />
-        )}
-                </div>
                 <div>
-        <Typography.Title level={4}>来源观测</Typography.Title>
-        <Table
-          rowKey="id"
-          size="small"
-          pagination={{ pageSize: 8 }}
-          dataSource={task.observations}
-          columns={[
-            {
-              title: '来源',
-              dataIndex: 'sourceType',
-              render: (value: string) => <Tag>{value}</Tag>,
-            },
-            {
-              title: '来源更新时间',
-              dataIndex: 'sourceUpdatedAt',
-              render: (value: string | null) =>
-                value ? new Date(value).toLocaleString('zh-CN') : '—',
-            },
-            {
-              title: '警告',
-              dataIndex: 'warnings',
-              render: (value: TaskDetail['observations'][number]['warnings']) =>
-                value.length === 0
-                  ? '无'
-                  : value.map((warning) => (
-                      <Tag color="warning" key={`${warning.code}:${warning.message}`}>
-                        {warning.code}
-                      </Tag>
-                    )),
-            },
-            {
-              title: '哈希',
-              dataIndex: 'contentHash',
-              render: (value: string) => (
-                <Typography.Text code>{value.slice(0, 12)}</Typography.Text>
-              ),
-            },
-          ]}
-        />
+                  <Typography.Title level={4}>来源观测</Typography.Title>
+                  <Table
+                    rowKey="id"
+                    size="small"
+                    pagination={{ pageSize: 8 }}
+                    dataSource={task.observations}
+                    columns={[
+                      {
+                        title: '来源',
+                        dataIndex: 'sourceType',
+                        render: (value: string) => <Tag>{value}</Tag>,
+                      },
+                      {
+                        title: '来源更新时间',
+                        dataIndex: 'sourceUpdatedAt',
+                        render: (value: string | null) =>
+                          value ? new Date(value).toLocaleString('zh-CN') : '—',
+                      },
+                      {
+                        title: '警告',
+                        dataIndex: 'warnings',
+                        render: (value: TaskDetail['observations'][number]['warnings']) =>
+                          value.length === 0
+                            ? '无'
+                            : value.map((warning) => (
+                                <Tag color="warning" key={`${warning.code}:${warning.message}`}>
+                                  {warning.code}
+                                </Tag>
+                              )),
+                      },
+                      {
+                        title: '哈希',
+                        dataIndex: 'contentHash',
+                        render: (value: string) => (
+                          <Typography.Text code>{value.slice(0, 12)}</Typography.Text>
+                        ),
+                      },
+                    ]}
+                  />
                 </div>
               </Space>
             ),
@@ -1037,7 +1044,8 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
               showTime
               // 服务端要求有效期处于未来且不超过 366 天，页面先行阻止明显无效日期。
               disabledDate={(value) =>
-                value.endOf('day').isBefore(dayjs()) || value.startOf('day').isAfter(dayjs().add(366, 'day'))
+                value.endOf('day').isBefore(dayjs()) ||
+                value.startOf('day').isAfter(dayjs().add(366, 'day'))
               }
               style={{ width: '100%' }}
             />
