@@ -37,7 +37,7 @@
 - 生产依赖审计以 high 为失败阈值；React Router 从 7.10.1 升至 7.18.1，消除 6 个高危公告；
 - GitHub Actions 使用 Windows runner，所有第三方 action 固定到完整 commit SHA；
 - `release:package` 自身强制重新生产构建，避免陈旧 `dist`；ZIP 内含版本、Git commit、schema、生产构建、迁移、SBOM、逐文件 SHA-256、运维脚本和手册，ZIP 外另有 SHA-256；
-- `pnpm release:gate` 使用隔离数据库，依次执行全仓 verify、schema 校验、26 迁移部署/状态、秘密/依赖扫描、SBOM 和候选包生成。
+- `pnpm release:gate` 使用隔离数据库，依次执行全仓 verify、schema 校验、27 迁移部署/状态、秘密/依赖扫描、SBOM 和候选包生成。
 
 ## 6. Windows 安装、升级与回滚
 
@@ -50,19 +50,19 @@
 
 ## 7. 自动化与候选包证据
 
-提交 `5073f3e` 后完整执行 `pnpm release:gate`，耗时约 6 分 52 秒：
+提交 `87f28ad` 后完整执行最终 `pnpm release:gate`，耗时 327.4 秒：
 
 - Contracts 1 文件 / 2 用例；
 - Domain 9 文件 / 35 用例；
-- Web 7 文件 / 24 用例；
-- API 48 文件 / 227 用例；
-- 共 288 个测试全部通过，格式、Lint、类型检查和两次生产构建通过；
-- 隔离 SQLite 从空目录成功部署 26 个迁移，`db:status` 为最新；
-- 秘密扫描 374 个 Git 跟踪文件；生产依赖高危/严重漏洞为 0，保留 3 个中危公告等待安全负责人评审；
+- Web 8 文件 / 26 用例；
+- API 50 文件 / 235 用例；
+- 共 68 个文件 / 298 个测试全部通过，格式、Lint、类型检查和两次生产构建通过；
+- 隔离 SQLite 从空目录成功部署 27 个迁移，`db:status` 为最新；
+- 秘密扫描 389 个 Git 跟踪文件；生产依赖高危/严重漏洞为 0，保留 3 个中危公告等待安全负责人评审；
 - SBOM 为 CycloneDX 1.6，包含 943 个组件和 948 条依赖关系；
-- 候选发布包清单绑定 commit `5073f3e4f45f8648896587b0b394297026a48f1d` 和 schema `20260719080000_operations_restore_metadata`。
+- 候选发布包包含 508 个文件，清单绑定 commit `87f28adea672f6c87d013a8b6cb348d7101853e2` 和 schema `20260719090000_task_manual_override_lifecycle`；ZIP 大小 3,945,450 字节，SHA-256 为 `6926266e5410428145de72d021b28330bb2e79f80cce8e3d5b130da1342ff218`。
 
-候选包随后在全新临时安装根完成 500 文件校验、生产依赖冻结安装、26 迁移、3863 loopback 启动和停止。页面/API 创建的备份状态为 `verified`，SHA-256 为 64 位，schema 与发布清单一致。
+前一候选包已在全新临时安装根完成 500 文件校验、生产依赖冻结安装、26 迁移、3863 loopback 启动和停止。页面/API 创建的备份状态为 `verified`，SHA-256 为 64 位，schema 与当时发布清单一致；本轮新增迁移也已由最终门禁从空库完整部署验证。
 
 ## 8. 真实浏览器 UAT
 
