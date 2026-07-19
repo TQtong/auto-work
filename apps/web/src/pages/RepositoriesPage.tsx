@@ -291,6 +291,20 @@ export function RepositoriesPage() {
                     </Descriptions.Item>
                   </>
                 )}
+                <Descriptions.Item label="任务摘要" span={2}>
+                  {record.taskSummary.sourceStatus === 'unmapped'
+                    ? '仓库尚未归属业务项目'
+                    : record.taskSummary.sourceStatus === 'not_configured'
+                      ? '业务项目尚未配置 Jira Key'
+                      : record.taskSummary.sourceStatus === 'empty'
+                        ? '当前项目尚无同步任务'
+                        : `可见 ${record.taskSummary.visibleCount} · 进行中 ${record.taskSummary.counts.in_progress} · 阻塞 ${record.taskSummary.counts.blocked} · 完成 ${record.taskSummary.counts.done} · 逾期 ${record.taskSummary.overdueCount} · 本次查询不可见 ${record.taskSummary.notVisibleCount}`}
+                </Descriptions.Item>
+                {record.taskSummary.lastObservedAt && (
+                  <Descriptions.Item label="任务最近观测" span={2}>
+                    {new Date(record.taskSummary.lastObservedAt).toLocaleString('zh-CN')}
+                  </Descriptions.Item>
+                )}
                 {record.gitlabSummary?.syncError && (
                   <Descriptions.Item label="GitLab 同步错误" span={2}>
                     <Typography.Text type="danger">
@@ -394,6 +408,41 @@ export function RepositoriesPage() {
                 ) : (
                   <Typography.Text type="secondary">无缓存匹配</Typography.Text>
                 ),
+            },
+            {
+              title: '任务摘要',
+              key: 'tasks',
+              render: (_, record) => {
+                if (record.taskSummary.sourceStatus === 'unmapped') {
+                  return <Typography.Text type="secondary">未归属项目</Typography.Text>;
+                }
+                if (record.taskSummary.sourceStatus === 'not_configured') {
+                  return <Typography.Text type="secondary">未配置 Jira Key</Typography.Text>;
+                }
+                if (record.taskSummary.sourceStatus === 'empty') {
+                  return <Typography.Text type="secondary">暂无同步任务</Typography.Text>;
+                }
+                return (
+                  <Space direction="vertical" size={2}>
+                    <Typography.Text>
+                      可见 {record.taskSummary.visibleCount} · 进行中{' '}
+                      {record.taskSummary.counts.in_progress} · 完成{' '}
+                      {record.taskSummary.counts.done}
+                    </Typography.Text>
+                    <Space wrap size={[4, 4]}>
+                      {record.taskSummary.overdueCount > 0 && (
+                        <Tag color="red">逾期 {record.taskSummary.overdueCount}</Tag>
+                      )}
+                      {record.taskSummary.counts.blocked > 0 && (
+                        <Tag color="orange">阻塞 {record.taskSummary.counts.blocked}</Tag>
+                      )}
+                      <Tag color={record.taskSummary.sourceStatus === 'fresh' ? 'green' : 'gold'}>
+                        {record.taskSummary.sourceStatus}
+                      </Tag>
+                    </Space>
+                  </Space>
+                );
+              },
             },
             {
               title: '状态 / 新鲜度',

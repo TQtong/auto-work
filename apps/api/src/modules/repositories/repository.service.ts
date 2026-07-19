@@ -14,6 +14,8 @@ type RepositoryViewSource = Repository & {
   snapshots?: GitSnapshot[];
 };
 
+const taskStatuses = ['planned', 'in_progress', 'blocked', 'done', 'cancelled', 'other'] as const;
+
 @Injectable()
 export class RepositoryService {
   public constructor(
@@ -118,7 +120,10 @@ export class RepositoryService {
       },
       orderBy: [{ whitelistStatus: 'asc' }, { displayName: 'asc' }],
     });
-    return this.attachGitLab(repositories.map((repository) => this.toRepositoryView(repository)));
+    const withGitLab = await this.attachGitLab(
+      repositories.map((repository) => this.toRepositoryView(repository)),
+    );
+    return this.attachTaskSummaries(withGitLab);
   }
 
   public async get(id: string) {
@@ -130,7 +135,8 @@ export class RepositoryService {
       },
     });
     if (!repository) throw new DomainError(errorCodes.notFound, '仓库不存在', { httpStatus: 404 });
-    return (await this.attachGitLab([this.toRepositoryView(repository)]))[0]!;
+    const withGitLab = await this.attachGitLab([this.toRepositoryView(repository)]);
+    return (await this.attachTaskSummaries(withGitLab))[0]!;
   }
 
   public async confirm(
@@ -449,6 +455,7 @@ export class RepositoryService {
             id: repository.project.id,
             name: repository.project.name,
             alias: repository.project.alias,
+            jiraProjectKey: repository.project.jiraProjectKey,
           }
         : null,
       canonicalPath: repository.canonicalPath,
@@ -595,6 +602,120 @@ export class RepositoryService {
         gitlabSummary: selected ? summarize(selected, repository) : null,
       };
     });
+  }
+
+  private async attachTaskSummaries<
+    T extends {
+      project: { id: string; jiraProjectKey: string | null } | null;
+    },
+  >(repositories: T[]) {
+    const projectIds = [
+      ...new Set(
+        repositories
+          .map((repository) => repository.project?.id)
+          .filter((projectId): projectId is string => Boolean(projectId)),
+      ),
+    ];
+    if (projectIds.length === 0) {
+      return repositories.map((repository) => ({
+        ...repository,
+        taskSummary: this.emptyTaskSummary('unmapped'),
+      }));
+    }
+
+    // 状态、可见性、最近观测和逾期都按项目批量聚合，仓库列表不会随项目数产生 N+1 查询。
+    const [statusGroups, overdueGroups] = await Promise.all([
+      this.prisma.task.groupBy({
+        by: ['projectId', 'normalizedStatus', 'visibilityState'],
+        where: { projectId: { in: projectIds } },
+        _count: { _all: true },
+        _max: { lastObservedAt: true },
+      }),
+      this.prisma.task.groupBy({
+        by: ['projectId'],
+        where: {
+          projectId: { in: projectIds },
+          visibilityState: 'visible',
+          normalizedStatus: { notIn: ['done', 'cancelled'] },
+          dueDate: { lt: this.shanghaiBusinessDate() },
+        },
+        _count: { _all: true },
+      }),
+    ]);
+    const overdueByProject = new Map(
+      overdueGroups.map((group) => [group.projectId, group._count._all]),
+    );
+
+    return repositories.map((repository) => {
+      if (!repository.project) {
+        return { ...repository, taskSummary: this.emptyTaskSummary('unmapped') };
+      }
+      if (!repository.project.jiraProjectKey) {
+        return { ...repository, taskSummary: this.emptyTaskSummary('not_configured') };
+      }
+      const groups = statusGroups.filter((group) => group.projectId === repository.project?.id);
+      const counts = Object.fromEntries(taskStatuses.map((status) => [status, 0])) as Record<
+        (typeof taskStatuses)[number],
+        number
+      >;
+      let visibleCount = 0;
+      let notVisibleCount = 0;
+      let latestObservedAt: Date | null = null;
+      for (const group of groups) {
+        if (group.visibilityState === 'visible') {
+          visibleCount += group._count._all;
+          if (taskStatuses.includes(group.normalizedStatus as (typeof taskStatuses)[number])) {
+            counts[group.normalizedStatus as (typeof taskStatuses)[number]] += group._count._all;
+          }
+        } else {
+          notVisibleCount += group._count._all;
+        }
+        const observedAt = group._max.lastObservedAt;
+        if (observedAt && (!latestObservedAt || observedAt > latestObservedAt)) {
+          latestObservedAt = observedAt;
+        }
+      }
+      const freshness =
+        groups.length === 0
+          ? 'empty'
+          : latestObservedAt && Date.now() - latestObservedAt.getTime() <= 15 * 60_000
+            ? 'fresh'
+            : 'stale';
+      return {
+        ...repository,
+        taskSummary: {
+          sourceStatus: freshness,
+          visibleCount,
+          notVisibleCount,
+          counts,
+          overdueCount: overdueByProject.get(repository.project.id) ?? 0,
+          lastObservedAt: latestObservedAt?.toISOString() ?? null,
+        },
+      };
+    });
+  }
+
+  private emptyTaskSummary(sourceStatus: 'unmapped' | 'not_configured') {
+    return {
+      sourceStatus,
+      visibleCount: 0,
+      notVisibleCount: 0,
+      counts: Object.fromEntries(taskStatuses.map((status) => [status, 0])) as Record<
+        (typeof taskStatuses)[number],
+        number
+      >,
+      overdueCount: 0,
+      lastObservedAt: null,
+    };
+  }
+
+  private shanghaiBusinessDate(): string {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
   }
 
   private normalizedUrlPort(url: URL): number | null {

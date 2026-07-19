@@ -622,7 +622,12 @@ export interface RepositorySnapshot {
 
 export interface RepositoryView {
   id: string;
-  project: { id: string; name: string; alias: string | null } | null;
+  project: {
+    id: string;
+    name: string;
+    alias: string | null;
+    jiraProjectKey: string | null;
+  } | null;
   canonicalPath: string;
   displayName: string;
   alias: string | null;
@@ -645,6 +650,16 @@ export interface RepositoryView {
   gitlabMatchStatus: 'matched' | 'mismatch' | 'candidate' | 'unavailable';
   gitlabCandidates: GitLabRepositorySummary[];
   gitlabSummary: GitLabRepositorySummary | null;
+  taskSummary: RepositoryTaskSummary;
+}
+
+export interface RepositoryTaskSummary {
+  sourceStatus: 'unmapped' | 'not_configured' | 'empty' | 'fresh' | 'stale';
+  visibleCount: number;
+  notVisibleCount: number;
+  counts: Record<'planned' | 'in_progress' | 'blocked' | 'done' | 'cancelled' | 'other', number>;
+  overdueCount: number;
+  lastObservedAt: string | null;
 }
 
 export interface GitLabRepositorySummary {

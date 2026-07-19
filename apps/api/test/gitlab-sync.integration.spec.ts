@@ -57,10 +57,18 @@ describe('GitLab 多资源缓存集成', () => {
         configJson: JSON.stringify({ projectRefs: [] }),
       },
     });
+    await prisma.project.create({
+      data: {
+        id: 'repository-project',
+        name: '仓库中心项目',
+        jiraProjectKey: 'PRJ',
+      },
+    });
     await prisma.repository.createMany({
       data: [
         {
           id: 'repository-current-connection',
+          projectId: 'repository-project',
           canonicalPath: 'D:\\qa\\current',
           realPathHash: 'real-current',
           identityHash: 'identity-current',
@@ -84,6 +92,43 @@ describe('GitLab 多资源缓存集成', () => {
           gitlabConnectionId: 'another-gitlab-connection',
           gitlabProjectRef: '999',
           whitelistStatus: 'confirmed',
+        },
+      ],
+    });
+    const observedAt = new Date();
+    await prisma.task.createMany({
+      data: [
+        {
+          id: 'repository-task-running',
+          projectId: 'repository-project',
+          primarySource: 'jira',
+          issueKey: 'PRJ-1',
+          projectKey: 'PRJ',
+          title: '进行中的逾期任务',
+          normalizedStatus: 'in_progress',
+          dueDate: '2020-01-01',
+          lastObservedAt: observedAt,
+        },
+        {
+          id: 'repository-task-done',
+          projectId: 'repository-project',
+          primarySource: 'jira',
+          issueKey: 'PRJ-2',
+          projectKey: 'PRJ',
+          title: '已完成任务',
+          normalizedStatus: 'done',
+          lastObservedAt: observedAt,
+        },
+        {
+          id: 'repository-task-hidden',
+          projectId: 'repository-project',
+          primarySource: 'jira',
+          issueKey: 'PRJ-3',
+          projectKey: 'PRJ',
+          title: '本次查询不可见任务',
+          normalizedStatus: 'planned',
+          visibilityState: 'out_of_scope',
+          lastObservedAt: observedAt,
         },
       ],
     });
@@ -246,6 +291,7 @@ describe('GitLab 多资源缓存集成', () => {
     await expect(
       repositoryService.confirm('repository-current-connection', {
         displayName: 'current',
+        projectId: 'repository-project',
         remoteName: 'origin',
         gitlabProjectRef: project.id,
         baselineBranch: 'main',
@@ -255,6 +301,13 @@ describe('GitLab 多资源缓存集成', () => {
       gitlabConnectionId: 'gitlab-connection',
       gitlabProjectRef: '101',
       gitlabMatchStatus: 'matched',
+      taskSummary: {
+        sourceStatus: 'fresh',
+        visibleCount: 2,
+        notVisibleCount: 1,
+        counts: { in_progress: 1, done: 1 },
+        overdueCount: 1,
+      },
     });
     await expect(
       Promise.all([
