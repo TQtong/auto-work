@@ -98,11 +98,19 @@ export class WindowsDpapiVaultService implements CredentialVault {
         // Windows 负载较高时 PowerShell 首次启动可能明显变慢；超出预算后必须终止进程，避免永久挂起。
         timedOut = true;
         child.kill();
+        // Windows 不保证被终止的子进程及时触发 close，因此必须在截止时直接收敛调用方 Promise。
+        reject(
+          new DomainError('DPAPI_OPERATION_TIMEOUT', 'Windows 凭证保护操作超时', {
+            httpStatus: 504,
+            details: { timeoutMs: DPAPI_OPERATION_TIMEOUT_MS },
+          }),
+        );
       }, DPAPI_OPERATION_TIMEOUT_MS);
       child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
       child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
       child.once('error', (error: NodeJS.ErrnoException) => {
         clearTimeout(timer);
+        if (timedOut) return;
         // 启动失败只暴露稳定错误码，不把可能包含本机路径的原始错误返回给 API 调用方。
         reject(
           new DomainError('DPAPI_PROCESS_START_FAILED', 'Windows 凭证保护进程启动失败', {
@@ -113,15 +121,7 @@ export class WindowsDpapiVaultService implements CredentialVault {
       });
       child.once('close', (code) => {
         clearTimeout(timer);
-        if (timedOut) {
-          reject(
-            new DomainError('DPAPI_OPERATION_TIMEOUT', 'Windows 凭证保护操作超时', {
-              httpStatus: 504,
-              details: { timeoutMs: DPAPI_OPERATION_TIMEOUT_MS },
-            }),
-          );
-          return;
-        }
+        if (timedOut) return;
         if (code === 0) {
           resolvePromise(Buffer.concat(stdout).toString('utf8'));
         } else {
