@@ -17,7 +17,9 @@ Get-NetTCPConnection -LocalPort 3760 -State Listen | Select-Object LocalAddress,
 Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" | Select-Object ProcessId,ExecutablePath,CommandLine
 ```
 
-只有确认 PID 属于过期 Auto Work 后才能停止。未知进程不得强杀；改用 1024–65535 的空闲端口重新安装/修改该版本 `.env`，同时保持 `AUTO_WORK_HOST=127.0.0.1`。不得绑定 `0.0.0.0`。
+只有确认 PID 属于过期 Auto Work 后才能停止。未知进程不得强杀；源码/Windows 发布包改用 1024–65535 的空闲端口并保持
+`AUTO_WORK_HOST=127.0.0.1`。Docker 容器内部按设计监听 `0.0.0.0`，但宿主机 `ports` 必须仍绑定
+`127.0.0.1`，不得发布到所有网卡。
 
 ## 3. 数据库 locked
 
@@ -130,3 +132,20 @@ Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" | Select-Object ProcessI
 ## 14. 外部平台整体不可用
 
 健康检查中的 readiness 不要求外部平台健康。本机任务、Excel、规则周报、人工成果和本地导出应继续可用。所有外部状态必须显示真实降级、最后成功时间和建议动作；禁止伪造成功或悄悄丢弃待处理事实。
+
+## 15. Docker 容器反复重启或 unhealthy
+
+```powershell
+docker compose ps
+docker inspect (docker compose ps --quiet auto-work) --format '{{json .State.Health}}'
+docker compose logs --tail=200 auto-work
+```
+
+- 迁移失败：保持数据卷，不要用 `down --volumes`；检查迁移状态和升级前已验证备份；
+- `VAULT_KEY_INVALID`：恢复原 32 字节 Base64 主密钥，禁止覆盖生成新密钥；
+- `CREDENTIAL_DECRYPT_FAILED`：检查密钥与密文是否来自同一备份时点；
+- 仓库权限：修正宿主机目录对 UID/GID 1000 的权限，不把容器改为 root；
+- 端口占用：修改 `AUTO_WORK_PORT` 后重建容器，容器内外端口必须相同；
+- 健康检查超时：分别核对数据库、实例租约和 Git Worker，而不是只测试 TCP。
+
+完整命令和灾难恢复步骤见 [Docker 部署与运维](./docker-deployment.md)。

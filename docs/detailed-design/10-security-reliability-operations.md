@@ -15,7 +15,7 @@
 | 本机恶意网页调用 localhost | CSRF/DNS rebinding/WebSocket | loopback、Host allowlist、Origin/CSRF、SameSite、拒绝任意 CORS |
 | 命令注入 | 分支名、文件名、remote、raw args | 固定动作、参数数组、`--`、Git 语义校验、无 Shell |
 | 路径逃逸 | 仓库路径、junction、上传文件名 | 内部 ID、realpath、根目录边界、拒绝重解析逃逸 |
-| 密钥泄漏 | DB、日志、错误、截图、URL | DPAPI/凭据管理器、引用、统一脱敏、禁止 query secret |
+| 密钥泄漏 | DB、日志、错误、截图、URL、容器卷 | DPAPI/AES-GCM Vault、引用、独立密钥备份、统一脱敏、禁止 query secret |
 | SSRF | AI base URL、集成 URL、重定向 | host/scheme policy、解析后 IP 校验、禁止 link-local/metadata、重定向复核 |
 | 数据外发 | AI prompt、机器人正文 | 字段白名单、秘密扫描、用途授权、发送前数据类别预览 |
 | 重放/重复副作用 | 双击、超时重试、作业恢复 | 幂等键、意图表、外部结果查询、唯一约束 |
@@ -36,7 +36,7 @@
 
 ### 4.1 存储
 
-首选 Windows Credential Manager；若使用 DPAPI，采用 CurrentUser scope、每条随机数据密钥/完整性保护，并把密文放受限本机文件或保险箱，数据库仅存 opaque ref。不能用代码内固定密钥或可逆“加密字段”自欺。
+Windows 使用 DPAPI CurrentUser scope，把密文放在受限本机文件保险箱；Docker 使用 32 字节持久随机主密钥、每条随机 IV、AES-256-GCM 认证标签和引用 AAD。数据库仅存 opaque ref。密钥和密文必须同时备份，生产可把密钥独立只读挂载；不能用代码内固定密钥、口令或可逆“加密字段”自欺。
 
 ### 4.2 使用
 
@@ -166,4 +166,3 @@
 ## 16. 运行手册场景
 
 必须形成可执行 runbook（实施阶段）：端口占用、DB locked/corrupt、磁盘不足、Git 凭证弹窗/超时、Jira 字段失效、GitLab 429、钉钉 unknown/重复风险、机器人签名失败、AI 数据拦截、备份失败、升级迁移失败。
-

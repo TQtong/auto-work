@@ -11,7 +11,7 @@ flowchart LR
     U["当前 Windows 用户"] -->|浏览器| WEB["127.0.0.1:3760"]
     WEB --> APP["本机控制服务"]
     APP --> DB["SQLite WAL"]
-    APP --> VAULT["DPAPI/Credential Manager"]
+    APP --> VAULT["DPAPI 或 AES-256-GCM Vault"]
     APP --> WORKER["受限 Git Worker"]
     WORKER --> REPOS["D:\\company 白名单仓库"]
     APP --> GL["GitLab Adapter"]
@@ -45,7 +45,7 @@ flowchart LR
 - 托管静态前端和 `/api`。
 - 管理数据库连接、业务事务、适配器和调度任务。
 - 默认单实例；启动时获取实例租约，避免两个进程同时使用同一数据库和调度器。
-- 只监听 IPv4/IPv6 loopback；明确配置并二次确认后才能改变，首版 UI 不提供远程绑定。
+- Windows 进程只监听 IPv4/IPv6 loopback；Docker 容器内部监听所有接口，但宿主机 Compose 只能向 loopback 发布同端口。首版 UI 不提供远程绑定。
 - 对所有变更请求校验 `Origin`、同源 CSRF 令牌和本机会话。
 
 ### 4.2 Git Worker
@@ -200,6 +200,8 @@ SQLite 事务只能覆盖本地数据库，不能覆盖 Git 或外部 HTTP。系
 
 ## 10. 部署结构
 
+推荐部署为单个 Docker Compose 服务：多阶段镜像内包含 Web/API/迁移，`auto-work-data` 命名卷保存 SQLite、制品和密钥，宿主机仓库根目录只挂载到 `/repositories`。入口在服务启动前幂等部署迁移，健康检查覆盖数据库和实例租约；容器以非 root、只读根文件系统、无 capabilities 运行。Windows 发布包仍是无 Docker 环境的兼容部署方式。
+
 建议本机数据目录（概念结构，实际路径可配置）：
 
 ```text
@@ -225,4 +227,3 @@ data/
 - 启动时执行数据库完整性检查、迁移检查、过期租约回收和 `running/unknown` 意图核对。
 - 对执行中的 Git 进程异常终止，读取仓库当前状态并标记 `needs_review`，不自动反向操作。
 - 对正式日志不确定结果，调用查询能力或要求用户确认钉钉侧结果。
-

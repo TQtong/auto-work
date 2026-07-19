@@ -153,7 +153,7 @@
 4. AI/GitLab/Jira base URL SSRF、重定向到内网/metadata。
 5. XSS：外部任务标题、Commit、模型输出、错误文本。
 6. Token/Webhook/Authorization 在 DB、日志、审计、响应、诊断包的秘密扫描。
-7. DPAPI/Credential Manager 的当前用户隔离、撤销和替换。
+7. DPAPI 当前用户隔离，以及 Docker AES-GCM 的明文不落盘、篡改/错误密钥拒绝、并发首启、撤销和替换。
 8. 文件解析资源耗尽和恶意公式/外部链接。
 9. 业务授权绕过：未确认版本提交、未批准 Git、通知含完整正文。
 10. 依赖和发布物漏洞/SBOM/校验（编码及发布阶段）。

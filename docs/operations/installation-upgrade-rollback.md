@@ -1,5 +1,9 @@
 # Windows 安装、升级与回滚
 
+本页保留不使用 Docker 时的 Windows 发布包流程。日常部署已推荐 Docker Compose，参见
+[Docker 部署与运维](./docker-deployment.md)；两种方式共享同一业务模型和迁移历史，但凭据密码学后端不同，不能直接把
+Windows DPAPI 引用交给 Linux 容器解密。
+
 ## 1. 前置条件
 
 - Windows 10/11 x64；
