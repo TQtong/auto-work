@@ -7,6 +7,8 @@ import { JiraSyncHandler } from './jira-sync.handler.js';
 import { JiraSyncService } from './jira-sync.service.js';
 import { JiraSyncSchedule } from './jira-sync.schedule.js';
 import { TasksController } from './tasks.controller.js';
+import { TaskOverrideExpirySchedule } from './task-override-expiry.schedule.js';
+import { TaskOverrideService } from './task-override.service.js';
 
 @Module({
   controllers: [JiraController, TasksController],
@@ -17,6 +19,8 @@ import { TasksController } from './tasks.controller.js';
     JiraSyncService,
     JiraSyncHandler,
     JiraSyncSchedule,
+    TaskOverrideService,
+    TaskOverrideExpirySchedule,
   ],
   exports: [JiraApiClient, JiraSyncService],
 })

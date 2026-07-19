@@ -1,9 +1,12 @@
-import { Controller, Get, Param, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Optional, Param, Put, Query, Req } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { apiResponse, DomainError, errorCodes, normalizedTaskStatuses } from '@auto-work/contracts';
 import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
+import { LocalSecurityService } from '../../infrastructure/http/local-security.service.js';
+import { SessionService } from '../session/session.service.js';
+import { taskOverrideFields, TaskOverrideService } from './task-override.service.js';
 
 const taskQuerySchema = z
   .object({
@@ -18,6 +21,7 @@ const taskQuerySchema = z
     evidenceState: z
       .enum(['none', 'suggested', 'confirmed', 'rejected', 'expired', 'needs_revalidation'])
       .optional(),
+    conflict: z.enum(['true', 'false']).optional(),
     currentUser: z.enum(['true', 'false']).optional(),
     visibility: z.enum(['visible', 'out_of_scope', 'unavailable']).default('visible'),
     dateFrom: z
@@ -33,9 +37,65 @@ const taskQuerySchema = z
   })
   .strict();
 
+const overrideValueSchema = z.union([
+  z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
+  z.number().int().min(0).max(315_576_000),
+  z.null(),
+]);
+const taskOverrideSchema = z
+  .object({
+    fieldName: z.enum(taskOverrideFields),
+    value: overrideValueSchema,
+    reason: z.string().trim().min(3).max(1_000),
+    expiresAt: z.iso.datetime({ offset: true }),
+    version: z.number().int().positive(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const expectsDate = ['plannedStartDate', 'dueDate'].includes(value.fieldName);
+    if (expectsDate && value.value !== null && typeof value.value !== 'string') {
+      context.addIssue({
+        code: 'custom',
+        path: ['value'],
+        message: '日期字段必须是 YYYY-MM-DD 或 null',
+      });
+    }
+    if (!expectsDate && value.value !== null && typeof value.value !== 'number') {
+      context.addIssue({
+        code: 'custom',
+        path: ['value'],
+        message: '工时字段必须是非负整数秒或 null',
+      });
+    }
+    const expiresAt = new Date(value.expiresAt);
+    const now = Date.now();
+    if (expiresAt.getTime() <= now || expiresAt.getTime() > now + 366 * 24 * 60 * 60_000) {
+      context.addIssue({
+        code: 'custom',
+        path: ['expiresAt'],
+        message: '覆盖有效期必须在未来且不超过 366 天',
+      });
+    }
+  });
+const revokeOverrideSchema = z
+  .object({ version: z.number().int().positive(), reason: z.string().trim().min(3).max(1_000) })
+  .strict();
+const conflictQuerySchema = z
+  .object({
+    projectId: z.string().uuid().optional(),
+    cursor: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+  })
+  .strict();
+
 @Controller('tasks')
 export class TasksController {
-  public constructor(private readonly prisma: PrismaService) {}
+  public constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly overrides?: TaskOverrideService,
+    @Optional() private readonly sessions?: SessionService,
+    @Optional() private readonly security?: LocalSecurityService,
+  ) {}
 
   @Get()
   public async list(@Query() rawQuery: Record<string, unknown>, @Req() request: FastifyRequest) {
@@ -63,6 +123,28 @@ export class TasksController {
                   : { some: { status: query.evidenceState } },
           }
         : {}),
+      ...(query.conflict
+        ? {
+            fieldProvenances:
+              query.conflict === 'true'
+                ? {
+                    some: {
+                      sourceType: 'manual',
+                      decision: 'override',
+                      active: true,
+                      conflictDetectedAt: { not: null },
+                    },
+                  }
+                : {
+                    none: {
+                      sourceType: 'manual',
+                      decision: 'override',
+                      active: true,
+                      conflictDetectedAt: { not: null },
+                    },
+                  },
+          }
+        : {}),
       ...(query.dateFrom || query.dateTo
         ? {
             dueDate: {
@@ -81,6 +163,16 @@ export class TasksController {
         include: {
           project: { select: { id: true, name: true, jiraProjectKey: true } },
           evidenceLinks: { select: { status: true, revalidationState: true } },
+          fieldProvenances: {
+            where: { active: true },
+            select: {
+              fieldName: true,
+              sourceType: true,
+              decision: true,
+              expiresAt: true,
+              conflictDetectedAt: true,
+            },
+          },
           _count: {
             select: { sourceObservations: true, statusEvents: true, evidenceLinks: true },
           },
@@ -105,6 +197,60 @@ export class TasksController {
       },
       total,
     };
+  }
+
+  @Get('conflicts')
+  public async conflicts(
+    @Query() rawQuery: Record<string, unknown>,
+    @Req() request: FastifyRequest,
+  ) {
+    const service = this.overrideDependencies().service;
+    const result = await service.listConflicts(conflictQuerySchema.parse(rawQuery));
+    return {
+      ...apiResponse(result.items, request.autoWork.correlationId, {
+        asOf: new Date().toISOString(),
+      }),
+      page: result.page,
+      total: result.total,
+    };
+  }
+
+  @Put(':id/overrides')
+  public async setOverride(
+    @Param('id') id: string,
+    @Body() rawBody: unknown,
+    @Req() request: FastifyRequest,
+  ) {
+    const dependencies = this.overrideDependencies();
+    const input = taskOverrideSchema.parse(rawBody);
+    const result = await dependencies.service.setOverride(
+      id,
+      { ...input, expiresAt: new Date(input.expiresAt) },
+      {
+        actorId: dependencies.sessions.currentProfileId,
+        correlationId: request.autoWork.correlationId,
+        clientSessionHash: dependencies.security.sessionHash(request.autoWork.sessionId),
+      },
+    );
+    return apiResponse(result, request.autoWork.correlationId);
+  }
+
+  @Delete(':id/overrides/:fieldName')
+  public async revokeOverride(
+    @Param('id') id: string,
+    @Param('fieldName') rawFieldName: string,
+    @Body() rawBody: unknown,
+    @Req() request: FastifyRequest,
+  ) {
+    const dependencies = this.overrideDependencies();
+    const fieldName = z.enum(taskOverrideFields).parse(rawFieldName);
+    const input = revokeOverrideSchema.parse(rawBody);
+    const result = await dependencies.service.revokeOverride(id, fieldName, input, {
+      actorId: dependencies.sessions.currentProfileId,
+      correlationId: request.autoWork.correlationId,
+      clientSessionHash: dependencies.security.sessionHash(request.autoWork.sessionId),
+    });
+    return apiResponse(result, request.autoWork.correlationId);
   }
 
   @Get(':id')
@@ -156,6 +302,11 @@ export class TasksController {
           supersededAt: provenance.supersededAt?.toISOString() ?? null,
           sourceObservationId: provenance.sourceObservationId,
           excelImportRowId: provenance.excelImportRowId,
+          expiresAt: provenance.expiresAt?.toISOString() ?? null,
+          conflictValue: provenance.conflictValueJson
+            ? (JSON.parse(provenance.conflictValueJson) as unknown)
+            : null,
+          conflictDetectedAt: provenance.conflictDetectedAt?.toISOString() ?? null,
         })),
         statusEvents: task.statusEvents.map((event) => ({
           id: event.id,
@@ -209,6 +360,13 @@ export class TasksController {
     project?: { id: string; name: string; jiraProjectKey: string | null } | null;
     _count?: { sourceObservations: number; statusEvents: number; evidenceLinks: number };
     evidenceLinks?: Array<{ status: string; revalidationState: string }>;
+    fieldProvenances?: Array<{
+      fieldName: string;
+      sourceType: string;
+      decision: string;
+      expiresAt: Date | null;
+      conflictDetectedAt: Date | null;
+    }>;
   }) {
     return {
       id: task.id,
@@ -241,6 +399,20 @@ export class TasksController {
       visibilityState: task.visibilityState,
       counts: task._count ?? null,
       evidence: this.evidenceSummary(task.evidenceLinks ?? []),
+      fieldSources: Object.fromEntries(
+        (task.fieldProvenances ?? []).map((provenance) => [
+          provenance.fieldName,
+          {
+            sourceType: provenance.sourceType,
+            decision: provenance.decision,
+            expiresAt: provenance.expiresAt?.toISOString() ?? null,
+            conflict: provenance.conflictDetectedAt !== null,
+          },
+        ]),
+      ),
+      conflictCount: (task.fieldProvenances ?? []).filter(
+        (provenance) => provenance.conflictDetectedAt !== null,
+      ).length,
       version: task.version,
     };
   }
@@ -287,5 +459,18 @@ export class TasksController {
     } catch {
       throw new DomainError('PAGINATION_CURSOR_INVALID', '分页游标无效', { httpStatus: 422 });
     }
+  }
+
+  private overrideDependencies(): {
+    service: TaskOverrideService;
+    sessions: SessionService;
+    security: LocalSecurityService;
+  } {
+    if (!this.overrides || !this.sessions || !this.security) {
+      throw new DomainError('TASK_OVERRIDE_UNAVAILABLE', '任务覆盖服务未初始化', {
+        httpStatus: 503,
+      });
+    }
+    return { service: this.overrides, sessions: this.sessions, security: this.security };
   }
 }

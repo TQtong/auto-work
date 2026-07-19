@@ -293,7 +293,7 @@ export class JiraSyncService {
         include: {
           sourceObservations: { orderBy: { observedAt: 'desc' }, take: 1 },
           fieldProvenances: {
-            where: { active: true, sourceType: 'excel', decision: 'supplement' },
+            where: { active: true },
           },
         },
       });
@@ -302,7 +302,16 @@ export class JiraSyncService {
         select: { id: true },
       });
       const observedAt = new Date();
-      const supplementFields = new Set(existing?.fieldProvenances.map((item) => item.fieldName));
+      const supplementFields = new Set(
+        existing?.fieldProvenances
+          .filter((item) => item.sourceType === 'excel' && item.decision === 'supplement')
+          .map((item) => item.fieldName),
+      );
+      const manualOverrides = new Map(
+        existing?.fieldProvenances
+          .filter((item) => item.sourceType === 'manual' && item.decision === 'override')
+          .map((item) => [item.fieldName, JSON.parse(item.valueJson) as unknown]),
+      );
       const data = {
         sourceStableKey: `jira:${connectionId}:${value.issueKey}`,
         projectId: project?.id ?? null,
@@ -323,16 +332,22 @@ export class JiraSyncService {
         rawStatusName: value.rawStatusName,
         normalizedStatus: value.normalizedStatus,
         // Jira 仍为空时保留已确认的 Excel 补充值；这不是把 Excel 回写到 Jira。
-        plannedStartDate:
-          value.plannedStartDate ??
-          (supplementFields.has('plannedStartDate') ? (existing?.plannedStartDate ?? null) : null),
-        dueDate:
-          value.dueDate ?? (supplementFields.has('dueDate') ? (existing?.dueDate ?? null) : null),
-        originalEstimateSeconds:
-          value.originalEstimateSeconds ??
-          (supplementFields.has('originalEstimateSeconds')
-            ? (existing?.originalEstimateSeconds ?? null)
-            : null),
+        plannedStartDate: manualOverrides.has('plannedStartDate')
+          ? (manualOverrides.get('plannedStartDate') as string | null)
+          : (value.plannedStartDate ??
+            (supplementFields.has('plannedStartDate')
+              ? (existing?.plannedStartDate ?? null)
+              : null)),
+        dueDate: manualOverrides.has('dueDate')
+          ? (manualOverrides.get('dueDate') as string | null)
+          : (value.dueDate ??
+            (supplementFields.has('dueDate') ? (existing?.dueDate ?? null) : null)),
+        originalEstimateSeconds: manualOverrides.has('originalEstimateSeconds')
+          ? (manualOverrides.get('originalEstimateSeconds') as number | null)
+          : (value.originalEstimateSeconds ??
+            (supplementFields.has('originalEstimateSeconds')
+              ? (existing?.originalEstimateSeconds ?? null)
+              : null)),
         remainingEstimateSeconds: value.remainingEstimateSeconds,
         timeSpentSeconds: value.timeSpentSeconds,
         sprintIdsJson: JSON.stringify(value.sprintIds),
@@ -410,22 +425,20 @@ export class JiraSyncService {
         ['dueDate', value.dueDate],
         ['originalEstimateSeconds', value.originalEstimateSeconds],
       ] as const) {
-        if (fieldValue !== null) {
-          await this.activateJiraProvenance(
-            tx,
-            task.id,
-            fieldName,
-            fieldValue,
-            observation.id,
-            observedAt,
-          );
-        }
+        await this.observeJiraProvenance(
+          tx,
+          task.id,
+          fieldName,
+          fieldValue,
+          observation.id,
+          observedAt,
+        );
       }
       return existing ? (unchanged ? 'unchanged' : 'updated') : 'created';
     });
   }
 
-  private async activateJiraProvenance(
+  private async observeJiraProvenance(
     tx: Prisma.TransactionClient,
     taskId: string,
     fieldName: string,
@@ -436,6 +449,19 @@ export class JiraSyncService {
     const current = await tx.taskFieldProvenance.findFirst({
       where: { taskId, fieldName, active: true },
     });
+    if (current?.sourceType === 'manual' && current.decision === 'override') {
+      // Jira 继续同步主事实，但人工有效期内不静默覆盖；差异作为冲突候选显式留存。
+      const conflict = value !== null && current.valueJson !== JSON.stringify(value);
+      await tx.taskFieldProvenance.update({
+        where: { id: current.id },
+        data: {
+          conflictValueJson: conflict ? JSON.stringify(value) : null,
+          conflictDetectedAt: conflict ? effectiveAt : null,
+        },
+      });
+      return;
+    }
+    if (value === null) return;
     if (
       current?.sourceType === 'jira' &&
       current.sourceObservationId === sourceObservationId &&

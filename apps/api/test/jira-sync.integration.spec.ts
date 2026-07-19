@@ -9,9 +9,10 @@ import type { PrismaService } from '../src/infrastructure/database/prisma.servic
 import type { JiraApiClient } from '../src/modules/jira/jira-api.client.js';
 import { JiraMappingService } from '../src/modules/jira/jira-mapping.service.js';
 import { JiraSyncService } from '../src/modules/jira/jira-sync.service.js';
-import type { AuditService } from '../src/modules/audit/audit.service.js';
 import type { SessionService } from '../src/modules/session/session.service.js';
 import type { LocalSecurityService } from '../src/infrastructure/http/local-security.service.js';
+import { AuditService } from '../src/modules/audit/audit.service.js';
+import { TaskOverrideService } from '../src/modules/jira/task-override.service.js';
 
 const fieldMappings = {
   plannedStartDate: 'customfield_start',
@@ -225,6 +226,122 @@ describe('Jira 防漏增量同步', () => {
     });
     expect(cursor.lastUpdatedAt?.toISOString()).toBe(updated);
     expect(cursor.lastTiebreaker).toBe('PROJ-6');
+  });
+
+  it('人工覆盖保留有效期、Jira 新事实形成显式冲突，撤销和到期恢复最新 Jira 值', async () => {
+    const firstUpdated = '2026-07-17T15:00:00.000Z';
+    const firstRun = await createRun();
+    const firstSync = serviceWithPages((startAt) => ({
+      startAt,
+      total: 1,
+      issues: startAt === 0 ? [issue('PROJ-900', firstUpdated, { duedate: '2026-07-20' })] : [],
+    })).service;
+    await execute(firstSync, firstRun.id);
+    const initial = await prisma.task.findUniqueOrThrow({
+      where: { connectionId_issueKey: { connectionId, issueKey: 'PROJ-900' } },
+    });
+    const overrides = new TaskOverrideService(
+      prisma as unknown as PrismaService,
+      new AuditService(prisma as unknown as PrismaService),
+    );
+    const auditContext = {
+      actorId: 'local-user',
+      correlationId: 'override-integration',
+      clientSessionHash: 'session-hash',
+    };
+    const expiresAt = new Date(Date.now() + 60 * 60_000);
+    await overrides.setOverride(
+      initial.id,
+      {
+        fieldName: 'dueDate',
+        value: '2026-08-01',
+        reason: '本地排期经负责人确认延后',
+        expiresAt,
+        version: initial.version,
+      },
+      auditContext,
+    );
+
+    const secondRun = await createRun();
+    const secondSync = serviceWithPages((startAt) => ({
+      startAt,
+      total: 1,
+      issues:
+        startAt === 0
+          ? [issue('PROJ-900', '2026-07-17T16:00:00.000Z', { duedate: '2026-07-25' })]
+          : [],
+    })).service;
+    await execute(secondSync, secondRun.id);
+
+    const conflictedTask = await prisma.task.findUniqueOrThrow({ where: { id: initial.id } });
+    expect(conflictedTask.dueDate).toBe('2026-08-01');
+    const conflict = await prisma.taskFieldProvenance.findFirstOrThrow({
+      where: { taskId: initial.id, fieldName: 'dueDate', sourceType: 'manual', active: true },
+    });
+    expect(JSON.parse(conflict.conflictValueJson!)).toBe('2026-07-25');
+    expect(conflict.conflictDetectedAt).toBeInstanceOf(Date);
+    await expect(overrides.listConflicts({ limit: 20 })).resolves.toMatchObject({
+      total: 1,
+      items: [
+        {
+          task: { id: initial.id, issueKey: 'PROJ-900' },
+          fieldName: 'dueDate',
+          manualValue: '2026-08-01',
+          jiraValue: '2026-07-25',
+        },
+      ],
+    });
+
+    const revoked = await overrides.revokeOverride(
+      initial.id,
+      'dueDate',
+      { version: conflictedTask.version, reason: '接受 Jira 最新排期' },
+      auditContext,
+    );
+    expect(revoked).toMatchObject({ value: '2026-07-25', sourceType: 'jira' });
+    const afterRevoke = await prisma.task.findUniqueOrThrow({ where: { id: initial.id } });
+    expect(afterRevoke.dueDate).toBe('2026-07-25');
+
+    await overrides.setOverride(
+      initial.id,
+      {
+        fieldName: 'dueDate',
+        value: '2026-08-05',
+        reason: '短期本地计划试算',
+        expiresAt,
+        version: afterRevoke.version,
+      },
+      auditContext,
+    );
+    expect(await overrides.expireDue(new Date(expiresAt.getTime() + 1))).toBe(1);
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: initial.id } })).dueDate).toBe(
+      '2026-07-25',
+    );
+    expect(
+      await prisma.auditEvent.count({
+        where: {
+          action: {
+            in: [
+              'task.manual_override_set',
+              'task.manual_override_revoked',
+              'task.manual_override_expired',
+            ],
+          },
+        },
+      }),
+    ).toBe(4);
+
+    // 本文件后续场景共享数据库；精确移除本场景事实，避免容量断言被测试自身污染。
+    await prisma.taskFieldProvenance.deleteMany({ where: { taskId: initial.id } });
+    await prisma.taskStatusEvent.deleteMany({ where: { taskId: initial.id } });
+    await prisma.taskSourceObservation.deleteMany({ where: { taskId: initial.id } });
+    await prisma.task.delete({ where: { id: initial.id } });
+    await prisma.auditEvent.deleteMany({
+      where: {
+        targetId: initial.id,
+        action: { startsWith: 'task.manual_override_' },
+      },
+    });
   });
 
   it('字段和状态映射通过样例能力校验后创建不可变新版本', async () => {

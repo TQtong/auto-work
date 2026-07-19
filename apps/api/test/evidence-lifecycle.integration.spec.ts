@@ -12,6 +12,7 @@ import { EvidenceController } from '../src/modules/evidence/evidence.controller.
 import { EvidenceLifecycleService } from '../src/modules/evidence/evidence-lifecycle.service.js';
 import { IdempotencyService } from '../src/modules/idempotency/idempotency.service.js';
 import { TasksController } from '../src/modules/jira/tasks.controller.js';
+import { TaskOverrideService } from '../src/modules/jira/task-override.service.js';
 import type { SessionService } from '../src/modules/session/session.service.js';
 
 describe('证据关系确认、拒绝、撤销与过期', () => {
@@ -419,5 +420,109 @@ describe('证据关系确认、拒绝、撤销与过期', () => {
     await expect(
       tasks.list({ sprintId: '12', unexpected: 'forbidden' }, request),
     ).rejects.toBeDefined();
+  });
+
+  it('任务覆盖 API 校验字段类型和版本，并在列表、冲突页、撤销与审计中形成闭环', async () => {
+    await prisma.task.update({ where: { id: 'task-1' }, data: { dueDate: '2026-07-20' } });
+    await prisma.taskFieldProvenance.create({
+      data: {
+        id: 'task-1-jira-due-date',
+        taskId: 'task-1',
+        fieldName: 'dueDate',
+        sourceType: 'jira',
+        decision: 'source_fact',
+        valueJson: JSON.stringify('2026-07-20'),
+        active: true,
+      },
+    });
+    const overrides = new TaskOverrideService(prisma as unknown as PrismaService, audit);
+    const tasks = new TasksController(
+      prisma as unknown as PrismaService,
+      overrides,
+      { currentProfileId: 'local-user' } as SessionService,
+      { sessionHash: () => 'session-hash' } as unknown as LocalSecurityService,
+    );
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
+
+    await expect(
+      tasks.setOverride(
+        'task-1',
+        {
+          fieldName: 'dueDate',
+          value: 3_600,
+          reason: '字段类型错误',
+          expiresAt,
+          version: 1,
+        },
+        request,
+      ),
+    ).rejects.toBeDefined();
+    const setResult = await tasks.setOverride(
+      'task-1',
+      {
+        fieldName: 'dueDate',
+        value: '2026-08-01',
+        reason: '本地计划经人工确认调整',
+        expiresAt,
+        version: 1,
+      },
+      request,
+    );
+    expect(setResult.data).toMatchObject({
+      taskId: 'task-1',
+      fieldName: 'dueDate',
+      value: '2026-08-01',
+      conflictValue: '2026-07-20',
+      taskVersion: 2,
+    });
+    await expect(
+      tasks.setOverride(
+        'task-1',
+        {
+          fieldName: 'dueDate',
+          value: '2026-08-02',
+          reason: '使用旧版本覆盖',
+          expiresAt,
+          version: 1,
+        },
+        request,
+      ),
+    ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+
+    const list = await tasks.list({ conflict: 'true', limit: '20' }, request);
+    expect(list.data[0]).toMatchObject({
+      id: 'task-1',
+      schedule: { dueDate: '2026-08-01' },
+      fieldSources: { dueDate: { sourceType: 'manual', decision: 'override', conflict: true } },
+      conflictCount: 1,
+    });
+    const conflicts = await tasks.conflicts({ limit: '20' }, request);
+    expect(conflicts).toMatchObject({
+      total: 1,
+      data: [
+        {
+          task: { id: 'task-1' },
+          fieldName: 'dueDate',
+          manualValue: '2026-08-01',
+          jiraValue: '2026-07-20',
+        },
+      ],
+    });
+
+    const revoked = await tasks.revokeOverride(
+      'task-1',
+      'dueDate',
+      { version: 2, reason: '接受 Jira 主事实' },
+      request,
+    );
+    expect(revoked.data).toMatchObject({ value: '2026-07-20', sourceType: 'jira', taskVersion: 3 });
+    expect((await prisma.task.findUniqueOrThrow({ where: { id: 'task-1' } })).dueDate).toBe(
+      '2026-07-20',
+    );
+    expect(
+      await prisma.auditEvent.count({
+        where: { action: { in: ['task.manual_override_set', 'task.manual_override_revoked'] } },
+      }),
+    ).toBe(2);
   });
 });

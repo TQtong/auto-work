@@ -713,6 +713,9 @@ model TaskFieldProvenance {
   reason              String?
   active              Boolean                @default(false)
   effectiveAt         DateTime               @default(now()) @map("effective_at")
+  expiresAt           DateTime?              @map("expires_at")
+  conflictValueJson   String?                @map("conflict_value_json")
+  conflictDetectedAt  DateTime?              @map("conflict_detected_at")
   supersededAt        DateTime?              @map("superseded_at")
   createdAt           DateTime               @default(now()) @map("created_at")
   task                Task                   @relation(fields: [taskId], references: [id], onDelete: Restrict)
@@ -720,6 +723,8 @@ model TaskFieldProvenance {
   excelImportRow      ExcelImportRow?        @relation(fields: [excelImportRowId], references: [id], onDelete: Restrict)
 
   @@index([taskId, fieldName, active])
+  @@index([sourceType, active, expiresAt])
+  @@index([active, conflictDetectedAt])
   @@index([excelImportRowId])
   @@map("task_field_provenance")
 }
