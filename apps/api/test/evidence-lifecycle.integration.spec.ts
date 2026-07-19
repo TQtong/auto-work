@@ -359,4 +359,65 @@ describe('证据关系确认、拒绝、撤销与过期', () => {
       evidence: { state: 'needs_revalidation', needsRevalidation: 1 },
     });
   });
+
+  it('任务列表组合筛选项目、原始状态、父任务、Sprint、日期和来源且不误命中相似 Sprint', async () => {
+    const filterProjectId = '11111111-1111-4111-8111-111111111111';
+    await prisma.project.create({
+      data: { id: filterProjectId, name: '完整筛选项目', jiraProjectKey: 'FILTER' },
+    });
+    await prisma.task.createMany({
+      data: [
+        {
+          id: 'task-filter-match',
+          projectId: filterProjectId,
+          primarySource: 'excel',
+          issueKey: 'PROJ-12',
+          projectKey: 'PROJ',
+          parentIssueKey: 'PROJ-EPIC',
+          title: '完整筛选命中任务',
+          rawStatusName: '研发处理中',
+          normalizedStatus: 'in_progress',
+          dueDate: '2026-07-20',
+          sprintIdsJson: JSON.stringify(['12', '研发冲刺']),
+          lastObservedAt: new Date('2026-07-17T00:00:00.000Z'),
+        },
+        {
+          id: 'task-filter-similar-sprint',
+          projectId: filterProjectId,
+          primarySource: 'excel',
+          issueKey: 'PROJ-112',
+          projectKey: 'PROJ',
+          parentIssueKey: 'PROJ-EPIC',
+          title: '相似 Sprint 不应命中',
+          rawStatusName: '研发处理中',
+          normalizedStatus: 'in_progress',
+          dueDate: '2026-07-20',
+          sprintIdsJson: JSON.stringify(['112']),
+          lastObservedAt: new Date('2026-07-17T00:00:00.000Z'),
+        },
+      ],
+    });
+    const tasks = new TasksController(prisma as unknown as PrismaService);
+
+    const result = await tasks.list(
+      {
+        projectId: filterProjectId,
+        rawStatus: '研发处理中',
+        status: 'in_progress',
+        parentIssueKey: 'PROJ-EPIC',
+        sprintId: '12',
+        dateFrom: '2026-07-19',
+        dateTo: '2026-07-21',
+        source: 'excel',
+        currentUser: 'false',
+        limit: '20',
+      },
+      request,
+    );
+
+    expect(result.data.map((task) => task.id)).toEqual(['task-filter-match']);
+    await expect(
+      tasks.list({ sprintId: '12', unexpected: 'forbidden' }, request),
+    ).rejects.toBeDefined();
+  });
 });

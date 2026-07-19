@@ -8,9 +8,13 @@ import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 const taskQuerySchema = z
   .object({
     connectionId: z.string().uuid().optional(),
+    projectId: z.string().uuid().optional(),
     projectKey: z.string().trim().min(1).max(100).optional(),
     status: z.enum(normalizedTaskStatuses).optional(),
+    rawStatus: z.string().trim().min(1).max(200).optional(),
     source: z.enum(['jira', 'excel', 'manual']).optional(),
+    parentIssueKey: z.string().trim().min(1).max(100).optional(),
+    sprintId: z.string().trim().min(1).max(200).optional(),
     evidenceState: z
       .enum(['none', 'suggested', 'confirmed', 'rejected', 'expired', 'needs_revalidation'])
       .optional(),
@@ -40,9 +44,14 @@ export class TasksController {
     const where: Prisma.TaskWhereInput = {
       visibilityState: query.visibility,
       ...(query.connectionId ? { connectionId: query.connectionId } : {}),
+      ...(query.projectId ? { projectId: query.projectId } : {}),
       ...(query.projectKey ? { projectKey: query.projectKey } : {}),
       ...(query.status ? { normalizedStatus: query.status } : {}),
+      ...(query.rawStatus ? { rawStatusName: query.rawStatus } : {}),
       ...(query.source ? { primarySource: query.source } : {}),
+      ...(query.parentIssueKey ? { parentIssueKey: query.parentIssueKey } : {}),
+      // Sprint 以 JSON 字符串持久化；连同 JSON 引号匹配可避免筛选 "12" 时误命中 "112"。
+      ...(query.sprintId ? { sprintIdsJson: { contains: JSON.stringify(query.sprintId) } } : {}),
       ...(query.currentUser ? { isCurrentUser: query.currentUser === 'true' } : {}),
       ...(query.evidenceState
         ? {
