@@ -43,6 +43,6 @@
 | 05B      | 自评版本、AI 建议、确认失效与冻结快照             | [阶段五 B 实现与验证](./phase-5b-quarterly-narrative-ai-confirmation.md)     | verified    |
 | 05C1     | 确认快照 Excel/Word 制品、作业恢复与文件 QA       | [阶段五 C1 实现与验证](./phase-5c1-quarterly-export-artifacts.md)            | verified    |
 | 05C2     | 完整季度绩效工作台与导出交互                      | [阶段五 C2 实现与验证](./phase-5c2-quarterly-workbench.md)                   | verified    |
-| 05D      | 运维、诊断、发布门禁与全量文档终审                | 待提交                                                                       | planned     |
+| 05D      | 运维、诊断、发布门禁与全量文档终审                | [阶段五 D 实现与验证](./phase-5d-operations-release-audit.md)                | implemented |
 
 每次增量必须同步更新本表，并在 PR 中保留对应提交、验证命令和人工检查结果。
