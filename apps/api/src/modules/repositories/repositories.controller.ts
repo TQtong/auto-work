@@ -137,13 +137,13 @@ export class RepositoriesController {
 
   @Post('repositories/sync')
   public async syncAll(@Req() request: FastifyRequest) {
-    const minute = new Date().toISOString().slice(0, 16);
     const job = await this.queue.enqueue({
       type: 'repository.sync',
       payloadSummary: { scope: 'all' },
       priority: 40,
       maxAttempts: 2,
-      dedupeKey: `repository.sync:all:${minute}`,
+      // 与五分钟调度共享固定去重键，避免用户刷新和后台刷新同时扫描全部仓库。
+      dedupeKey: 'repository.sync:all',
     });
     await this.recordAudit(request, 'repository.sync_requested', 'job', job.id);
     return apiResponse(
