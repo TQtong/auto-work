@@ -571,7 +571,14 @@ function IntegrationSettings() {
       kind: 'test' | 'sync' | 'disable' | 'revoke';
     }) => {
       if (kind === 'test')
-        return apiRequest(`/api/v1/integrations/${row.id}/test`, { method: 'POST' });
+        return row.type === 'dingtalk_robot'
+          ? apiRequest(`/api/v1/integrations/${row.id}/dingtalk-robot/test`, {
+              method: 'POST',
+              headers: { 'Idempotency-Key': crypto.randomUUID() },
+              // Popconfirm 只负责交互提示；服务端仍要求不可省略的显式确认字段。
+              body: JSON.stringify({ confirmSendTestMessage: true }),
+            })
+          : apiRequest(`/api/v1/integrations/${row.id}/test`, { method: 'POST' });
       if (kind === 'sync')
         return row.type === 'jira'
           ? apiRequest(`/api/v1/integrations/${row.id}/jira/sync`, {

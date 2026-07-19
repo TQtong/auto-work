@@ -250,32 +250,129 @@ export class IntegrationsService {
     }
   }
 
-  public async test(id: string) {
+  public async test(id: string, context: RequestAuditContext) {
     const connection = await this.find(id);
     if (!connection.enabled)
       throw new DomainError('INTEGRATION_DISABLED', '已禁用连接不能测试', { httpStatus: 409 });
-    const preserveActiveRobotState =
-      connection.type === 'dingtalk_robot' && Boolean(connection.pendingCredentialRef);
+    if (connection.type === 'dingtalk_robot') {
+      throw new DomainError(
+        'DINGTALK_ROBOT_EXPLICIT_TEST_REQUIRED',
+        '钉钉机器人测试必须使用专用端点并显式确认发送固定测试消息',
+        { httpStatus: 422 },
+      );
+    }
     const testedCredentialFingerprint = requestHash({
       connectionId: id,
-      credentialRef: connection.pendingCredentialRef ?? connection.credentialRef ?? 'none',
+      credentialRef: connection.credentialRef ?? 'none',
       configJson: connection.configJson,
     });
     await this.prisma.integrationConnection.update({
       where: { id },
       data: {
-        ...(preserveActiveRobotState ? {} : { status: 'testing' }),
+        status: 'testing',
         lastTestedAt: new Date(),
         version: { increment: 1 },
       },
     });
-    return this.queue.enqueue({
+    const job = await this.queue.enqueue({
       type: 'integration.test',
       payloadRef: id,
       payloadSummary: { integrationType: connection.type, integrationId: id },
-      maxAttempts: connection.type === 'dingtalk_robot' ? 1 : 2,
+      maxAttempts: 2,
       // 同一凭证的排队/执行中测试只允许一个；完成后仍可由用户再次显式发起。
       dedupeKey: `integration.test:${id}:${testedCredentialFingerprint}`,
+    });
+    await this.auditChange('integration.test_requested', connection, await this.find(id), context);
+    return job;
+  }
+
+  public async testDingTalkRobot(
+    id: string,
+    context: RequestAuditContext,
+    idempotencyRecordId: string,
+  ) {
+    const connection = await this.find(id);
+    if (!connection.enabled)
+      throw new DomainError('INTEGRATION_DISABLED', '已禁用连接不能测试', { httpStatus: 409 });
+    if (connection.type !== 'dingtalk_robot') {
+      throw new DomainError('DINGTALK_ROBOT_CONNECTION_REQUIRED', '该连接不是钉钉机器人', {
+        httpStatus: 422,
+      });
+    }
+    const testedCredentialFingerprint = requestHash({
+      connectionId: id,
+      credentialRef: connection.pendingCredentialRef ?? connection.credentialRef ?? 'none',
+      configJson: connection.configJson,
+    });
+    const dedupeKey = `integration.test:${id}:${testedCredentialFingerprint}`;
+
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.job.findFirst({
+        where: { dedupeKey, status: { in: ['queued', 'running'] } },
+        orderBy: { createdAt: 'desc' },
+      });
+      let job = existing;
+      if (!job) {
+        const changed = await tx.integrationConnection.updateMany({
+          where: { id, version: connection.version, enabled: true },
+          data: {
+            // 已有生效凭证时保持健康状态，待测试凭证只在固定消息成功后提升。
+            ...(connection.pendingCredentialRef ? {} : { status: 'testing' }),
+            lastTestedAt: new Date(),
+            version: { increment: 1 },
+          },
+        });
+        if (changed.count !== 1) {
+          throw new DomainError(errorCodes.versionConflict, '机器人配置版本已变化', {
+            httpStatus: 409,
+          });
+        }
+        job = await tx.job.create({
+          data: {
+            id: newId(),
+            type: 'integration.test',
+            payloadRef: id,
+            payloadSummary: JSON.stringify({
+              integrationType: connection.type,
+              integrationId: id,
+              requestedBy: this.sessions.currentProfileId,
+              correlationId: context.correlationId,
+              clientSessionHash: this.security.sessionHash(context.sessionId),
+            }),
+            priority: 100,
+            scheduledAt: new Date(),
+            maxAttempts: 1,
+            dedupeKey,
+          },
+        });
+      }
+      const response = {
+        operationId: job.id,
+        status: job.status,
+        statusUrl: `/api/v1/operations/${job.id}`,
+      };
+      await this.audit.recordInTransaction(tx, {
+        actorId: this.sessions.currentProfileId,
+        action: 'integration.dingtalk_robot_test_requested',
+        targetType: 'integration_connection',
+        targetId: id,
+        correlationId: context.correlationId,
+        outcome: 'succeeded',
+        before: { status: connection.status, version: connection.version },
+        after: { operationId: job.id, replayedActiveOperation: Boolean(existing) },
+        clientSessionHash: this.security.sessionHash(context.sessionId),
+      });
+      // 作业、连接状态和审计与首次 202 响应同事务落库，网络重试不会再次向群发送消息。
+      await tx.idempotencyRecord.update({
+        where: { id: idempotencyRecordId },
+        data: {
+          state: 'completed',
+          httpStatus: 202,
+          responseJson: JSON.stringify(response),
+          errorCode: null,
+        },
+      });
+      return response;
     });
   }
 

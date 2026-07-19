@@ -7,8 +7,10 @@ import type { PrismaService } from '../src/infrastructure/database/prisma.servic
 import type { CredentialVault } from '../src/infrastructure/vault/credential-vault.js';
 import type { LocalSecurityService } from '../src/infrastructure/http/local-security.service.js';
 import { AuditService } from '../src/modules/audit/audit.service.js';
+import { IdempotencyService } from '../src/modules/idempotency/idempotency.service.js';
 import { IntegrationProbeRegistry } from '../src/modules/integrations/integration-probe.registry.js';
 import { IntegrationTestHandler } from '../src/modules/integrations/integration-test.handler.js';
+import { IntegrationsController } from '../src/modules/integrations/integrations.controller.js';
 import { IntegrationsService } from '../src/modules/integrations/integrations.service.js';
 import type { JobRegistryService } from '../src/modules/jobs/job-registry.service.js';
 import type { JobQueueService } from '../src/modules/jobs/job-queue.service.js';
@@ -19,6 +21,7 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
   let prisma: PrismaClient;
   let handler: IntegrationTestHandler;
   let integrations: IntegrationsService;
+  let controller: IntegrationsController;
   let vault: CredentialVault;
   let probes: IntegrationProbeRegistry;
   const secrets = new Map<string, string>();
@@ -102,6 +105,12 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
       probes,
       vault,
     );
+    controller = new IntegrationsController(
+      integrations,
+      {} as never,
+      new IdempotencyService(prismaService),
+      sessions,
+    );
     await prisma.userProfile.create({
       data: {
         id: 'local-user',
@@ -164,12 +173,69 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
     expect(updatedRow.pendingCredentialRef).not.toBe(firstPendingReference);
     expect(deletedReferences).toContain(firstPendingReference);
     expect(probeSpy).not.toHaveBeenCalled();
-    await integrations.test(created.id);
-    await integrations.test(created.id);
-    const queuedTests = enqueue.mock.calls.slice(-2).map(([input]) => input);
-    expect(queuedTests).toHaveLength(2);
-    expect(queuedTests[0]).toMatchObject({ maxAttempts: 1 });
-    expect(queuedTests[1]!.dedupeKey).toBe(queuedTests[0]!.dedupeKey);
+    await expect(controller.test(created.id, request('generic-bypass'))).rejects.toMatchObject({
+      code: 'DINGTALK_ROBOT_EXPLICIT_TEST_REQUIRED',
+    });
+    await expect(
+      controller.testDingTalkRobot(
+        created.id,
+        { confirmSendTestMessage: true },
+        undefined,
+        request('missing-key'),
+      ),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_KEY_REQUIRED' });
+    await expect(
+      controller.testDingTalkRobot(
+        created.id,
+        { confirmSendTestMessage: false },
+        'robot-invalid-confirmation',
+        request('invalid-confirmation'),
+      ),
+    ).rejects.toThrow();
+
+    const first = await controller.testDingTalkRobot(
+      created.id,
+      { confirmSendTestMessage: true },
+      'robot-test-first-request',
+      request('robot-test-first'),
+    );
+    const idempotentReplay = await controller.testDingTalkRobot(
+      created.id,
+      { confirmSendTestMessage: true },
+      'robot-test-first-request',
+      request('robot-test-replay'),
+    );
+    expect(idempotentReplay.data).toEqual(first.data);
+    const activeOperationReplay = await controller.testDingTalkRobot(
+      created.id,
+      { confirmSendTestMessage: true },
+      'robot-test-second-request',
+      request('robot-test-active-operation'),
+    );
+    expect(activeOperationReplay.data).toEqual(first.data);
+    expect(
+      await prisma.job.count({ where: { type: 'integration.test', payloadRef: created.id } }),
+    ).toBe(1);
+    expect(
+      await prisma.job.findFirstOrThrow({
+        where: { type: 'integration.test', payloadRef: created.id },
+      }),
+    ).toMatchObject({ maxAttempts: 1, status: 'queued' });
+    expect(
+      await prisma.idempotencyRecord.count({
+        where: {
+          route: `/api/v1/integrations/${created.id}/dingtalk-robot/test`,
+          state: 'completed',
+          httpStatus: 202,
+        },
+      }),
+    ).toBe(2);
+    expect(
+      await prisma.auditEvent.count({
+        where: { action: 'integration.dingtalk_robot_test_requested', targetId: created.id },
+      }),
+    ).toBe(2);
+    expect(enqueue).not.toHaveBeenCalled();
     probeSpy.mockRestore();
   });
 
@@ -302,5 +368,14 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
 
   function officialWebhook(token: string): string {
     return `https://oapi.dingtalk.com/robot/send?access_token=${token}`;
+  }
+
+  function request(suffix: string) {
+    return {
+      autoWork: {
+        correlationId: `corr-${suffix}`,
+        sessionId: `session-${suffix}`,
+      },
+    } as never;
   }
 });
