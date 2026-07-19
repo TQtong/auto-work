@@ -80,6 +80,8 @@ async function createService() {
     webDist: join(dataDir, 'web'),
     databaseUrl: `file:${join(dataDir, 'auto-work.db').replaceAll('\\', '/')}`,
     repositoryRoot: join(dataDir, 'repositories'),
+    vaultBackend: 'sealed',
+    vaultKeyFile: join(dataDir, 'vault-master.key'),
     logLevel: 'info',
     environment: 'test',
   };

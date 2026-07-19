@@ -40,6 +40,8 @@ beforeEach(async () => {
     webDist: join(rootDirectory, 'web'),
     databaseUrl: `file:${join(rootDirectory, 'test.db').replaceAll('\\', '/')}`,
     repositoryRoot: rootDirectory,
+    vaultBackend: 'sealed',
+    vaultKeyFile: join(rootDirectory, 'data', 'vault-master.key'),
     logLevel: 'info',
     environment: 'test',
   };

@@ -71,6 +71,8 @@ async function createFixture() {
     webDist: join(dataDir, 'web'),
     databaseUrl: `file:${databasePath.replaceAll('\\', '/')}`,
     repositoryRoot: join(dataDir, 'repositories'),
+    vaultBackend: 'sealed',
+    vaultKeyFile: join(dataDir, 'vault-master.key'),
     logLevel: 'info',
     environment: 'test',
   };

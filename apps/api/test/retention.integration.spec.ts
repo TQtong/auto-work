@@ -90,6 +90,8 @@ describe('留存预览、范围防漂移与受控清理', () => {
       webDist: join(temporaryDirectory, 'web'),
       databaseUrl: `file:${databasePath.replaceAll('\\', '/')}`,
       repositoryRoot: join(temporaryDirectory, 'repositories'),
+      vaultBackend: 'sealed',
+      vaultKeyFile: join(temporaryDirectory, 'vault-master.key'),
       logLevel: 'info',
       environment: 'test',
     };

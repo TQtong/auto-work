@@ -63,6 +63,8 @@ describe('季度绩效 Excel/Word 不可变快照导出', () => {
         webDist: temporaryDirectory,
         databaseUrl: 'file:test',
         repositoryRoot: temporaryDirectory,
+        vaultBackend: 'sealed',
+        vaultKeyFile: join(temporaryDirectory, 'vault-master.key'),
         logLevel: 'info',
         environment: 'test',
       } satisfies AppConfig,

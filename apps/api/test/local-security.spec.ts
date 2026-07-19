@@ -13,6 +13,8 @@ const config: AppConfig = {
   webDist: 'D:\\temp\\auto-work\\web',
   databaseUrl: 'file:./test.db',
   repositoryRoot: 'D:\\company',
+  vaultBackend: 'dpapi',
+  vaultKeyFile: 'D:\\temp\\auto-work\\vault-master.key',
   logLevel: 'info',
   environment: 'test',
 };

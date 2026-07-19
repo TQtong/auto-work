@@ -51,6 +51,8 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
         webDist: join(temporaryDirectory, 'web'),
         databaseUrl: `file:${join(temporaryDirectory, 'weekly.db').replaceAll('\\', '/')}`,
         repositoryRoot: join(temporaryDirectory, 'repositories'),
+        vaultBackend: 'sealed',
+        vaultKeyFile: join(temporaryDirectory, 'vault-master.key'),
         logLevel: 'error',
         environment: 'test',
       },
