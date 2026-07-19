@@ -1,0 +1,1778 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("AUTO_WORK_DATABASE_URL")
+}
+
+model SchemaMetadata {
+  id                 Int      @id @default(1)
+  applicationVersion String   @map("application_version")
+  schemaChecksum     String   @map("schema_checksum")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@map("schema_metadata")
+}
+
+model InstanceLease {
+  name       String   @id
+  ownerId    String   @map("owner_id")
+  acquiredAt DateTime @map("acquired_at")
+  renewedAt  DateTime @map("renewed_at")
+  expiresAt  DateTime @map("expires_at")
+
+  @@map("instance_lease")
+}
+
+model UserProfile {
+  id                    String                      @id
+  windowsSid            String                      @unique @map("windows_sid")
+  displayName           String                      @map("display_name")
+  timezone              String                      @default("Asia/Shanghai")
+  workdayHours          Int                         @default(8) @map("workday_hours")
+  version               Int                         @default(1)
+  createdAt             DateTime                    @default(now()) @map("created_at")
+  updatedAt             DateTime                    @updatedAt @map("updated_at")
+  aliases               IdentityAlias[]
+  aiGenerations         AiGeneration[]
+  reportSourceSnapshots ReportSourceSnapshot[]
+  weeklyReports         WeeklyReport[]
+  weeklyReminderPolicy  WeeklyReportReminderPolicy?
+  quarterlyReviews      QuarterlyReview[]
+  metricTemplates       PerformanceMetricTemplate[]
+
+  @@map("user_profile")
+}
+
+model IdentityAlias {
+  id              String      @id
+  profileId       String      @map("profile_id")
+  aliasType       String      @map("alias_type")
+  value           String
+  normalizedValue String      @map("normalized_value")
+  source          String
+  enabled         Boolean     @default(false)
+  verifiedAt      DateTime?   @map("verified_at")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+  profile         UserProfile @relation(fields: [profileId], references: [id], onDelete: Restrict)
+
+  @@unique([profileId, aliasType, normalizedValue])
+  @@index([profileId, aliasType, enabled])
+  @@map("identity_alias")
+}
+
+model Project {
+  id             String        @id
+  name           String
+  alias          String?
+  description    String?
+  jiraProjectKey String?       @unique @map("jira_project_key")
+  enabled        Boolean       @default(true)
+  sortOrder      Int           @default(0) @map("sort_order")
+  version        Int           @default(1)
+  archivedAt     DateTime?     @map("archived_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  repositories   Repository[]
+  tasks          Task[]
+  evidences      Evidence[]
+  achievements   Achievement[]
+
+  @@index([enabled, archivedAt, sortOrder])
+  @@map("project")
+}
+
+model Repository {
+  id                 String         @id
+  projectId          String?        @map("project_id")
+  canonicalPath      String         @unique @map("canonical_path")
+  realPathHash       String         @map("real_path_hash")
+  identityHash       String         @map("identity_hash")
+  displayName        String         @map("display_name")
+  alias              String?
+  gitDirKind         String         @map("git_dir_kind")
+  remoteName         String?        @map("remote_name")
+  remoteUrl          String?        @map("remote_url")
+  remoteProtocol     String?        @map("remote_protocol")
+  remoteHost         String?        @map("remote_host")
+  remotePort         Int?           @map("remote_port")
+  remotePath         String?        @map("remote_path")
+  gitlabConnectionId String?        @map("gitlab_connection_id")
+  gitlabProjectRef   String?        @map("gitlab_project_ref")
+  baselineBranch     String?        @map("baseline_branch")
+  whitelistStatus    String         @default("discovered") @map("whitelist_status")
+  statusReason       String?        @map("status_reason")
+  lastSeenAt         DateTime?      @map("last_seen_at")
+  lastLocalRefreshAt DateTime?      @map("last_local_refresh_at")
+  version            Int            @default(1)
+  createdAt          DateTime       @default(now()) @map("created_at")
+  updatedAt          DateTime       @updatedAt @map("updated_at")
+  project            Project?       @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  snapshots          GitSnapshot[]
+  gitBatchItems      GitBatchItem[]
+
+  @@index([projectId, whitelistStatus])
+  @@index([identityHash])
+  @@index([remoteHost, remotePath])
+  @@index([gitlabConnectionId, gitlabProjectRef])
+  @@map("repository")
+}
+
+model GitBatch {
+  id                  String         @id
+  action              String
+  parametersJson      String         @map("parameters_json")
+  status              String         @default("draft")
+  version             Int            @default(1)
+  previewHash         String?        @map("preview_hash")
+  previewedAt         DateTime?      @map("previewed_at")
+  expiresAt           DateTime?      @map("expires_at")
+  createdBy           String         @map("created_by")
+  approvedBy          String?        @map("approved_by")
+  approvedAt          DateTime?      @map("approved_at")
+  approvalRequestHash String?        @map("approval_request_hash")
+  executionStartedAt  DateTime?      @map("execution_started_at")
+  executionEndedAt    DateTime?      @map("execution_ended_at")
+  summaryJson         String         @default("{}") @map("summary_json")
+  cancelReason        String?        @map("cancel_reason")
+  createdAt           DateTime       @default(now()) @map("created_at")
+  updatedAt           DateTime       @updatedAt @map("updated_at")
+  items               GitBatchItem[]
+
+  @@index([status, createdAt])
+  @@index([createdBy, createdAt])
+  @@map("git_batch")
+}
+
+model GitBatchItem {
+  id                  String              @id
+  batchId             String              @map("batch_id")
+  repositoryId        String              @map("repository_id")
+  ordinal             Int
+  status              String              @default("queued")
+  previewSnapshotJson String              @default("{}") @map("preview_snapshot_json")
+  previewSnapshotHash String?             @map("preview_snapshot_hash")
+  displayCommand      String?             @map("display_command")
+  expectedChangesJson String              @default("[]") @map("expected_changes_json")
+  warningsJson        String              @default("[]") @map("warnings_json")
+  blockingReasonsJson String              @default("[]") @map("blocking_reasons_json")
+  riskLevel           String              @default("information") @map("risk_level")
+  executable          Boolean             @default(false)
+  selected            Boolean             @default(false)
+  executionCheckJson  String?             @map("execution_check_json")
+  exitCode            Int?                @map("exit_code")
+  resultCode          String?             @map("result_code")
+  resultSummary       String?             @map("result_summary")
+  postHeadSha         String?             @map("post_head_sha")
+  outputSummary       String?             @map("output_summary")
+  durationMs          Int?                @map("duration_ms")
+  startedAt           DateTime?           @map("started_at")
+  completedAt         DateTime?           @map("completed_at")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+  batch               GitBatch            @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  repository          Repository          @relation(fields: [repositoryId], references: [id], onDelete: Restrict)
+  events              GitOperationEvent[]
+
+  @@unique([batchId, repositoryId])
+  @@index([batchId, ordinal])
+  @@index([repositoryId, createdAt])
+  @@map("git_batch_item")
+}
+
+model GitOperationEvent {
+  id              String       @id
+  batchItemId     String       @map("batch_item_id")
+  sequence        Int
+  fromStatus      String?      @map("from_status")
+  toStatus        String       @map("to_status")
+  workerRequestId String?      @map("worker_request_id")
+  errorCode       String?      @map("error_code")
+  auditEventId    String?      @map("audit_event_id")
+  occurredAt      DateTime     @default(now()) @map("occurred_at")
+  item            GitBatchItem @relation(fields: [batchItemId], references: [id], onDelete: Restrict)
+
+  @@unique([batchItemId, sequence])
+  @@index([occurredAt])
+  @@map("git_operation_event")
+}
+
+model GitSnapshot {
+  id               String     @id
+  repositoryId     String     @map("repository_id")
+  headSha          String?    @map("head_sha")
+  branchName       String?    @map("branch_name")
+  detached         Boolean    @default(false)
+  unborn           Boolean    @default(false)
+  upstreamRef      String?    @map("upstream_ref")
+  aheadCount       Int        @default(0) @map("ahead_count")
+  behindCount      Int        @default(0) @map("behind_count")
+  stagedCount      Int        @default(0) @map("staged_count")
+  unstagedCount    Int        @default(0) @map("unstaged_count")
+  untrackedCount   Int        @default(0) @map("untracked_count")
+  conflictedCount  Int        @default(0) @map("conflicted_count")
+  pathSummaryJson  String     @default("[]") @map("path_summary_json")
+  stashCount       Int        @default(0) @map("stash_count")
+  recentCommitJson String     @default("{}") @map("recent_commit_json")
+  remotesJson      String     @default("[]") @map("remotes_json")
+  outputTruncated  Boolean    @default(false) @map("output_truncated")
+  status           String     @default("fresh")
+  errorCode        String?    @map("error_code")
+  errorSummary     String?    @map("error_summary")
+  collectedAt      DateTime   @default(now()) @map("collected_at")
+  repository       Repository @relation(fields: [repositoryId], references: [id], onDelete: Restrict)
+
+  @@index([repositoryId, collectedAt])
+  @@map("git_snapshot")
+}
+
+model IntegrationConnection {
+  id                         String                        @id
+  type                       String
+  name                       String
+  baseUrl                    String?                       @map("base_url")
+  credentialRef              String?                       @map("credential_ref")
+  credentialMask             String?                       @map("credential_mask")
+  pendingCredentialRef       String?                       @map("pending_credential_ref")
+  pendingCredentialMask      String?                       @map("pending_credential_mask")
+  pendingCredentialCreatedAt DateTime?                     @map("pending_credential_created_at")
+  enabled                    Boolean                       @default(true)
+  status                     String                        @default("unknown")
+  capabilitiesJson           String                        @default("{}") @map("capabilities_json")
+  configJson                 String                        @default("{}") @map("config_json")
+  lastTestedAt               DateTime?                     @map("last_tested_at")
+  lastSuccessAt              DateTime?                     @map("last_success_at")
+  disabledAt                 DateTime?                     @map("disabled_at")
+  version                    Int                           @default(1)
+  createdAt                  DateTime                      @default(now()) @map("created_at")
+  updatedAt                  DateTime                      @updatedAt @map("updated_at")
+  fieldMappings              FieldMappingVersion[]
+  gitlabProjects             GitLabProject[]
+  gitlabSyncRuns             GitLabSyncRun[]
+  jiraTasks                  Task[]
+  jiraSyncCursors            SyncCursor[]
+  jiraSyncRuns               JiraSyncRun[]
+  dingtalkTemplateMapping    DingTalkTemplateMapping?
+  dingtalkRecipientSnapshots DingTalkRecipientValidation[]
+  deliveryIntents            DeliveryIntent[]
+  robotNotifications         RobotNotification[]
+  weeklyReminderPolicies     WeeklyReportReminderPolicy[]
+  aiGenerations              AiGeneration[]
+
+  @@index([type, enabled, status])
+  @@map("integration_connection")
+}
+
+model GitLabProject {
+  id                String                @id
+  connectionId      String                @map("connection_id")
+  externalId        String                @map("external_id")
+  pathWithNamespace String                @map("path_with_namespace")
+  name              String
+  webUrl            String                @map("web_url")
+  defaultBranch     String?               @map("default_branch")
+  visibility        String
+  archived          Boolean               @default(false)
+  lastActivityAt    DateTime?             @map("last_activity_at")
+  namespaceJson     String                @default("{}") @map("namespace_json")
+  lastSeenRunId     String                @map("last_seen_run_id")
+  stale             Boolean               @default(false)
+  syncStatus        String                @default("unknown") @map("sync_status")
+  syncError         String?               @map("sync_error")
+  syncedAt          DateTime?             @map("synced_at")
+  createdAt         DateTime              @default(now()) @map("created_at")
+  updatedAt         DateTime              @updatedAt @map("updated_at")
+  connection        IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  branches          GitLabBranch[]
+  commits           GitLabCommit[]
+  mergeRequests     GitLabMergeRequest[]
+  pipelines         GitLabPipeline[]
+  tags              GitLabTag[]
+  releases          GitLabRelease[]
+  members           GitLabProjectMember[]
+  evidences         Evidence[]
+
+  @@unique([connectionId, externalId])
+  @@index([connectionId, pathWithNamespace])
+  @@map("gitlab_project")
+}
+
+model GitLabBranch {
+  id              String        @id
+  gitlabProjectId String        @map("gitlab_project_id")
+  name            String
+  sha             String
+  protected       Boolean       @default(false)
+  defaultBranch   Boolean       @default(false) @map("default_branch")
+  merged          Boolean       @default(false)
+  webUrl          String?       @map("web_url")
+  lastSeenRunId   String        @map("last_seen_run_id")
+  stale           Boolean       @default(false)
+  syncedAt        DateTime      @map("synced_at")
+  project         GitLabProject @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([gitlabProjectId, name])
+  @@index([gitlabProjectId, stale])
+  @@map("gitlab_branch")
+}
+
+model GitLabCommit {
+  id              String        @id
+  gitlabProjectId String        @map("gitlab_project_id")
+  sha             String
+  shortSha        String?       @map("short_sha")
+  title           String
+  messageSummary  String?       @map("message_summary")
+  authorName      String        @map("author_name")
+  authorEmail     String        @map("author_email")
+  committerName   String?       @map("committer_name")
+  committerEmail  String?       @map("committer_email")
+  authoredAt      DateTime?     @map("authored_at")
+  committedAt     DateTime      @map("committed_at")
+  webUrl          String?       @map("web_url")
+  lastSeenRunId   String        @map("last_seen_run_id")
+  syncedAt        DateTime      @map("synced_at")
+  project         GitLabProject @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([gitlabProjectId, sha])
+  @@index([gitlabProjectId, committedAt])
+  @@map("gitlab_commit")
+}
+
+model GitLabMergeRequest {
+  id                String        @id
+  gitlabProjectId   String        @map("gitlab_project_id")
+  externalId        String        @map("external_id")
+  iid               Int
+  title             String
+  state             String
+  sourceBranch      String        @map("source_branch")
+  targetBranch      String        @map("target_branch")
+  authorJson        String        @default("{}") @map("author_json")
+  assigneesJson     String        @default("[]") @map("assignees_json")
+  draft             Boolean       @default(false)
+  mergedAt          DateTime?     @map("merged_at")
+  closedAt          DateTime?     @map("closed_at")
+  updatedExternalAt DateTime      @map("updated_external_at")
+  webUrl            String        @map("web_url")
+  lastSeenRunId     String        @map("last_seen_run_id")
+  syncedAt          DateTime      @map("synced_at")
+  project           GitLabProject @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([gitlabProjectId, externalId])
+  @@index([gitlabProjectId, state, updatedExternalAt])
+  @@index([gitlabProjectId, sourceBranch])
+  @@map("gitlab_merge_request")
+}
+
+model GitLabPipeline {
+  id                String        @id
+  gitlabProjectId   String        @map("gitlab_project_id")
+  externalId        String        @map("external_id")
+  iid               Int?
+  sha               String
+  ref               String?
+  status            String
+  source            String?
+  webUrl            String?       @map("web_url")
+  createdExternalAt DateTime?     @map("created_external_at")
+  updatedExternalAt DateTime?     @map("updated_external_at")
+  lastSeenRunId     String        @map("last_seen_run_id")
+  syncedAt          DateTime      @map("synced_at")
+  project           GitLabProject @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([gitlabProjectId, externalId])
+  @@index([gitlabProjectId, updatedExternalAt])
+  @@index([gitlabProjectId, sha])
+  @@map("gitlab_pipeline")
+}
+
+model GitLabTag {
+  id                String        @id
+  gitlabProjectId   String        @map("gitlab_project_id")
+  name              String
+  targetSha         String        @map("target_sha")
+  messageSummary    String?       @map("message_summary")
+  protected         Boolean       @default(false)
+  webUrl            String?       @map("web_url")
+  createdExternalAt DateTime?     @map("created_external_at")
+  lastSeenRunId     String        @map("last_seen_run_id")
+  stale             Boolean       @default(false)
+  syncedAt          DateTime      @map("synced_at")
+  project           GitLabProject @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([gitlabProjectId, name])
+  @@index([gitlabProjectId, stale])
+  @@map("gitlab_tag")
+}
+
+model GitLabRelease {
+  id                 String        @id
+  gitlabProjectId    String        @map("gitlab_project_id")
+  tagName            String        @map("tag_name")
+  name               String?
+  descriptionSummary String?       @map("description_summary")
+  releasedAt         DateTime?     @map("released_at")
+  createdExternalAt  DateTime?     @map("created_external_at")
+  upcomingRelease    Boolean       @default(false) @map("upcoming_release")
+  webUrl             String?       @map("web_url")
+  assetsJson         String        @default("{}") @map("assets_json")
+  lastSeenRunId      String        @map("last_seen_run_id")
+  stale              Boolean       @default(false)
+  syncedAt           DateTime      @map("synced_at")
+  project            GitLabProject @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([gitlabProjectId, tagName])
+  @@index([gitlabProjectId, stale])
+  @@map("gitlab_release")
+}
+
+model GitLabProjectMember {
+  id              String        @id
+  gitlabProjectId String        @map("gitlab_project_id")
+  externalUserId  String        @map("external_user_id")
+  username        String
+  name            String
+  state           String?
+  accessLevel     Int           @map("access_level")
+  webUrl          String?       @map("web_url")
+  avatarUrl       String?       @map("avatar_url")
+  expiresAt       DateTime?     @map("expires_at")
+  lastSeenRunId   String        @map("last_seen_run_id")
+  stale           Boolean       @default(false)
+  syncedAt        DateTime      @map("synced_at")
+  project         GitLabProject @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([gitlabProjectId, externalUserId])
+  @@index([gitlabProjectId, stale])
+  @@map("gitlab_project_member")
+}
+
+model GitLabSyncRun {
+  id           String                @id
+  connectionId String                @map("connection_id")
+  status       String
+  scopeJson    String                @map("scope_json")
+  countsJson   String                @default("{}") @map("counts_json")
+  errorCode    String?               @map("error_code")
+  errorSummary String?               @map("error_summary")
+  startedAt    DateTime              @map("started_at")
+  completedAt  DateTime?             @map("completed_at")
+  connection   IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+
+  @@index([connectionId, startedAt])
+  @@map("gitlab_sync_run")
+}
+
+model FieldMappingVersion {
+  id                     String                  @id
+  connectionId           String                  @map("connection_id")
+  versionNo              Int                     @map("version_no")
+  effectiveAt            DateTime                @default(now()) @map("effective_at")
+  fieldMappingsJson      String                  @map("field_mappings_json")
+  statusMappingsJson     String                  @default("{}") @map("status_mappings_json")
+  parserRulesJson        String                  @default("{}") @map("parser_rules_json")
+  validationSummaryJson  String                  @default("{}") @map("validation_summary_json")
+  createdBy              String                  @map("created_by")
+  createdAt              DateTime                @default(now()) @map("created_at")
+  connection             IntegrationConnection   @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  tasks                  Task[]
+  taskSourceObservations TaskSourceObservation[]
+  jiraSyncRuns           JiraSyncRun[]
+
+  @@unique([connectionId, versionNo])
+  @@map("field_mapping_version")
+}
+
+model Task {
+  id                       String                  @id
+  sourceStableKey          String?                 @unique @map("source_stable_key")
+  connectionId             String?                 @map("connection_id")
+  projectId                String?                 @map("project_id")
+  primarySource            String                  @map("primary_source")
+  externalId               String?                 @map("external_id")
+  issueKey                 String?                 @map("issue_key")
+  projectKey               String?                 @map("project_key")
+  issueType                String?                 @map("issue_type")
+  parentTaskId             String?                 @map("parent_task_id")
+  parentIssueKey           String?                 @map("parent_issue_key")
+  parentTitle              String?                 @map("parent_title")
+  title                    String
+  descriptionPolicy        String                  @default("not_persisted") @map("description_policy")
+  priority                 String?
+  assigneeExternalId       String?                 @map("assignee_external_id")
+  assigneeName             String?                 @map("assignee_name")
+  isCurrentUser            Boolean                 @default(false) @map("is_current_user")
+  rawStatusId              String?                 @map("raw_status_id")
+  rawStatusName            String?                 @map("raw_status_name")
+  normalizedStatus         String                  @default("other") @map("normalized_status")
+  plannedStartDate         String?                 @map("planned_start_date")
+  dueDate                  String?                 @map("due_date")
+  originalEstimateSeconds  Int?                    @map("original_estimate_seconds")
+  remainingEstimateSeconds Int?                    @map("remaining_estimate_seconds")
+  timeSpentSeconds         Int?                    @map("time_spent_seconds")
+  sprintIdsJson            String                  @default("[]") @map("sprint_ids_json")
+  labelsJson               String                  @default("[]") @map("labels_json")
+  componentsJson           String                  @default("[]") @map("components_json")
+  externalUpdatedAt        DateTime?               @map("external_updated_at")
+  lastObservedAt           DateTime                @map("last_observed_at")
+  visibilityState          String                  @default("visible") @map("visibility_state")
+  mappingVersionId         String?                 @map("mapping_version_id")
+  version                  Int                     @default(1)
+  createdAt                DateTime                @default(now()) @map("created_at")
+  updatedAt                DateTime                @updatedAt @map("updated_at")
+  connection               IntegrationConnection?  @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  project                  Project?                @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  mappingVersion           FieldMappingVersion?    @relation(fields: [mappingVersionId], references: [id], onDelete: Restrict)
+  parentTask               Task?                   @relation("TaskHierarchy", fields: [parentTaskId], references: [id], onDelete: Restrict)
+  childTasks               Task[]                  @relation("TaskHierarchy")
+  statusEvents             TaskStatusEvent[]
+  sourceObservations       TaskSourceObservation[]
+  matchedExcelRows         ExcelImportRow[]        @relation("ExcelMatchedTask")
+  committedExcelRows       ExcelImportRow[]        @relation("ExcelCommittedTask")
+  fieldProvenances         TaskFieldProvenance[]
+  evidenceLinks            EvidenceLink[]
+  reportSourceLinks        ReportSourceLink[]
+  achievementEvidences     AchievementEvidence[]
+
+  @@unique([connectionId, issueKey])
+  @@index([projectId, normalizedStatus, dueDate])
+  @@index([connectionId, visibilityState, externalUpdatedAt])
+  @@index([parentTaskId])
+  @@map("task")
+}
+
+model TaskStatusEvent {
+  id                    String                @id
+  taskId                String                @map("task_id")
+  fromRawStatusId       String?               @map("from_raw_status_id")
+  fromRawStatusName     String?               @map("from_raw_status_name")
+  fromNormalizedStatus  String?               @map("from_normalized_status")
+  toRawStatusId         String?               @map("to_raw_status_id")
+  toRawStatusName       String?               @map("to_raw_status_name")
+  toNormalizedStatus    String                @map("to_normalized_status")
+  effectiveAt           DateTime?             @map("effective_at")
+  observedAt            DateTime              @map("observed_at")
+  observedIntervalStart DateTime?             @map("observed_interval_start")
+  sourceObservationId   String                @map("source_observation_id")
+  task                  Task                  @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  sourceObservation     TaskSourceObservation @relation(fields: [sourceObservationId], references: [id], onDelete: Restrict)
+
+  @@unique([taskId, sourceObservationId])
+  @@index([taskId, observedAt])
+  @@map("task_status_event")
+}
+
+model TaskSourceObservation {
+  id               String                @id
+  taskId           String                @map("task_id")
+  sourceType       String                @map("source_type")
+  sourceUpdatedAt  DateTime?             @map("source_updated_at")
+  contentHash      String                @map("content_hash")
+  fieldsJson       String                @map("fields_json")
+  warningsJson     String                @default("[]") @map("warnings_json")
+  syncRunId        String?               @map("sync_run_id")
+  mappingVersionId String?               @map("mapping_version_id")
+  observedAt       DateTime              @map("observed_at")
+  task             Task                  @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  syncRun          JiraSyncRun?          @relation(fields: [syncRunId], references: [id], onDelete: Restrict)
+  mappingVersion   FieldMappingVersion?  @relation(fields: [mappingVersionId], references: [id], onDelete: Restrict)
+  statusEvents     TaskStatusEvent[]
+  fieldProvenances TaskFieldProvenance[]
+  excelImportRows  ExcelImportRow[]      @relation("ExcelRowObservation")
+
+  @@unique([taskId, sourceUpdatedAt, contentHash])
+  @@index([syncRunId])
+  @@index([taskId, observedAt])
+  @@map("task_source_observation")
+}
+
+model SyncCursor {
+  id               String                @id
+  connectionId     String                @map("connection_id")
+  scope            String
+  lastUpdatedAt    DateTime?             @map("last_updated_at")
+  lastTiebreaker   String?               @map("last_tiebreaker")
+  overlapSeconds   Int                   @default(120) @map("overlap_seconds")
+  lastSuccessRunId String?               @map("last_success_run_id")
+  version          Int                   @default(1)
+  updatedAt        DateTime              @updatedAt @map("updated_at")
+  connection       IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+
+  @@unique([connectionId, scope])
+  @@map("sync_cursor")
+}
+
+model JiraSyncRun {
+  id               String                  @id
+  connectionId     String                  @map("connection_id")
+  scope            String
+  trigger          String
+  status           String
+  mappingVersionId String                  @map("mapping_version_id")
+  queryHash        String                  @map("query_hash")
+  requestJson      String                  @default("{}") @map("request_json")
+  pageCount        Int                     @default(0) @map("page_count")
+  readCount        Int                     @default(0) @map("read_count")
+  createdCount     Int                     @default(0) @map("created_count")
+  updatedCount     Int                     @default(0) @map("updated_count")
+  unchangedCount   Int                     @default(0) @map("unchanged_count")
+  errorCount       Int                     @default(0) @map("error_count")
+  errorCode        String?                 @map("error_code")
+  errorSummary     String?                 @map("error_summary")
+  cursorBeforeJson String                  @default("{}") @map("cursor_before_json")
+  cursorAfterJson  String                  @default("{}") @map("cursor_after_json")
+  startedAt        DateTime                @map("started_at")
+  completedAt      DateTime?               @map("completed_at")
+  connection       IntegrationConnection   @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  mappingVersion   FieldMappingVersion     @relation(fields: [mappingVersionId], references: [id], onDelete: Restrict)
+  taskObservations TaskSourceObservation[]
+
+  @@index([connectionId, startedAt])
+  @@index([status, startedAt])
+  @@map("jira_sync_run")
+}
+
+model ExcelImport {
+  id                 String           @id
+  fileName           String           @map("file_name")
+  fileSha256         String           @map("file_sha256")
+  fileSizeBytes      Int              @map("file_size_bytes")
+  parserVersion      String           @map("parser_version")
+  dateSystem         String           @map("date_system")
+  workdayHours       Float            @default(8) @map("workday_hours")
+  status             String           @default("preview_ready")
+  sheetSummaryJson   String           @default("[]") @map("sheet_summary_json")
+  ignoredColumnsJson String           @default("[]") @map("ignored_columns_json")
+  diagnosticsJson    String           @default("[]") @map("diagnostics_json")
+  blockingCount      Int              @default(0) @map("blocking_count")
+  conflictCount      Int              @default(0) @map("conflict_count")
+  warningCount       Int              @default(0) @map("warning_count")
+  infoCount          Int              @default(0) @map("info_count")
+  taskRowCount       Int              @default(0) @map("task_row_count")
+  containerRowCount  Int              @default(0) @map("container_row_count")
+  errorCode          String?          @map("error_code")
+  errorSummary       String?          @map("error_summary")
+  createdBy          String           @map("created_by")
+  committedAt        DateTime?        @map("committed_at")
+  commitSummaryJson  String           @default("{}") @map("commit_summary_json")
+  version            Int              @default(1)
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+  rows               ExcelImportRow[]
+
+  @@unique([fileSha256, parserVersion])
+  @@index([status, createdAt])
+  @@map("excel_import")
+}
+
+model ExcelImportRow {
+  id                  String                 @id
+  importId            String                 @map("import_id")
+  sheetName           String                 @map("sheet_name")
+  rowNumber           Int                    @map("row_number")
+  rowKind             String                 @map("row_kind")
+  rowFingerprint      String                 @map("row_fingerprint")
+  rawJson             String                 @map("raw_json")
+  normalizedJson      String                 @map("normalized_json")
+  diagnosticsJson     String                 @default("[]") @map("diagnostics_json")
+  candidatesJson      String                 @default("[]") @map("candidates_json")
+  resolutionJson      String                 @default("{}") @map("resolution_json")
+  proposedAction      String                 @map("proposed_action")
+  commitStatus        String                 @default("pending") @map("commit_status")
+  matchedTaskId       String?                @map("matched_task_id")
+  committedTaskId     String?                @map("committed_task_id")
+  sourceObservationId String?                @map("source_observation_id")
+  version             Int                    @default(1)
+  createdAt           DateTime               @default(now()) @map("created_at")
+  updatedAt           DateTime               @updatedAt @map("updated_at")
+  import              ExcelImport            @relation(fields: [importId], references: [id], onDelete: Restrict)
+  matchedTask         Task?                  @relation("ExcelMatchedTask", fields: [matchedTaskId], references: [id], onDelete: Restrict)
+  committedTask       Task?                  @relation("ExcelCommittedTask", fields: [committedTaskId], references: [id], onDelete: Restrict)
+  sourceObservation   TaskSourceObservation? @relation("ExcelRowObservation", fields: [sourceObservationId], references: [id], onDelete: Restrict)
+  fieldProvenances    TaskFieldProvenance[]
+
+  @@unique([importId, sheetName, rowNumber])
+  @@index([importId, proposedAction, commitStatus])
+  @@index([rowFingerprint])
+  @@map("excel_import_row")
+}
+
+model TaskFieldProvenance {
+  id                  String                 @id
+  taskId              String                 @map("task_id")
+  fieldName           String                 @map("field_name")
+  sourceType          String                 @map("source_type")
+  decision            String
+  valueJson           String                 @map("value_json")
+  sourceObservationId String?                @map("source_observation_id")
+  excelImportRowId    String?                @map("excel_import_row_id")
+  reason              String?
+  active              Boolean                @default(false)
+  effectiveAt         DateTime               @default(now()) @map("effective_at")
+  expiresAt           DateTime?              @map("expires_at")
+  conflictValueJson   String?                @map("conflict_value_json")
+  conflictDetectedAt  DateTime?              @map("conflict_detected_at")
+  supersededAt        DateTime?              @map("superseded_at")
+  createdAt           DateTime               @default(now()) @map("created_at")
+  task                Task                   @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  sourceObservation   TaskSourceObservation? @relation(fields: [sourceObservationId], references: [id], onDelete: Restrict)
+  excelImportRow      ExcelImportRow?        @relation(fields: [excelImportRowId], references: [id], onDelete: Restrict)
+
+  @@index([taskId, fieldName, active])
+  @@index([sourceType, active, expiresAt])
+  @@index([active, conflictDetectedAt])
+  @@index([excelImportRowId])
+  @@map("task_field_provenance")
+}
+
+model Evidence {
+  id                   String                @id
+  sourceType           String                @map("source_type")
+  sourceInternalId     String                @map("source_internal_id")
+  sourceExternalKey    String                @map("source_external_key")
+  gitlabProjectId      String?               @map("gitlab_project_id")
+  projectId            String?               @map("project_id")
+  eventAt              DateTime?             @map("event_at")
+  title                String
+  url                  String?
+  contentHash          String                @map("content_hash")
+  availabilityState    String                @default("available") @map("availability_state")
+  metadataJson         String                @default("{}") @map("metadata_json")
+  sourceSyncedAt       DateTime?             @map("source_synced_at")
+  version              Int                   @default(1)
+  createdAt            DateTime              @default(now()) @map("created_at")
+  updatedAt            DateTime              @updatedAt @map("updated_at")
+  gitlabProject        GitLabProject?        @relation(fields: [gitlabProjectId], references: [id], onDelete: Restrict)
+  project              Project?              @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  links                EvidenceLink[]
+  reportSourceLinks    ReportSourceLink[]
+  achievementEvidences AchievementEvidence[]
+
+  @@unique([sourceType, sourceInternalId])
+  @@index([projectId, eventAt])
+  @@index([gitlabProjectId, sourceType, availabilityState])
+  @@index([availabilityState, updatedAt])
+  @@map("evidence")
+}
+
+model EvidenceLink {
+  id                String              @id
+  targetType        String              @map("target_type")
+  targetId          String              @map("target_id")
+  taskId            String?             @map("task_id")
+  evidenceId        String              @map("evidence_id")
+  method            String
+  confidence        Float
+  status            String              @default("suggested")
+  explanation       String
+  matchedValue      String?             @map("matched_value")
+  ruleVersion       String              @map("rule_version")
+  sourceContentHash String              @map("source_content_hash")
+  decisionReason    String?             @map("decision_reason")
+  confirmedBy       String?             @map("confirmed_by")
+  confirmedAt       DateTime?           @map("confirmed_at")
+  rejectedBy        String?             @map("rejected_by")
+  rejectedAt        DateTime?           @map("rejected_at")
+  expiresAt         DateTime?           @map("expires_at")
+  expiredAt         DateTime?           @map("expired_at")
+  revalidationState String              @default("valid") @map("revalidation_state")
+  version           Int                 @default(1)
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @updatedAt @map("updated_at")
+  task              Task?               @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  evidence          Evidence            @relation(fields: [evidenceId], references: [id], onDelete: Restrict)
+  events            EvidenceLinkEvent[]
+
+  @@unique([targetType, targetId, evidenceId])
+  @@index([taskId, status, confidence])
+  @@index([evidenceId, status])
+  @@index([status, expiresAt])
+  @@map("evidence_link")
+}
+
+model EvidenceLinkEvent {
+  id                String       @id
+  evidenceLinkId    String       @map("evidence_link_id")
+  sequence          Int
+  action            String
+  fromStatus        String?      @map("from_status")
+  toStatus          String       @map("to_status")
+  actorType         String       @map("actor_type")
+  actorId           String       @map("actor_id")
+  reason            String?
+  sourceContentHash String       @map("source_content_hash")
+  ruleVersion       String       @map("rule_version")
+  occurredAt        DateTime     @default(now()) @map("occurred_at")
+  link              EvidenceLink @relation(fields: [evidenceLinkId], references: [id], onDelete: Restrict)
+
+  @@unique([evidenceLinkId, sequence])
+  @@index([occurredAt])
+  @@map("evidence_link_event")
+}
+
+model WorkCalendar {
+  id               String                @id
+  name             String
+  currentVersionId String?               @unique @map("current_version_id")
+  version          Int                   @default(1)
+  createdAt        DateTime              @default(now()) @map("created_at")
+  updatedAt        DateTime              @updatedAt @map("updated_at")
+  currentVersion   WorkCalendarVersion?  @relation("CurrentWorkCalendarVersion", fields: [currentVersionId], references: [id], onDelete: Restrict)
+  versions         WorkCalendarVersion[] @relation("WorkCalendarVersions")
+
+  @@map("work_calendar")
+}
+
+model WorkCalendarVersion {
+  id                    String                 @id
+  calendarId            String                 @map("calendar_id")
+  versionNo             Int                    @map("version_no")
+  timezone              String                 @default("Asia/Shanghai")
+  workingWeekdaysJson   String                 @map("working_weekdays_json")
+  dateOverridesJson     String                 @default("[]") @map("date_overrides_json")
+  source                String                 @default("manual")
+  contentHash           String                 @map("content_hash")
+  createdBy             String                 @map("created_by")
+  createdAt             DateTime               @default(now()) @map("created_at")
+  calendar              WorkCalendar           @relation("WorkCalendarVersions", fields: [calendarId], references: [id], onDelete: Restrict)
+  activeForCalendar     WorkCalendar?          @relation("CurrentWorkCalendarVersion")
+  reportSourceSnapshots ReportSourceSnapshot[]
+
+  @@unique([calendarId, versionNo])
+  @@map("work_calendar_version")
+}
+
+model WeeklyReport {
+  id                       String                           @id
+  ownerProfileId           String                           @map("owner_profile_id")
+  periodStart              String                           @map("period_start")
+  periodEnd                String                           @map("period_end")
+  reportDate               String                           @map("report_date")
+  timezone                 String                           @default("Asia/Shanghai")
+  templateName             String                           @default("uTwin产研创新部周报") @map("template_name")
+  templateMappingVersionId String?                          @map("template_mapping_version_id")
+  status                   String                           @default("collecting")
+  logDeliveryState         String                           @default("not_started") @map("log_delivery_state")
+  robotDeliveryState       String                           @default("not_started") @map("robot_delivery_state")
+  currentVersionId         String?                          @unique @map("current_version_id")
+  confirmedVersionId       String?                          @unique @map("confirmed_version_id")
+  currentConfirmationId    String?                          @unique @map("current_confirmation_id")
+  recipientScopeVersion    Int                              @default(1) @map("recipient_scope_version")
+  scheduleAt               DateTime?                        @map("schedule_at")
+  version                  Int                              @default(1)
+  archivedAt               DateTime?                        @map("archived_at")
+  createdAt                DateTime                         @default(now()) @map("created_at")
+  updatedAt                DateTime                         @updatedAt @map("updated_at")
+  ownerProfile             UserProfile                      @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  currentVersion           WeeklyReportVersion?             @relation("WeeklyReportCurrentVersion", fields: [currentVersionId], references: [id], onDelete: Restrict)
+  confirmedVersion         WeeklyReportVersion?             @relation("WeeklyReportConfirmedVersion", fields: [confirmedVersionId], references: [id], onDelete: Restrict)
+  currentConfirmation      WeeklyReportConfirmation?        @relation("WeeklyReportCurrentConfirmation", fields: [currentConfirmationId], references: [id], onDelete: Restrict)
+  versions                 WeeklyReportVersion[]            @relation("WeeklyReportVersions")
+  sourceSnapshots          ReportSourceSnapshot[]
+  confirmations            WeeklyReportConfirmation[]       @relation("WeeklyReportConfirmations")
+  attachments              WeeklyReportAttachment[]
+  aiGenerations            AiGeneration[]
+  deliveryIntents          DeliveryIntent[]
+  robotNotifications       RobotNotification[]
+  reminderOccurrences      WeeklyReportReminderOccurrence[]
+
+  @@index([ownerProfileId, periodStart, periodEnd])
+  @@index([status, updatedAt])
+  @@map("weekly_report")
+}
+
+/// 周报提醒策略只保存非秘密调度参数；机器人凭证仍由 IntegrationConnection 的保险箱引用管理。
+model WeeklyReportReminderPolicy {
+  id                  String                           @id
+  profileId           String                           @unique @map("profile_id")
+  robotConnectionId   String?                          @map("robot_connection_id")
+  enabled             Boolean                          @default(false)
+  timezone            String                           @default("Asia/Shanghai")
+  workingWeekdaysJson String                           @default("[1,2,3,4,5]") @map("working_weekdays_json")
+  generationEnabled   Boolean                          @default(true) @map("generation_enabled")
+  generationWeekday   Int                              @default(5) @map("generation_weekday")
+  generationTime      String                           @default("14:00") @map("generation_time")
+  confirmationEnabled Boolean                          @default(true) @map("confirmation_enabled")
+  confirmationWeekday Int                              @default(5) @map("confirmation_weekday")
+  confirmationTime    String                           @default("16:00") @map("confirmation_time")
+  deadlineEnabled     Boolean                          @default(true) @map("deadline_enabled")
+  deadlineWeekday     Int                              @default(5) @map("deadline_weekday")
+  deadlineTime        String                           @default("17:30") @map("deadline_time")
+  graceMinutes        Int                              @default(120) @map("grace_minutes")
+  version             Int                              @default(1)
+  createdAt           DateTime                         @default(now()) @map("created_at")
+  updatedAt           DateTime                         @updatedAt @map("updated_at")
+  profile             UserProfile                      @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  robotConnection     IntegrationConnection?           @relation(fields: [robotConnectionId], references: [id], onDelete: Restrict)
+  occurrences         WeeklyReportReminderOccurrence[]
+
+  @@index([enabled, updatedAt])
+  @@map("weekly_report_reminder_policy")
+}
+
+model WeeklyReportVersion {
+  id                       String                     @id
+  reportId                 String                     @map("report_id")
+  versionNo                Int                        @map("version_no")
+  origin                   String
+  parentVersionId          String?                    @map("parent_version_id")
+  reportDateText           String                     @map("report_date_text")
+  recentGoalsText          String                     @map("recent_goals_text")
+  weeklyWorkText           String                     @map("weekly_work_text")
+  nextWeekPlansText        String                     @map("next_week_plans_text")
+  problemsText             String                     @map("problems_text")
+  otherText                String                     @map("other_text")
+  fieldsJson               String                     @map("fields_json")
+  warningsJson             String                     @default("[]") @map("warnings_json")
+  attachmentsJson          String                     @default("[]") @map("attachments_json")
+  recipientScopeJson       String                     @default("{}") @map("recipient_scope_json")
+  templateMappingVersionId String?                    @map("template_mapping_version_id")
+  scheduleAt               DateTime?                  @map("schedule_at")
+  sourceSnapshotId         String                     @map("source_snapshot_id")
+  aiGenerationId           String?                    @map("ai_generation_id")
+  contentHash              String                     @map("content_hash")
+  changeSummaryJson        String                     @default("{}") @map("change_summary_json")
+  createdBy                String                     @map("created_by")
+  createdAt                DateTime                   @default(now()) @map("created_at")
+  report                   WeeklyReport               @relation("WeeklyReportVersions", fields: [reportId], references: [id], onDelete: Restrict)
+  parentVersion            WeeklyReportVersion?       @relation("WeeklyReportVersionHistory", fields: [parentVersionId], references: [id], onDelete: Cascade)
+  childVersions            WeeklyReportVersion[]      @relation("WeeklyReportVersionHistory")
+  sourceSnapshot           ReportSourceSnapshot       @relation(fields: [sourceSnapshotId], references: [id], onDelete: Restrict)
+  currentForReports        WeeklyReport[]             @relation("WeeklyReportCurrentVersion")
+  confirmedForReports      WeeklyReport[]             @relation("WeeklyReportConfirmedVersion")
+  sourceLinks              ReportSourceLink[]
+  confirmations            WeeklyReportConfirmation[]
+  aiGeneration             AiGeneration?              @relation("AiGeneratedVersions", fields: [aiGenerationId], references: [id], onDelete: Restrict)
+  baseForAiGenerations     AiGeneration[]             @relation("AiGenerationBaseVersion")
+  adoptedForAiGenerations  AiGeneration[]             @relation("AiGenerationAdoptedVersion")
+  deliveryIntents          DeliveryIntent[]
+
+  @@unique([reportId, versionNo])
+  @@index([reportId, createdAt])
+  @@index([sourceSnapshotId])
+  @@map("weekly_report_version")
+}
+
+/// AI 生成记录只保存白名单输入的摘要/哈希与供应商输出，不保存凭证、源码、diff 或附件正文。
+/// 成功生成的建议版本仍是不可变周报版本；是否采纳由独立状态显式记录。
+model AiGeneration {
+  id                        String                @id
+  ownerProfileId            String                @map("owner_profile_id")
+  providerConnectionId      String                @map("provider_connection_id")
+  providerConfigVersion     Int                   @map("provider_config_version")
+  reportId                  String?               @map("report_id")
+  quarterlyReviewId         String?               @map("quarterly_review_id")
+  baseQuarterlyReviewVersion Int?                 @map("base_quarterly_review_version")
+  baseVersionId             String?               @map("base_version_id")
+  baseReportVersion         Int?                  @map("base_report_version")
+  adoptedVersionId          String?               @unique @map("adopted_version_id")
+  adoptedNarrativeVersionId String?               @unique @map("adopted_narrative_version_id")
+  purpose                   String
+  promptTemplateVersion     String                @map("prompt_template_version")
+  sanitizationPolicyVersion String                @map("sanitization_policy_version")
+  retentionMode             String                @default("hash_only") @map("retention_mode")
+  requestedFieldsJson       String                @default("[]") @map("requested_fields_json")
+  inputRefsJson             String                @default("[]") @map("input_refs_json")
+  inputCategoriesJson       String                @default("[]") @map("input_categories_json")
+  removedCategoriesJson     String                @default("[]") @map("removed_categories_json")
+  sanitizedInputHash        String?               @map("sanitized_input_hash")
+  sanitizedInputJson        String?               @map("sanitized_input_json")
+  rawOutput                 String?               @map("raw_output")
+  parsedOutputJson          String?               @map("parsed_output_json")
+  protocol                  String
+  model                     String
+  providerRequestId         String?               @map("provider_request_id")
+  stopReason                String?               @map("stop_reason")
+  usageJson                 String                @default("{}") @map("usage_json")
+  durationMs                Int?                  @map("duration_ms")
+  status                    String
+  errorCode                 String?               @map("error_code")
+  securityBlocksJson        String                @default("[]") @map("security_blocks_json")
+  adoptionStatus            String                @default("not_applicable") @map("adoption_status")
+  decisionReason            String?               @map("decision_reason")
+  decidedAt                 DateTime?             @map("decided_at")
+  createdBy                 String                @map("created_by")
+  createdAt                 DateTime              @default(now()) @map("created_at")
+  completedAt               DateTime?             @map("completed_at")
+  ownerProfile              UserProfile           @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  providerConnection        IntegrationConnection @relation(fields: [providerConnectionId], references: [id], onDelete: Restrict)
+  report                    WeeklyReport?         @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  quarterlyReview           QuarterlyReview?      @relation(fields: [quarterlyReviewId], references: [id], onDelete: Restrict)
+  baseVersion               WeeklyReportVersion?  @relation("AiGenerationBaseVersion", fields: [baseVersionId], references: [id], onDelete: Restrict)
+  adoptedVersion            WeeklyReportVersion?  @relation("AiGenerationAdoptedVersion", fields: [adoptedVersionId], references: [id], onDelete: Restrict)
+  adoptedNarrativeVersion   ReviewNarrativeVersion? @relation("AiGenerationAdoptedNarrative", fields: [adoptedNarrativeVersionId], references: [id], onDelete: Restrict)
+  generatedVersions         WeeklyReportVersion[] @relation("AiGeneratedVersions")
+
+  @@index([ownerProfileId, createdAt])
+  @@index([reportId, createdAt])
+  @@index([quarterlyReviewId, purpose, createdAt])
+  @@index([providerConnectionId, providerConfigVersion])
+  @@index([status, adoptionStatus])
+  @@map("ai_generation")
+}
+
+model DingTalkTemplateMapping {
+  id               String                           @id
+  connectionId     String                           @unique @map("connection_id")
+  currentVersionId String?                          @unique @map("current_version_id")
+  version          Int                              @default(1)
+  createdAt        DateTime                         @default(now()) @map("created_at")
+  updatedAt        DateTime                         @updatedAt @map("updated_at")
+  connection       IntegrationConnection            @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  currentVersion   DingTalkTemplateMappingVersion?  @relation("DingTalkCurrentTemplateMappingVersion", fields: [currentVersionId], references: [id], onDelete: Restrict)
+  versions         DingTalkTemplateMappingVersion[] @relation("DingTalkTemplateMappingVersions")
+
+  @@map("dingtalk_template_mapping")
+}
+
+model DingTalkTemplateMappingVersion {
+  id                      String                     @id
+  mappingId               String                     @map("mapping_id")
+  versionNo               Int                        @map("version_no")
+  templateId              String                     @map("template_id")
+  templateName            String                     @map("template_name")
+  externalTemplateVersion String?                    @map("external_template_version")
+  templateHash            String                     @map("template_hash")
+  fieldsJson              String                     @map("fields_json")
+  capabilitySnapshotHash  String                     @map("capability_snapshot_hash")
+  observedAt              DateTime                   @map("observed_at")
+  expiresAt               DateTime                   @map("expires_at")
+  contentHash             String                     @map("content_hash")
+  createdBy               String                     @map("created_by")
+  createdAt               DateTime                   @default(now()) @map("created_at")
+  mapping                 DingTalkTemplateMapping    @relation("DingTalkTemplateMappingVersions", fields: [mappingId], references: [id], onDelete: Restrict)
+  currentForMapping       DingTalkTemplateMapping?   @relation("DingTalkCurrentTemplateMappingVersion")
+  confirmations           WeeklyReportConfirmation[]
+
+  @@unique([mappingId, versionNo])
+  @@index([templateId, observedAt])
+  @@map("dingtalk_template_mapping_version")
+}
+
+model DingTalkRecipientValidation {
+  id                     String                @id
+  connectionId           String                @map("connection_id")
+  subjectType            String                @map("subject_type")
+  externalId             String                @map("external_id")
+  displayName            String                @map("display_name")
+  available              Boolean
+  capabilitySnapshotHash String                @map("capability_snapshot_hash")
+  observedAt             DateTime              @map("observed_at")
+  expiresAt              DateTime              @map("expires_at")
+  contentHash            String                @map("content_hash")
+  createdAt              DateTime              @default(now()) @map("created_at")
+  connection             IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+
+  @@unique([connectionId, subjectType, externalId, contentHash])
+  @@index([connectionId, subjectType, externalId, observedAt])
+  @@map("dingtalk_recipient_validation")
+}
+
+model WeeklyReportAttachment {
+  id           String       @id
+  reportId     String       @map("report_id")
+  originalName String       @map("original_name")
+  storedName   String       @unique @map("stored_name")
+  mimeType     String       @map("mime_type")
+  extension    String
+  sizeBytes    Int          @map("size_bytes")
+  contentHash  String       @map("content_hash")
+  status       String       @default("available")
+  createdBy    String       @map("created_by")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  deletedAt    DateTime?    @map("deleted_at")
+  report       WeeklyReport @relation(fields: [reportId], references: [id], onDelete: Restrict)
+
+  @@index([reportId, status, createdAt])
+  @@map("weekly_report_attachment")
+}
+
+model WeeklyReportConfirmation {
+  id                          String                         @id
+  reportId                    String                         @map("report_id")
+  versionId                   String                         @map("version_id")
+  reportAggregateVersion      Int                            @map("report_aggregate_version")
+  contentHash                 String                         @map("content_hash")
+  templateMappingVersionId    String                         @map("template_mapping_version_id")
+  warningAcknowledgementsJson String                         @map("warning_acknowledgements_json")
+  recipientScopeHash          String                         @map("recipient_scope_hash")
+  attachmentsHash             String                         @map("attachments_hash")
+  status                      String                         @default("active")
+  confirmedBy                 String                         @map("confirmed_by")
+  confirmedAt                 DateTime                       @default(now()) @map("confirmed_at")
+  invalidatedAt               DateTime?                      @map("invalidated_at")
+  invalidationReason          String?                        @map("invalidation_reason")
+  report                      WeeklyReport                   @relation("WeeklyReportConfirmations", fields: [reportId], references: [id], onDelete: Restrict)
+  version                     WeeklyReportVersion            @relation(fields: [versionId], references: [id], onDelete: Restrict)
+  templateMappingVersion      DingTalkTemplateMappingVersion @relation(fields: [templateMappingVersionId], references: [id], onDelete: Restrict)
+  currentForReport            WeeklyReport?                  @relation("WeeklyReportCurrentConfirmation")
+  deliveryIntents             DeliveryIntent[]
+
+  @@unique([reportId, versionId, contentHash, templateMappingVersionId, recipientScopeHash, attachmentsHash])
+  @@index([reportId, status, confirmedAt])
+  @@map("weekly_report_confirmation")
+}
+
+/// 每个交付意图固定到一次有效确认、一个外部通道和一个连接；正文仍只保存在不可变周报版本中。
+model DeliveryIntent {
+  id                   String                   @id
+  reportId             String                   @map("report_id")
+  confirmationId       String                   @map("confirmation_id")
+  confirmedVersionId   String                   @map("confirmed_version_id")
+  connectionId         String                   @map("connection_id")
+  channel              String
+  idempotencyRecordId  String                   @map("idempotency_record_id")
+  requestHash          String                   @map("request_hash")
+  targetSummaryJson    String                   @default("{}") @map("target_summary_json")
+  status               String                   @default("pending")
+  scheduledFor         DateTime                 @default(now()) @map("scheduled_for")
+  scheduleApprovedAt   DateTime?                @map("schedule_approved_at")
+  scheduleApprovalHash String?                  @map("schedule_approval_hash")
+  cancelledAt          DateTime?                @map("cancelled_at")
+  cancellationReason   String?                  @map("cancellation_reason")
+  jobId                String?                  @unique @map("job_id")
+  externalId           String?                  @map("external_id")
+  externalUrl          String?                  @map("external_url")
+  providerRequestId    String?                  @map("provider_request_id")
+  attemptCount         Int                      @default(0) @map("attempt_count")
+  lastAttemptAt        DateTime?                @map("last_attempt_at")
+  lastErrorCode        String?                  @map("last_error_code")
+  lastErrorSummary     String?                  @map("last_error_summary")
+  recoveryStatus       String                   @default("not_required") @map("recovery_status")
+  lastRecoveryAt       DateTime?                @map("last_recovery_at")
+  resolvedBy           String?                  @map("resolved_by")
+  resolvedAt           DateTime?                @map("resolved_at")
+  resolutionReason     String?                  @map("resolution_reason")
+  completedAt          DateTime?                @map("completed_at")
+  version              Int                      @default(1)
+  createdAt            DateTime                 @default(now()) @map("created_at")
+  updatedAt            DateTime                 @updatedAt @map("updated_at")
+  report               WeeklyReport             @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  confirmation         WeeklyReportConfirmation @relation(fields: [confirmationId], references: [id], onDelete: Restrict)
+  confirmedVersion     WeeklyReportVersion      @relation(fields: [confirmedVersionId], references: [id], onDelete: Restrict)
+  connection           IntegrationConnection    @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  attempts             DeliveryAttempt[]
+  recoveryChecks       DeliveryRecoveryCheck[]
+  robotNotification    RobotNotification?
+
+  @@unique([reportId, confirmationId, channel, connectionId])
+  @@index([reportId, channel, createdAt])
+  @@index([status, updatedAt])
+  @@index([status, scheduledFor])
+  @@map("delivery_intent")
+}
+
+/// 每一次外部查询和人工裁决都单独留痕；只保存匹配摘要与哈希，不复制周报正文或凭证。
+model DeliveryRecoveryCheck {
+  id                String         @id
+  intentId          String         @map("intent_id")
+  sequenceNo        Int            @map("sequence_no")
+  mode              String
+  outcome           String
+  queryWindowStart  DateTime?      @map("query_window_start")
+  queryWindowEnd    DateTime?      @map("query_window_end")
+  candidateCount    Int            @default(0) @map("candidate_count")
+  exactMatchCount   Int            @default(0) @map("exact_match_count")
+  matchedExternalId String?        @map("matched_external_id")
+  evidenceHash      String         @map("evidence_hash")
+  summaryJson       String         @default("{}") @map("summary_json")
+  actorId           String         @map("actor_id")
+  createdAt         DateTime       @default(now()) @map("created_at")
+  intent            DeliveryIntent @relation(fields: [intentId], references: [id], onDelete: Restrict)
+
+  @@unique([intentId, sequenceNo])
+  @@index([intentId, createdAt])
+  @@map("delivery_recovery_check")
+}
+
+/// attempt 只记录请求/响应摘要、错误分类和外部标识，不复制秘密或六字段正文。
+model DeliveryAttempt {
+  id                  String         @id
+  intentId            String         @map("intent_id")
+  attemptNo           Int            @map("attempt_no")
+  requestSummaryHash  String         @map("request_summary_hash")
+  status              String         @default("running")
+  httpStatus          Int?           @map("http_status")
+  providerErrorCode   String?        @map("provider_error_code")
+  providerRequestId   String?        @map("provider_request_id")
+  externalId          String?        @map("external_id")
+  externalUrl         String?        @map("external_url")
+  responseSummaryJson String         @default("{}") @map("response_summary_json")
+  retryAt             DateTime?      @map("retry_at")
+  startedAt           DateTime       @default(now()) @map("started_at")
+  completedAt         DateTime?      @map("completed_at")
+  intent              DeliveryIntent @relation(fields: [intentId], references: [id], onDelete: Restrict)
+
+  @@unique([intentId, attemptNo])
+  @@index([status, startedAt])
+  @@map("delivery_attempt")
+}
+
+/// 机器人业务通知使用独立账本；只保存去重、调度和非敏感结果，不复制完整周报正文或凭证。
+model RobotNotification {
+  id                   String                          @id
+  reportId             String?                         @map("report_id")
+  connectionId         String                          @map("connection_id")
+  deliveryIntentId     String?                         @unique @map("delivery_intent_id")
+  notificationType     String                          @map("notification_type")
+  businessObjectKey    String                          @map("business_object_key")
+  stateVersion         Int                             @map("state_version")
+  dedupeKey            String                          @unique @map("dedupe_key")
+  contentHash          String                          @map("content_hash")
+  messageFactsJson     String                          @default("{}") @map("message_facts_json")
+  status               String                          @default("pending")
+  quietWindowStartedAt DateTime                        @map("quiet_window_started_at")
+  quietWindowEndsAt    DateTime                        @map("quiet_window_ends_at")
+  coalescedCount       Int                             @default(0) @map("coalesced_count")
+  scheduledFor         DateTime                        @map("scheduled_for")
+  jobId                String?                         @unique @map("job_id")
+  lastAttemptAt        DateTime?                       @map("last_attempt_at")
+  sentAt               DateTime?                       @map("sent_at")
+  skippedAt            DateTime?                       @map("skipped_at")
+  skipReason           String?                         @map("skip_reason")
+  providerRequestId    String?                         @map("provider_request_id")
+  providerCallCount    Int                             @default(0) @map("provider_call_count")
+  retryDelaysJson      String                          @default("[]") @map("retry_delays_json")
+  lastErrorCode        String?                         @map("last_error_code")
+  lastErrorSummary     String?                         @map("last_error_summary")
+  version              Int                             @default(1)
+  createdAt            DateTime                        @default(now()) @map("created_at")
+  updatedAt            DateTime                        @updatedAt @map("updated_at")
+  report               WeeklyReport?                   @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  connection           IntegrationConnection           @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  deliveryIntent       DeliveryIntent?                 @relation(fields: [deliveryIntentId], references: [id], onDelete: Restrict)
+  reminderOccurrence   WeeklyReportReminderOccurrence?
+
+  @@index([reportId, notificationType, createdAt])
+  @@index([status, scheduledFor])
+  @@index([businessObjectKey, notificationType, contentHash, quietWindowEndsAt])
+  @@map("robot_notification")
+}
+
+/// 每个 occurrence 固定策略版本、周期、计划时刻和宽限截止；休眠恢复只改变执行状态，不重算历史时间。
+model WeeklyReportReminderOccurrence {
+  id             String                     @id
+  policyId       String                     @map("policy_id")
+  policyVersion  Int                        @map("policy_version")
+  reminderType   String                     @map("reminder_type")
+  cycleKey       String                     @map("cycle_key")
+  periodStart    String                     @map("period_start")
+  periodEnd      String                     @map("period_end")
+  reportDate     String                     @map("report_date")
+  scheduledFor   DateTime                   @map("scheduled_for")
+  graceUntil     DateTime                   @map("grace_until")
+  status         String                     @default("planned")
+  reportId       String?                    @map("report_id")
+  notificationId String?                    @unique @map("notification_id")
+  jobId          String?                    @unique @map("job_id")
+  queuedAt       DateTime?                  @map("queued_at")
+  skippedAt      DateTime?                  @map("skipped_at")
+  skipReason     String?                    @map("skip_reason")
+  completedAt    DateTime?                  @map("completed_at")
+  lastErrorCode  String?                    @map("last_error_code")
+  version        Int                        @default(1)
+  createdAt      DateTime                   @default(now()) @map("created_at")
+  updatedAt      DateTime                   @updatedAt @map("updated_at")
+  policy         WeeklyReportReminderPolicy @relation(fields: [policyId], references: [id], onDelete: Restrict)
+  report         WeeklyReport?              @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  notification   RobotNotification?         @relation(fields: [notificationId], references: [id], onDelete: Restrict)
+
+  @@unique([policyId, policyVersion, cycleKey, reminderType])
+  @@index([status, scheduledFor])
+  @@index([policyId, createdAt])
+  @@map("weekly_report_reminder_occurrence")
+}
+
+model ReportSourceSnapshot {
+  id                        String                @id
+  reportId                  String                @map("report_id")
+  periodStart               String                @map("period_start")
+  periodEnd                 String                @map("period_end")
+  reportDate                String                @map("report_date")
+  timezone                  String
+  calendarVersionId         String?               @map("calendar_version_id")
+  profileId                 String                @map("profile_id")
+  profileVersion            Int                   @map("profile_version")
+  jiraQueryJson             String                @default("{}") @map("jira_query_json")
+  jiraSyncRunIdsJson        String                @default("[]") @map("jira_sync_run_ids_json")
+  taskFactsJson             String                @map("task_facts_json")
+  evidenceFactsJson         String                @map("evidence_facts_json")
+  manualInputsJson          String                @default("[]") @map("manual_inputs_json")
+  freshnessPolicyJson       String                @map("freshness_policy_json")
+  warningsJson              String                @default("[]") @map("warnings_json")
+  ruleVersion               String                @map("rule_version")
+  templateMappingVersionId  String?               @map("template_mapping_version_id")
+  sanitizationPolicyVersion String                @map("sanitization_policy_version")
+  generationHash            String                @map("generation_hash")
+  sourceContentHash         String                @map("source_content_hash")
+  createdBy                 String                @map("created_by")
+  createdAt                 DateTime              @default(now()) @map("created_at")
+  report                    WeeklyReport          @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  calendarVersion           WorkCalendarVersion?  @relation(fields: [calendarVersionId], references: [id], onDelete: Restrict)
+  profile                   UserProfile           @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  versions                  WeeklyReportVersion[]
+  sourceLinks               ReportSourceLink[]
+
+  @@unique([reportId, generationHash])
+  @@index([profileId, periodStart, periodEnd])
+  @@map("report_source_snapshot")
+}
+
+model ReportSourceLink {
+  id                String               @id
+  snapshotId        String               @map("snapshot_id")
+  versionId         String               @map("version_id")
+  fieldName         String               @map("field_name")
+  blockId           String               @map("block_id")
+  sourceType        String               @map("source_type")
+  sourceId          String               @map("source_id")
+  taskId            String?              @map("task_id")
+  evidenceId        String?              @map("evidence_id")
+  sourceContentHash String               @map("source_content_hash")
+  sourceSummaryJson String               @map("source_summary_json")
+  createdAt         DateTime             @default(now()) @map("created_at")
+  snapshot          ReportSourceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  version           WeeklyReportVersion  @relation(fields: [versionId], references: [id], onDelete: Restrict)
+  task              Task?                @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  evidence          Evidence?            @relation(fields: [evidenceId], references: [id], onDelete: Restrict)
+
+  @@unique([versionId, fieldName, blockId, sourceType, sourceId])
+  @@index([snapshotId])
+  @@index([sourceType, sourceId])
+  @@map("report_source_link")
+}
+
+/// 季度评审聚合根只保存当前工作状态；周期定义创建后不可原地修改。
+model QuarterlyReview {
+  id                        String                            @id
+  ownerProfileId            String                            @map("owner_profile_id")
+  name                      String
+  periodStart               String                            @map("period_start")
+  periodEnd                 String                            @map("period_end")
+  nextPeriodStart           String                            @map("next_period_start")
+  timezone                  String                            @default("Asia/Shanghai")
+  naturalQuarter            Boolean                           @default(true) @map("natural_quarter")
+  year                      Int?
+  quarter                   Int?
+  status                    String                            @default("draft")
+  completenessJson          String                            @default("{}") @map("completeness_json")
+  metricTemplateVersionId   String?                           @map("metric_template_version_id")
+  currentNarrativeVersionId String?                           @unique @map("current_narrative_version_id")
+  currentConfirmationId     String?                           @unique @map("current_confirmation_id")
+  version                   Int                               @default(1)
+  archivedAt                DateTime?                         @map("archived_at")
+  createdAt                 DateTime                          @default(now()) @map("created_at")
+  updatedAt                 DateTime                          @updatedAt @map("updated_at")
+  ownerProfile              UserProfile                       @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  metricTemplateVersion     PerformanceMetricTemplateVersion? @relation(fields: [metricTemplateVersionId], references: [id], onDelete: Restrict)
+  currentNarrativeVersion   ReviewNarrativeVersion?           @relation("QuarterlyCurrentNarrative", fields: [currentNarrativeVersionId], references: [id], onDelete: Restrict)
+  currentConfirmation       QuarterlyReviewConfirmation?      @relation("QuarterlyCurrentConfirmation", fields: [currentConfirmationId], references: [id], onDelete: Restrict)
+  collectionSnapshots       QuarterlyCollectionSnapshot[]
+  achievements              Achievement[]
+  scores                    ScoreItem[]
+  narrativeVersions         ReviewNarrativeVersion[]          @relation("QuarterlyNarrativeVersions")
+  confirmations             QuarterlyReviewConfirmation[]     @relation("QuarterlyConfirmations")
+  aiGenerations             AiGeneration[]
+  exportArtifacts           ExportArtifact[]
+
+  @@unique([ownerProfileId, periodStart, periodEnd])
+  @@unique([ownerProfileId, name])
+  @@index([ownerProfileId, status, updatedAt])
+  @@map("quarterly_review")
+}
+
+/// 每次收集冻结来源选择、新鲜度和规范化事实，后续源数据更新不改写历史候选依据。
+model QuarterlyCollectionSnapshot {
+  id                    String          @id
+  reviewId              String          @map("review_id")
+  sequenceNo            Int             @map("sequence_no")
+  sourceSelectionJson   String          @map("source_selection_json")
+  freshnessPolicyJson   String          @map("freshness_policy_json")
+  taskFactsJson         String          @default("[]") @map("task_facts_json")
+  evidenceFactsJson     String          @default("[]") @map("evidence_facts_json")
+  weeklyReportFactsJson String          @default("[]") @map("weekly_report_facts_json")
+  warningsJson          String          @default("[]") @map("warnings_json")
+  sourceContentHash     String          @map("source_content_hash")
+  generationHash        String          @map("generation_hash")
+  createdBy             String          @map("created_by")
+  createdAt             DateTime        @default(now()) @map("created_at")
+  review                QuarterlyReview @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  achievements          Achievement[]
+
+  @@unique([reviewId, sequenceNo])
+  @@unique([reviewId, generationHash])
+  @@index([reviewId, createdAt])
+  @@map("quarterly_collection_snapshot")
+}
+
+model Achievement {
+  id                   String                       @id
+  reviewId             String                       @map("review_id")
+  collectionSnapshotId String?                      @map("collection_snapshot_id")
+  projectId            String?                      @map("project_id")
+  sourceType           String                       @map("source_type")
+  sourceKey            String                       @map("source_key")
+  title                String
+  situation            String
+  action               String
+  result               String
+  impact               String
+  contributionBoundary String                       @default("") @map("contribution_boundary")
+  periodStart          String                       @map("period_start")
+  periodEnd            String                       @map("period_end")
+  selectionStatus      String                       @default("candidate") @map("selection_status")
+  exclusionReason      String?                      @map("exclusion_reason")
+  evidenceStatus       String                       @default("needs_evidence") @map("evidence_status")
+  sortOrder            Int                          @default(0) @map("sort_order")
+  version              Int                          @default(1)
+  createdBy            String                       @map("created_by")
+  createdAt            DateTime                     @default(now()) @map("created_at")
+  updatedAt            DateTime                     @updatedAt @map("updated_at")
+  review               QuarterlyReview              @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  collectionSnapshot   QuarterlyCollectionSnapshot? @relation(fields: [collectionSnapshotId], references: [id], onDelete: Restrict)
+  project              Project?                     @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  evidences            AchievementEvidence[]
+  metricLinks          AchievementMetricLink[]
+
+  @@unique([reviewId, sourceKey])
+  @@index([reviewId, selectionStatus, sortOrder])
+  @@index([projectId, periodStart, periodEnd])
+  @@map("achievement")
+}
+
+model AchievementEvidence {
+  id                String      @id
+  achievementId     String      @map("achievement_id")
+  sourceType        String      @map("source_type")
+  sourceId          String      @map("source_id")
+  taskId            String?     @map("task_id")
+  evidenceId        String?     @map("evidence_id")
+  title             String
+  externalKey       String?     @map("external_key")
+  url               String?
+  eventAt           DateTime?   @map("event_at")
+  availabilityState String      @default("available") @map("availability_state")
+  sourceContentHash String      @map("source_content_hash")
+  sourceSummaryJson String      @default("{}") @map("source_summary_json")
+  contributionAngle String      @default("") @map("contribution_angle")
+  primaryEvidence   Boolean     @default(false) @map("primary_evidence")
+  createdAt         DateTime    @default(now()) @map("created_at")
+  achievement       Achievement @relation(fields: [achievementId], references: [id], onDelete: Restrict)
+  task              Task?       @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  evidence          Evidence?   @relation(fields: [evidenceId], references: [id], onDelete: Restrict)
+
+  @@unique([achievementId, sourceType, sourceId])
+  @@index([taskId])
+  @@index([evidenceId])
+  @@map("achievement_evidence")
+}
+
+model PerformanceMetricTemplate {
+  id               String                             @id
+  ownerProfileId   String                             @map("owner_profile_id")
+  name             String
+  currentVersionId String?                            @unique @map("current_version_id")
+  archivedAt       DateTime?                          @map("archived_at")
+  version          Int                                @default(1)
+  createdAt        DateTime                           @default(now()) @map("created_at")
+  updatedAt        DateTime                           @updatedAt @map("updated_at")
+  ownerProfile     UserProfile                        @relation(fields: [ownerProfileId], references: [id], onDelete: Restrict)
+  currentVersion   PerformanceMetricTemplateVersion?  @relation("PerformanceCurrentMetricTemplateVersion", fields: [currentVersionId], references: [id], onDelete: Restrict)
+  versions         PerformanceMetricTemplateVersion[] @relation("PerformanceMetricTemplateVersions")
+
+  @@unique([ownerProfileId, name])
+  @@index([ownerProfileId, archivedAt])
+  @@map("performance_metric_template")
+}
+
+/// 指标模板版本不可变；公式只允许领域层明确支持的枚举，不执行自由文本表达式。
+model PerformanceMetricTemplateVersion {
+  id                 String                        @id
+  templateId         String                        @map("template_id")
+  versionNo          Int                           @map("version_no")
+  formulaType        String                        @map("formula_type")
+  roundingRule       String                        @map("rounding_rule")
+  formulaConfigJson  String                        @default("{}") @map("formula_config_json")
+  contentHash        String                        @map("content_hash")
+  createdBy          String                        @map("created_by")
+  createdAt          DateTime                      @default(now()) @map("created_at")
+  template           PerformanceMetricTemplate     @relation("PerformanceMetricTemplateVersions", fields: [templateId], references: [id], onDelete: Restrict)
+  currentForTemplate PerformanceMetricTemplate?    @relation("PerformanceCurrentMetricTemplateVersion")
+  metrics            PerformanceMetric[]
+  reviews            QuarterlyReview[]
+  confirmations      QuarterlyReviewConfirmation[]
+
+  @@unique([templateId, versionNo])
+  @@index([templateId, createdAt])
+  @@map("performance_metric_template_version")
+}
+
+model PerformanceMetric {
+  id                      String                           @id
+  templateVersionId       String                           @map("template_version_id")
+  code                    String
+  name                    String
+  definition              String
+  weight                  Float
+  minimum                 Float
+  maximum                 Float
+  step                    Float
+  required                Boolean                          @default(true)
+  evidenceRequirementJson String                           @default("{}") @map("evidence_requirement_json")
+  sortOrder               Int                              @map("sort_order")
+  enabled                 Boolean                          @default(true)
+  templateVersion         PerformanceMetricTemplateVersion @relation(fields: [templateVersionId], references: [id], onDelete: Restrict)
+  achievementLinks        AchievementMetricLink[]
+  scores                  ScoreItem[]
+
+  @@unique([templateVersionId, code])
+  @@unique([templateVersionId, sortOrder])
+  @@map("performance_metric")
+}
+
+model AchievementMetricLink {
+  id            String            @id
+  achievementId String            @map("achievement_id")
+  metricId      String            @map("metric_id")
+  contribution  String
+  active        Boolean           @default(true)
+  version       Int               @default(1)
+  supersededAt  DateTime?         @map("superseded_at")
+  createdBy     String            @map("created_by")
+  createdAt     DateTime          @default(now()) @map("created_at")
+  achievement   Achievement       @relation(fields: [achievementId], references: [id], onDelete: Restrict)
+  metric        PerformanceMetric @relation(fields: [metricId], references: [id], onDelete: Restrict)
+
+  @@unique([achievementId, metricId, version])
+  @@index([metricId])
+  @@map("achievement_metric_link")
+}
+
+model ScoreItem {
+  id                 String            @id
+  reviewId           String            @map("review_id")
+  metricId           String            @map("metric_id")
+  aiSuggestedScore   Float?            @map("ai_suggested_score")
+  aiSuggestedMinimum Float?            @map("ai_suggested_minimum")
+  aiSuggestedMaximum Float?            @map("ai_suggested_maximum")
+  aiReason           String?           @map("ai_reason")
+  aiEvidenceGapsJson String            @default("[]") @map("ai_evidence_gaps_json")
+  aiUncertainty      String?           @map("ai_uncertainty")
+  aiGenerationId     String?           @map("ai_generation_id")
+  userScore          Float?            @map("user_score")
+  userReason         String?           @map("user_reason")
+  rawContribution    Float?            @map("raw_contribution")
+  validationStatus   String            @default("missing") @map("validation_status")
+  version            Int               @default(1)
+  updatedBy          String            @map("updated_by")
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
+  review             QuarterlyReview   @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  metric             PerformanceMetric @relation(fields: [metricId], references: [id], onDelete: Restrict)
+
+  @@unique([reviewId, metricId])
+  @@index([reviewId, validationStatus])
+  @@map("score_item")
+}
+
+model ReviewNarrativeVersion {
+  id                 String                        @id
+  reviewId           String                        @map("review_id")
+  versionNo          Int                           @map("version_no")
+  origin             String
+  parentVersionId    String?                       @map("parent_version_id")
+  contentJson        String                        @map("content_json")
+  sourceSnapshotHash String                        @map("source_snapshot_hash")
+  aiGenerationId     String?                       @map("ai_generation_id")
+  contentHash        String                        @map("content_hash")
+  changeSummaryJson  String                        @default("{}") @map("change_summary_json")
+  createdBy          String                        @map("created_by")
+  createdAt          DateTime                      @default(now()) @map("created_at")
+  review             QuarterlyReview               @relation("QuarterlyNarrativeVersions", fields: [reviewId], references: [id], onDelete: Restrict)
+  currentForReview   QuarterlyReview?              @relation("QuarterlyCurrentNarrative")
+  parentVersion      ReviewNarrativeVersion?       @relation("QuarterlyNarrativeHistory", fields: [parentVersionId], references: [id], onDelete: Restrict)
+  childVersions      ReviewNarrativeVersion[]      @relation("QuarterlyNarrativeHistory")
+  confirmations      QuarterlyReviewConfirmation[]
+  adoptedForAiGeneration AiGeneration?             @relation("AiGenerationAdoptedNarrative")
+
+  @@unique([reviewId, versionNo])
+  @@index([reviewId, createdAt])
+  @@map("review_narrative_version")
+}
+
+/// 确认冻结成果、证据、指标、用户分、计算明细、自评版本和完整性知悉，不代表对外提交。
+model QuarterlyReviewConfirmation {
+  id                      String                           @id
+  reviewId                String                           @map("review_id")
+  reviewVersion           Int                              @map("review_version")
+  metricTemplateVersionId String                           @map("metric_template_version_id")
+  narrativeVersionId      String                           @map("narrative_version_id")
+  snapshotHash            String                           @map("snapshot_hash")
+  achievementsHash        String                           @map("achievements_hash")
+  scoresHash              String                           @map("scores_hash")
+  calculationJson         String                           @map("calculation_json")
+  reviewSnapshotJson      String                           @default("{}") @map("review_snapshot_json")
+  achievementsSnapshotJson String                          @map("achievements_snapshot_json")
+  scoresSnapshotJson       String                          @map("scores_snapshot_json")
+  templateSnapshotJson     String                          @map("template_snapshot_json")
+  narrativeSnapshotJson    String                          @map("narrative_snapshot_json")
+  completenessSnapshotJson String                          @map("completeness_snapshot_json")
+  completenessAckJson     String                           @default("[]") @map("completeness_ack_json")
+  status                  String                           @default("active")
+  confirmedBy             String                           @map("confirmed_by")
+  confirmedAt             DateTime                         @default(now()) @map("confirmed_at")
+  invalidatedAt           DateTime?                        @map("invalidated_at")
+  invalidationReason      String?                          @map("invalidation_reason")
+  review                  QuarterlyReview                  @relation("QuarterlyConfirmations", fields: [reviewId], references: [id], onDelete: Restrict)
+  currentForReview        QuarterlyReview?                 @relation("QuarterlyCurrentConfirmation")
+  metricTemplateVersion   PerformanceMetricTemplateVersion @relation(fields: [metricTemplateVersionId], references: [id], onDelete: Restrict)
+  narrativeVersion        ReviewNarrativeVersion           @relation(fields: [narrativeVersionId], references: [id], onDelete: Restrict)
+  exportArtifacts         ExportArtifact[]
+
+  @@index([reviewId, status, confirmedAt])
+  @@map("quarterly_review_confirmation")
+}
+
+model ExportArtifact {
+  id                String                      @id
+  reviewId          String                      @map("review_id")
+  confirmationId    String                      @map("confirmation_id")
+  format            String
+  templateVersion   String                      @map("template_version")
+  inputSnapshotHash String                      @map("input_snapshot_hash")
+  status            String                      @default("queued")
+  attemptCount      Int                         @default(0) @map("attempt_count")
+  version           Int                         @default(1)
+  jobId             String?                     @unique @map("job_id")
+  fileName          String?                     @map("file_name")
+  storedName        String?                     @unique @map("stored_name")
+  mimeType          String?                     @map("mime_type")
+  contentHash       String?                     @map("content_hash")
+  sizeBytes         Int?                        @map("size_bytes")
+  qaStatus          String                      @default("pending") @map("qa_status")
+  qaReportJson      String                      @default("{}") @map("qa_report_json")
+  rendererFactsJson String                      @default("{}") @map("renderer_facts_json")
+  errorCode         String?                     @map("error_code")
+  errorSummary      String?                     @map("error_summary")
+  createdBy         String                      @map("created_by")
+  createdAt         DateTime                    @default(now()) @map("created_at")
+  startedAt         DateTime?                   @map("started_at")
+  completedAt       DateTime?                   @map("completed_at")
+  updatedAt         DateTime                    @updatedAt @map("updated_at")
+  review            QuarterlyReview             @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  confirmation      QuarterlyReviewConfirmation @relation(fields: [confirmationId], references: [id], onDelete: Restrict)
+
+  @@unique([reviewId, inputSnapshotHash, format, templateVersion])
+  @@index([reviewId, status, createdAt])
+  @@index([status, createdAt])
+  @@map("export_artifact")
+}
+
+model IdempotencyRecord {
+  id             String    @id
+  actorId        String    @map("actor_id")
+  route          String
+  idempotencyKey String    @map("idempotency_key")
+  requestHash    String    @map("request_hash")
+  state          String    @default("processing")
+  httpStatus     Int?      @map("http_status")
+  responseJson   String?   @map("response_json")
+  errorCode      String?   @map("error_code")
+  expiresAt      DateTime? @map("expires_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@unique([actorId, route, idempotencyKey])
+  @@index([expiresAt])
+  @@map("idempotency_record")
+}
+
+model Job {
+  id              String    @id
+  type            String
+  payloadRef      String?   @map("payload_ref")
+  payloadSummary  String    @default("{}") @map("payload_summary")
+  priority        Int       @default(100)
+  status          String    @default("queued")
+  progress        Int       @default(0)
+  scheduledAt     DateTime  @map("scheduled_at")
+  leaseOwner      String?   @map("lease_owner")
+  leaseUntil      DateTime? @map("lease_until")
+  attemptCount    Int       @default(0) @map("attempt_count")
+  maxAttempts     Int       @default(3) @map("max_attempts")
+  dedupeKey       String?   @map("dedupe_key")
+  cancelRequested Boolean   @default(false) @map("cancel_requested")
+  lastErrorCode   String?   @map("last_error_code")
+  lastError       String?   @map("last_error")
+  resultJson      String?   @map("result_json")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  startedAt       DateTime? @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, scheduledAt, priority])
+  @@index([dedupeKey, status])
+  @@map("job")
+}
+
+model AuditEvent {
+  eventId           String   @id @map("event_id")
+  occurredAt        DateTime @default(now()) @map("occurred_at")
+  actorType         String   @map("actor_type")
+  actorId           String   @map("actor_id")
+  action            String
+  targetType        String   @map("target_type")
+  targetId          String   @map("target_id")
+  correlationId     String   @map("correlation_id")
+  approvalId        String?  @map("approval_id")
+  outcome           String
+  beforeSummaryHash String?  @map("before_summary_hash")
+  afterSummaryHash  String?  @map("after_summary_hash")
+  clientSessionHash String   @map("client_session_hash")
+  errorCode         String?  @map("error_code")
+
+  @@index([occurredAt])
+  @@index([targetType, targetId])
+  @@index([correlationId])
+  @@map("audit_event")
+}
+
+model AppEventLog {
+  id             String   @id
+  timestamp      DateTime @default(now())
+  level          String
+  component      String
+  eventName      String   @map("event_name")
+  correlationId  String?  @map("correlation_id")
+  operationId    String?  @map("operation_id")
+  targetType     String?  @map("target_type")
+  targetId       String?  @map("target_id")
+  durationMs     Int?     @map("duration_ms")
+  outcome        String?
+  errorCode      String?  @map("error_code")
+  attributesJson String   @default("{}") @map("attributes_json")
+
+  @@index([timestamp])
+  @@index([correlationId])
+  @@map("app_event_log")
+}
+
+model BackupArtifact {
+  id             String    @id
+  fileName       String?   @map("file_name")
+  path           String?
+  sha256         String?
+  sizeBytes      BigInt?   @map("size_bytes")
+  status         String
+  schemaChecksum String?   @map("schema_checksum")
+  verifiedAt     DateTime? @map("verified_at")
+  errorCode      String?   @map("error_code")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("backup_artifact")
+}

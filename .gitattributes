@@ -1,0 +1,2 @@
+# 所有文本文件在 Windows、Linux 和 CI 中统一检出为 LF，避免工具因 core.autocrlf 产生差异。
+* text=auto eol=lf

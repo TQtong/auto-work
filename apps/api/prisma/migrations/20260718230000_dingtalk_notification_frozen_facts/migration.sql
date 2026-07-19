@@ -1,0 +1,9 @@
+-- 后台通知只冻结构造安全短消息所需的最小事实，不保存六字段正文、附件或凭证。
+ALTER TABLE "robot_notification" ADD COLUMN "message_facts_json" TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE "robot_notification" ADD COLUMN "provider_call_count" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "robot_notification" ADD COLUMN "retry_delays_json" TEXT NOT NULL DEFAULT '[]';
+
+DROP TRIGGER "robot_notification_validate_insert";
+DROP TRIGGER "robot_notification_validate_update";
+CREATE TRIGGER "robot_notification_validate_insert" BEFORE INSERT ON "robot_notification" BEGIN SELECT CASE WHEN NEW."notification_type" NOT IN ('deadline_reminder','submission_success','submission_failure','risk_alert') OR NEW."status" NOT IN ('pending','queued','sending','succeeded','failed','unknown','skipped','cancelled') OR NEW."state_version" < 1 OR NEW."coalesced_count" < 0 OR NEW."provider_call_count" < 0 OR NEW."provider_call_count" > 9 OR NEW."version" < 1 OR NEW."quiet_window_ends_at" < NEW."quiet_window_started_at" OR length(NEW."business_object_key") < 1 OR length(NEW."dedupe_key") < 1 OR length(NEW."content_hash") < 32 THEN RAISE(ABORT, 'robot_notification values are invalid') END; END;
+CREATE TRIGGER "robot_notification_validate_update" BEFORE UPDATE ON "robot_notification" BEGIN SELECT CASE WHEN NEW."notification_type" <> OLD."notification_type" OR NEW."business_object_key" <> OLD."business_object_key" OR NEW."state_version" <> OLD."state_version" OR NEW."dedupe_key" <> OLD."dedupe_key" OR NEW."content_hash" <> OLD."content_hash" OR NEW."message_facts_json" <> OLD."message_facts_json" OR COALESCE(NEW."delivery_intent_id", '') <> COALESCE(OLD."delivery_intent_id", '') OR NEW."coalesced_count" < OLD."coalesced_count" OR NEW."provider_call_count" < OLD."provider_call_count" OR NEW."version" <= OLD."version" OR OLD."status" IN ('succeeded','skipped','cancelled') AND NEW."status" <> OLD."status" THEN RAISE(ABORT, 'robot_notification transition is invalid') END; END;

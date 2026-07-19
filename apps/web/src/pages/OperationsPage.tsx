@@ -1,0 +1,752 @@
+import {
+  CloudDownloadOutlined,
+  FileSearchOutlined,
+  ReloadOutlined,
+  SafetyCertificateOutlined,
+} from '@ant-design/icons';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  Alert,
+  Button,
+  Card,
+  Checkbox,
+  Descriptions,
+  Input,
+  InputNumber,
+  Modal,
+  Progress,
+  Space,
+  Statistic,
+  Table,
+  Tabs,
+  Typography,
+  message,
+} from 'antd';
+import { useState } from 'react';
+import { apiDownload, apiRequest } from '../api/client.js';
+import type {
+  AuditEvent,
+  Backup,
+  BackupRestorePreflight,
+  DiagnosticBundle,
+  DiagnosticBundlePreview,
+  DiagnosticFacts,
+  Job,
+  PendingRestore,
+  RetentionPolicy,
+  RetentionPreview,
+  RetentionResult,
+} from '../api/types.js';
+import { StatusTag } from '../components/StatusTag.js';
+
+export function OperationsPage() {
+  return (
+    <Space direction="vertical" size={20} style={{ width: '100%' }}>
+      <div>
+        <Typography.Title level={2}>作业、审计与备份</Typography.Title>
+        <Typography.Text type="secondary">
+          后台任务在页面关闭后继续运行；外部写结果未知时不会被自动重放。
+        </Typography.Text>
+      </div>
+      <Tabs
+        items={[
+          { key: 'jobs', label: '持久化作业', children: <JobsPanel /> },
+          { key: 'audit', label: '审计事件', children: <AuditPanel /> },
+          { key: 'backup', label: '一致备份', children: <BackupPanel /> },
+          { key: 'diagnostics', label: '诊断与容量', children: <DiagnosticsPanel /> },
+        ]}
+      />
+    </Space>
+  );
+}
+
+function DiagnosticsPanel() {
+  const queryClient = useQueryClient();
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [retentionAcknowledged, setRetentionAcknowledged] = useState(false);
+  const [retentionPolicy, setRetentionPolicy] = useState<RetentionPolicy>({
+    eventLogDays: 30,
+    terminalJobDays: 90,
+    diagnosticBundleDays: 30,
+  });
+  const [messageApi, holder] = message.useMessage();
+  const facts = useQuery({
+    queryKey: ['maintenance-diagnostics'],
+    queryFn: () => apiRequest<DiagnosticFacts>('/api/v1/maintenance/diagnostics'),
+    refetchInterval: 30_000,
+  });
+  const preview = useQuery({
+    queryKey: ['diagnostic-bundle-preview'],
+    queryFn: () =>
+      apiRequest<DiagnosticBundlePreview>('/api/v1/maintenance/diagnostic-bundles/preview'),
+  });
+  const bundles = useQuery({
+    queryKey: ['diagnostic-bundles'],
+    queryFn: () => apiRequest<DiagnosticBundle[]>('/api/v1/maintenance/diagnostic-bundles'),
+  });
+  const createBundle = useMutation({
+    mutationFn: () =>
+      apiRequest<DiagnosticBundle>('/api/v1/maintenance/diagnostic-bundles', {
+        method: 'POST',
+        body: JSON.stringify({ acknowledgedExclusions: true, includeRecentErrors: true }),
+      }),
+    onSuccess: async () => {
+      setAcknowledged(false);
+      await queryClient.invalidateQueries({ queryKey: ['diagnostic-bundles'] });
+      void messageApi.success('脱敏诊断包已生成并完成内容自检');
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+  const downloadBundle = useMutation({
+    mutationFn: async (bundle: DiagnosticBundle) => {
+      const file = await apiDownload(
+        `/api/v1/maintenance/diagnostic-bundles/${bundle.bundleId}/download`,
+      );
+      // 下载只在用户点击后创建短生命周期 Blob URL，不把诊断内容写入浏览器持久存储。
+      const url = URL.createObjectURL(file.blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = file.fileName;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+  const retentionPreview = useQuery({
+    queryKey: ['retention-preview', retentionPolicy],
+    queryFn: () =>
+      apiRequest<RetentionPreview>('/api/v1/maintenance/retention/preview', {
+        method: 'POST',
+        body: JSON.stringify(retentionPolicy),
+      }),
+  });
+  const executeRetention = useMutation({
+    mutationFn: () => {
+      const previewHash = retentionPreview.data?.data.previewHash;
+      if (!previewHash) throw new Error('留存预览尚未完成');
+      return apiRequest<RetentionResult>('/api/v1/maintenance/retention/execute', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...retentionPolicy,
+          acknowledgedPreservationBoundary: true,
+          expectedPreviewHash: previewHash,
+        }),
+      });
+    },
+    onSuccess: async (response) => {
+      setRetentionAcknowledged(false);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['retention-preview'] }),
+        queryClient.invalidateQueries({ queryKey: ['maintenance-diagnostics'] }),
+        queryClient.invalidateQueries({ queryKey: ['diagnostic-bundles'] }),
+        queryClient.invalidateQueries({ queryKey: ['jobs'] }),
+        queryClient.invalidateQueries({ queryKey: ['audit'] }),
+      ]);
+      const deleted = response.data.deleted;
+      void messageApi.success(
+        `留存清理完成：事件 ${deleted.eventLogs}、幂等 ${deleted.expiredIdempotency}、作业 ${deleted.terminalJobs}、诊断包 ${deleted.diagnosticBundles}`,
+      );
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+  const data = facts.data?.data;
+  const availablePercent = data
+    ? Math.round((data.storage.availableBytes / Math.max(data.storage.totalBytes, 1)) * 1000) / 10
+    : 0;
+  return (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      {holder}
+      <Card
+        title="运行健康与容量事实"
+        extra={
+          <Button icon={<ReloadOutlined />} onClick={() => void facts.refetch()}>
+            重新诊断
+          </Button>
+        }
+        loading={facts.isLoading}
+      >
+        {data ? (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <div className="operations-stat-grid">
+              <Statistic title="数据库 quick_check" value={data.database.readiness.quickCheck} />
+              <Statistic title="磁盘可用" value={availablePercent} suffix="%" />
+              <Statistic title="不可变审计" value={data.audit.immutableEventCount} suffix="条" />
+              <Statistic
+                title="最近校验备份"
+                value={data.backups.verificationAgeHours ?? '—'}
+                suffix={data.backups.verificationAgeHours === null ? undefined : '小时'}
+              />
+            </div>
+            {!data.storage.growthAllowed ? (
+              <Alert
+                type="error"
+                showIcon
+                message="磁盘空间低于安全阈值，增长型操作已停止"
+                description={`至少需要保留 ${formatBytes(data.storage.minimumAvailableBytes)}；导入、备份、季度导出和诊断包会返回明确错误，已有数据仍可只读。`}
+              />
+            ) : null}
+            <Descriptions bordered size="small" column={2}>
+              <Descriptions.Item label="应用 / Node">
+                {data.runtime.applicationVersion} · {data.runtime.nodeVersion}
+              </Descriptions.Item>
+              <Descriptions.Item label="监听边界">
+                {data.runtime.binding.host}:{data.runtime.binding.port} · 仅回环
+              </Descriptions.Item>
+              <Descriptions.Item label="SQLite">
+                {data.database.journalMode} · {data.database.pageCount} 页 · 空闲{' '}
+                {data.database.freePageCount} 页
+              </Descriptions.Item>
+              <Descriptions.Item label="数据库占用">
+                {formatBytes(data.storage.databaseBytes)}
+              </Descriptions.Item>
+              <Descriptions.Item label="作业状态" span={2}>
+                {Object.entries(data.jobs)
+                  .map(([status, count]) => `${status} ${count}`)
+                  .join(' · ') || '暂无作业'}
+              </Descriptions.Item>
+              <Descriptions.Item label="受控目录分类" span={2}>
+                {Object.entries(data.storage.categories)
+                  .map(([name, bytes]) => `${name} ${formatBytes(bytes)}`)
+                  .join(' · ')}
+              </Descriptions.Item>
+            </Descriptions>
+            {data.recentErrors.length > 0 ? (
+              <Alert
+                type="warning"
+                showIcon
+                message={`最近有 ${data.recentErrors.length} 条结构化错误事实`}
+                description="诊断只展示组件、事件和错误码；原始请求、正文、路径和堆栈不会进入页面或诊断包。"
+              />
+            ) : (
+              <Alert type="success" showIcon message="未发现结构化 error/fatal 事件" />
+            )}
+          </Space>
+        ) : null}
+      </Card>
+      <Card
+        title={
+          <Space>
+            <FileSearchOutlined />
+            脱敏诊断包
+          </Space>
+        }
+        extra={
+          <Button
+            type="primary"
+            disabled={!acknowledged}
+            loading={createBundle.isPending}
+            onClick={() => createBundle.mutate()}
+          >
+            生成诊断包
+          </Button>
+        }
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Alert
+            type="info"
+            showIcon
+            message="生成前先核对内容和排除项"
+            description={
+              <Space direction="vertical" size={4}>
+                <Typography.Text>
+                  包含：{preview.data?.data.includedSections.join('、') ?? '正在读取预览…'}
+                </Typography.Text>
+                <Typography.Text type="secondary">
+                  排除：{preview.data?.data.exclusions.join('；') ?? '正在读取排除项…'}
+                </Typography.Text>
+              </Space>
+            }
+          />
+          <Checkbox
+            checked={acknowledged}
+            onChange={(event) => setAcknowledged(event.target.checked)}
+          >
+            我已核对诊断包内容和排除项，确认只生成本机脱敏文件
+          </Checkbox>
+          <Table
+            rowKey="bundleId"
+            size="small"
+            loading={bundles.isLoading}
+            dataSource={bundles.data?.data ?? []}
+            columns={[
+              { title: '文件', dataIndex: 'fileName' },
+              {
+                title: '大小',
+                dataIndex: 'sizeBytes',
+                render: (value: number) => formatBytes(value),
+              },
+              {
+                title: 'SHA-256',
+                dataIndex: 'sha256',
+                render: (value: string) => (
+                  <Typography.Text code>{value.slice(0, 16)}…</Typography.Text>
+                ),
+              },
+              {
+                title: '生成时间',
+                dataIndex: 'createdAt',
+                render: (value: string) => new Date(value).toLocaleString(),
+              },
+              {
+                title: '操作',
+                render: (_: unknown, row: DiagnosticBundle) => (
+                  <Button
+                    size="small"
+                    icon={<CloudDownloadOutlined />}
+                    loading={downloadBundle.isPending}
+                    onClick={() => downloadBundle.mutate(row)}
+                  >
+                    下载
+                  </Button>
+                ),
+              },
+            ]}
+          />
+        </Space>
+      </Card>
+      <Card
+        title="留存策略与受控清理"
+        extra={
+          <Button
+            danger
+            disabled={!retentionAcknowledged || !retentionPreview.data}
+            loading={executeRetention.isPending}
+            onClick={() => executeRetention.mutate()}
+          >
+            按当前预览执行清理
+          </Button>
+        }
+      >
+        <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <div className="operations-retention-grid">
+            <label>
+              <Typography.Text>结构化事件保留天数</Typography.Text>
+              <InputNumber
+                min={7}
+                max={3650}
+                value={retentionPolicy.eventLogDays}
+                onChange={(value) => {
+                  setRetentionAcknowledged(false);
+                  setRetentionPolicy((current) => ({ ...current, eventLogDays: value ?? 30 }));
+                }}
+              />
+            </label>
+            <label>
+              <Typography.Text>终态作业保留天数</Typography.Text>
+              <InputNumber
+                min={30}
+                max={3650}
+                value={retentionPolicy.terminalJobDays}
+                onChange={(value) => {
+                  setRetentionAcknowledged(false);
+                  setRetentionPolicy((current) => ({ ...current, terminalJobDays: value ?? 90 }));
+                }}
+              />
+            </label>
+            <label>
+              <Typography.Text>诊断包保留天数</Typography.Text>
+              <InputNumber
+                min={7}
+                max={3650}
+                value={retentionPolicy.diagnosticBundleDays}
+                onChange={(value) => {
+                  setRetentionAcknowledged(false);
+                  setRetentionPolicy((current) => ({
+                    ...current,
+                    diagnosticBundleDays: value ?? 30,
+                  }));
+                }}
+              />
+            </label>
+          </div>
+          {retentionPreview.data ? (
+            <Descriptions bordered size="small" column={3}>
+              <Descriptions.Item label="待清结构化事件">
+                {retentionPreview.data.data.candidates.eventLogs}
+              </Descriptions.Item>
+              <Descriptions.Item label="待清过期幂等">
+                {retentionPreview.data.data.candidates.expiredIdempotency}
+              </Descriptions.Item>
+              <Descriptions.Item label="待清终态作业">
+                {retentionPreview.data.data.candidates.terminalJobs}
+              </Descriptions.Item>
+              <Descriptions.Item label="待清诊断包">
+                {retentionPreview.data.data.candidates.diagnosticBundles} 份 /{' '}
+                {formatBytes(retentionPreview.data.data.candidates.diagnosticBytes)}
+              </Descriptions.Item>
+              <Descriptions.Item label="永不自动清理的审计">
+                {retentionPreview.data.data.preserved.auditEvents} 条
+              </Descriptions.Item>
+              <Descriptions.Item label="历史导出 / 校验备份">
+                {retentionPreview.data.data.preserved.exportArtifacts} /{' '}
+                {retentionPreview.data.data.preserved.verifiedBackups}
+              </Descriptions.Item>
+              <Descriptions.Item label="预览哈希" span={3}>
+                <Typography.Text code>
+                  {retentionPreview.data.data.previewHash.slice(0, 24)}…
+                </Typography.Text>
+              </Descriptions.Item>
+            </Descriptions>
+          ) : null}
+          <Alert
+            type="warning"
+            showIcon
+            message="清理不会触碰业务事实、不可变审计、历史导出、已校验备份或凭证"
+            description="执行前服务端会重新计算候选；数量或范围变化会返回 409，要求重新预览，避免确认后范围漂移。"
+          />
+          <Checkbox
+            checked={retentionAcknowledged}
+            onChange={(event) => setRetentionAcknowledged(event.target.checked)}
+          >
+            我已核对待清数量和永久保留边界，确认按当前预览哈希执行
+          </Checkbox>
+        </Space>
+      </Card>
+    </Space>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const power = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** power).toFixed(power === 0 ? 0 : 1)} ${units[power]}`;
+}
+
+function JobsPanel() {
+  const query = useQuery({
+    queryKey: ['jobs'],
+    queryFn: () => apiRequest<Job[]>('/api/v1/operations?limit=100'),
+    refetchInterval: 2_000,
+  });
+  return (
+    <Card
+      extra={
+        <Button icon={<ReloadOutlined />} onClick={() => void query.refetch()}>
+          刷新
+        </Button>
+      }
+    >
+      <Table
+        rowKey="id"
+        loading={query.isLoading}
+        dataSource={query.data?.data ?? []}
+        expandable={{
+          expandedRowRender: (row) => (
+            <pre className="safe-json">
+              {JSON.stringify(
+                { payload: row.payloadSummary, errorCode: row.lastErrorCode, error: row.lastError },
+                null,
+                2,
+              )}
+            </pre>
+          ),
+        }}
+        columns={[
+          { title: '作业', dataIndex: 'type' },
+          {
+            title: '状态',
+            dataIndex: 'status',
+            render: (value: string) => <StatusTag status={value} />,
+          },
+          {
+            title: '进度',
+            dataIndex: 'progress',
+            width: 180,
+            render: (value: number) => (
+              <Progress
+                percent={value}
+                size="small"
+                status={value === 100 ? 'success' : 'active'}
+              />
+            ),
+          },
+          {
+            title: '尝试',
+            render: (_: unknown, row: Job) => `${row.attemptCount}/${row.maxAttempts}`,
+          },
+          {
+            title: '创建时间',
+            dataIndex: 'createdAt',
+            render: (value: string) => new Date(value).toLocaleString(),
+          },
+          {
+            title: '完成时间',
+            dataIndex: 'completedAt',
+            render: (value: string | null) => (value ? new Date(value).toLocaleString() : '—'),
+          },
+        ]}
+      />
+    </Card>
+  );
+}
+
+function AuditPanel() {
+  const query = useQuery({
+    queryKey: ['audit'],
+    queryFn: () => apiRequest<AuditEvent[]>('/api/v1/audit-events?limit=100'),
+    refetchInterval: 10_000,
+  });
+  return (
+    <Card extra={<Typography.Text type="secondary">审计只保存非敏感摘要哈希</Typography.Text>}>
+      <Table
+        rowKey="eventId"
+        loading={query.isLoading}
+        dataSource={query.data?.data ?? []}
+        columns={[
+          {
+            title: '时间',
+            dataIndex: 'occurredAt',
+            render: (value: string) => new Date(value).toLocaleString(),
+          },
+          { title: '动作', dataIndex: 'action' },
+          {
+            title: '对象',
+            render: (_: unknown, row: AuditEvent) =>
+              `${row.targetType} · ${row.targetId.slice(0, 12)}`,
+          },
+          {
+            title: '结果',
+            dataIndex: 'outcome',
+            render: (value: string) => <StatusTag status={value} />,
+          },
+          {
+            title: '错误码',
+            dataIndex: 'errorCode',
+            render: (value: string | null) => value ?? '—',
+          },
+        ]}
+      />
+    </Card>
+  );
+}
+
+function BackupPanel() {
+  const queryClient = useQueryClient();
+  const [messageApi, holder] = message.useMessage();
+  const [restorePreflight, setRestorePreflight] = useState<BackupRestorePreflight | null>(null);
+  const [restoreText, setRestoreText] = useState('');
+  const [restoreAcknowledged, setRestoreAcknowledged] = useState(false);
+  const query = useQuery({
+    queryKey: ['backups'],
+    queryFn: () => apiRequest<Backup[]>('/api/v1/backups'),
+    refetchInterval: 5_000,
+  });
+  const action = useMutation({
+    mutationFn: ({ kind, id }: { kind: 'create' | 'verify'; id?: string }) =>
+      apiRequest(
+        kind === 'create' ? '/api/v1/maintenance/backup' : `/api/v1/backups/${id}/verify`,
+        { method: 'POST' },
+      ),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['backups'] });
+      await queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      void messageApi.success('备份作业已进入持久化队列');
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+  const pendingRestore = useQuery({
+    queryKey: ['pending-restore'],
+    queryFn: () => apiRequest<PendingRestore | null>('/api/v1/maintenance/pending-restore'),
+    refetchInterval: 2_000,
+  });
+  const loadRestorePreflight = useMutation({
+    mutationFn: (id: string) =>
+      apiRequest<BackupRestorePreflight>(`/api/v1/backups/${id}/restore-preflight`),
+    onSuccess: (response) => {
+      setRestorePreflight(response.data);
+      setRestoreText('');
+      setRestoreAcknowledged(false);
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+  const prepareRestore = useMutation({
+    mutationFn: () => {
+      if (!restorePreflight?.sha256) throw new Error('恢复预检缺少备份哈希');
+      return apiRequest(`/api/v1/backups/${restorePreflight.artifactId}/restore`, {
+        method: 'POST',
+        body: JSON.stringify({
+          expectedSha256: restorePreflight.sha256,
+          confirmationText: restoreText,
+          acknowledgedRestart: true,
+        }),
+      });
+    },
+    onSuccess: async () => {
+      setRestorePreflight(null);
+      await queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      await queryClient.invalidateQueries({ queryKey: ['pending-restore'] });
+      void messageApi.success('恢复准备作业已排队；完成后必须重启应用才会原子切换数据库');
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+  const cancelRestore = useMutation({
+    mutationFn: () => apiRequest('/api/v1/maintenance/pending-restore', { method: 'DELETE' }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['pending-restore'] });
+      void messageApi.success('待恢复清单已取消；备份文件和安全备份均保留');
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+  return (
+    <Card
+      title={
+        <Space>
+          <SafetyCertificateOutlined />
+          SQLite 在线一致备份
+        </Space>
+      }
+      extra={
+        <Button
+          type="primary"
+          icon={<CloudDownloadOutlined />}
+          loading={action.isPending}
+          onClick={() => action.mutate({ kind: 'create' })}
+        >
+          立即备份
+        </Button>
+      }
+    >
+      {holder}
+      {pendingRestore.data?.data ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="恢复已准备完成，等待重启应用"
+          description={
+            <Space direction="vertical" size={6}>
+              <Typography.Text>
+                恢复 ID {pendingRestore.data.data.restoreId}；请求时间{' '}
+                {new Date(pendingRestore.data.data.requestedAt).toLocaleString()}
+                。下次启动会在数据库连接前校验并原子切换。
+              </Typography.Text>
+              <Button
+                danger
+                size="small"
+                loading={cancelRestore.isPending}
+                onClick={() => cancelRestore.mutate()}
+              >
+                重启前取消恢复
+              </Button>
+            </Space>
+          }
+        />
+      ) : null}
+      <Typography.Paragraph type="secondary">
+        使用 SQLite VACUUM INTO 生成一致快照；校验同时核对 SHA-256 和隔离数据库
+        quick_check，不复制活动 WAL 文件组合。
+      </Typography.Paragraph>
+      <Table
+        rowKey="id"
+        loading={query.isLoading}
+        dataSource={query.data?.data ?? []}
+        columns={[
+          {
+            title: '文件',
+            dataIndex: 'fileName',
+            render: (value: string | null) => value ?? '生成中',
+          },
+          {
+            title: '状态',
+            dataIndex: 'status',
+            render: (value: string) => <StatusTag status={value} />,
+          },
+          {
+            title: '大小',
+            dataIndex: 'sizeBytes',
+            render: (value: string | null) =>
+              value ? `${(Number(value) / 1024 / 1024).toFixed(2)} MB` : '—',
+          },
+          {
+            title: 'SHA-256',
+            dataIndex: 'sha256',
+            render: (value: string | null) =>
+              value ? <Typography.Text code>{value.slice(0, 16)}…</Typography.Text> : '—',
+          },
+          {
+            title: 'Schema',
+            dataIndex: 'schemaChecksum',
+            render: (value: string | null) =>
+              value ? <Typography.Text code>{value}</Typography.Text> : '未校验',
+          },
+          {
+            title: '生成时间',
+            dataIndex: 'createdAt',
+            render: (value: string) => new Date(value).toLocaleString(),
+          },
+          {
+            title: '校验与恢复',
+            render: (_: unknown, row: Backup) => (
+              <Space>
+                <Button
+                  size="small"
+                  disabled={!row.sha256}
+                  loading={action.isPending}
+                  onClick={() => action.mutate({ kind: 'verify', id: row.id })}
+                >
+                  隔离校验
+                </Button>
+                <Button
+                  size="small"
+                  danger
+                  disabled={row.status !== 'verified' || Boolean(pendingRestore.data?.data)}
+                  loading={loadRestorePreflight.isPending}
+                  onClick={() => loadRestorePreflight.mutate(row.id)}
+                >
+                  恢复
+                </Button>
+              </Space>
+            ),
+          },
+        ]}
+      />
+      <Modal
+        open={Boolean(restorePreflight)}
+        title="恢复数据库前置确认"
+        okText="准备恢复并等待重启"
+        okButtonProps={{
+          danger: true,
+          disabled:
+            !restorePreflight?.compatible ||
+            !restoreAcknowledged ||
+            restoreText !== restorePreflight.confirmationText,
+          loading: prepareRestore.isPending,
+        }}
+        onOk={() => prepareRestore.mutate()}
+        onCancel={() => setRestorePreflight(null)}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Alert
+            type={restorePreflight?.compatible ? 'warning' : 'error'}
+            showIcon
+            message={
+              restorePreflight?.compatible
+                ? '将先生成当前数据库安全备份，再创建待恢复清单'
+                : '备份状态、哈希或 Schema 与当前应用不兼容'
+            }
+            description="当前进程不会覆盖已打开的 SQLite；下次重启会在 Prisma 连接前再次校验 SHA-256，切换失败会回滚当前数据库。凭证引用若在旧备份中失效，恢复后需重新配置。"
+          />
+          <Descriptions size="small" bordered column={1}>
+            <Descriptions.Item label="备份文件">{restorePreflight?.fileName}</Descriptions.Item>
+            <Descriptions.Item label="SHA-256">
+              <Typography.Text code>{restorePreflight?.sha256}</Typography.Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="备份 / 当前 Schema">
+              {restorePreflight?.schemaChecksum} / {restorePreflight?.currentSchemaChecksum}
+            </Descriptions.Item>
+          </Descriptions>
+          <Typography.Text>
+            请输入 <Typography.Text code>{restorePreflight?.confirmationText}</Typography.Text>
+          </Typography.Text>
+          <Input value={restoreText} onChange={(event) => setRestoreText(event.target.value)} />
+          <Checkbox
+            checked={restoreAcknowledged}
+            onChange={(event) => setRestoreAcknowledged(event.target.checked)}
+          >
+            我已知悉恢复需要重启，恢复后应先只读核对数据库、作业、审计和凭证引用
+          </Checkbox>
+        </Space>
+      </Modal>
+    </Card>
+  );
+}
