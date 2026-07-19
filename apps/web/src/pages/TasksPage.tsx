@@ -19,6 +19,7 @@ import {
   Space,
   Table,
   Tag,
+  Tabs,
   Timeline,
   Typography,
   message,
@@ -725,7 +726,15 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
         message="本地覆盖不会修改 Jira"
         description="覆盖必须填写原因和有效期。Jira 新值与人工值不同时会进入冲突清单；到期或撤销后恢复最新 Jira/Excel 来源事实。"
       />
-      <Card title="本地字段覆盖与来源">
+      <Tabs
+        destroyOnHidden
+        items={[
+          {
+            key: 'overview',
+            label: '概览',
+            children: (
+              <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                <Card title="本地字段覆盖与来源">
         <Table
           rowKey="fieldName"
           size="small"
@@ -787,8 +796,8 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
             },
           ]}
         />
-      </Card>
-      <Descriptions bordered column={2} size="small">
+                </Card>
+                <Descriptions bordered column={2} size="small">
         <Descriptions.Item label="标题" span={2}>
           {task.title}
         </Descriptions.Item>
@@ -813,8 +822,15 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
         <Descriptions.Item label="描述策略" span={2}>
           不持久化 Jira description，仅保存任务视图所需字段
         </Descriptions.Item>
-      </Descriptions>
-      <div>
+                </Descriptions>
+              </Space>
+            ),
+          },
+          {
+            key: 'sources',
+            label: '来源与字段',
+            children: (
+              <div>
         <Typography.Title level={4}>字段来源与合并决定</Typography.Title>
         {task.fieldProvenances.length === 0 ? (
           <Empty description="尚无逐字段来源记录" />
@@ -875,12 +891,25 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
             ]}
           />
         )}
-      </div>
-      <div>
+              </div>
+            ),
+          },
+          {
+            key: 'evidence',
+            label: '证据',
+            children: (
+              <div>
         <Typography.Title level={4}>任务与 Git/GitLab 证据</Typography.Title>
         <TaskEvidencePanel task={task} />
-      </div>
-      <div>
+              </div>
+            ),
+          },
+          {
+            key: 'observations',
+            label: '状态观测',
+            children: (
+              <Space direction="vertical" size={20} style={{ width: '100%' }}>
+                <div>
         <Typography.Title level={4}>状态观测时间线</Typography.Title>
         {task.statusEvents.length === 0 ? (
           <Empty description="尚无状态变化观测" />
@@ -905,8 +934,8 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
             }))}
           />
         )}
-      </div>
-      <div>
+                </div>
+                <div>
         <Typography.Title level={4}>来源观测</Typography.Title>
         <Table
           rowKey="id"
@@ -946,7 +975,22 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
             },
           ]}
         />
-      </div>
+                </div>
+              </Space>
+            ),
+          },
+          {
+            key: 'weekly-references',
+            label: `周报引用（${task.weeklyReportReferences.length}）`,
+            children: <WeeklyReportReferences task={task} />,
+          },
+          {
+            key: 'quarterly-references',
+            label: `绩效引用（${task.quarterlyReviewReferences.length}）`,
+            children: <QuarterlyReviewReferences task={task} />,
+          },
+        ]}
+      />
       <Modal
         title={`人工覆盖：${taskFieldLabel(overrideField ?? '')}`}
         open={Boolean(overrideField)}
@@ -1026,6 +1070,173 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
       </Modal>
     </Space>
   );
+}
+
+function WeeklyReportReferences({ task }: { task: TaskDetail }) {
+  if (task.weeklyReportReferences.length === 0) {
+    return <Empty description="该任务尚未被任何周报段落引用" />;
+  }
+  return (
+    <Table
+      rowKey="id"
+      size="small"
+      pagination={{ pageSize: 8 }}
+      dataSource={task.weeklyReportReferences}
+      columns={[
+        {
+          title: '周报周期',
+          render: (_, row) => (
+            <Space direction="vertical" size={0}>
+              <Typography.Link
+                strong
+                href={`/weekly-reports?reportId=${encodeURIComponent(row.report.id)}`}
+              >
+                {row.report.periodStart} ～ {row.report.periodEnd}
+              </Typography.Link>
+              <Space>
+                <Typography.Text type="secondary">填报日 {row.report.reportDate}</Typography.Text>
+                <Tag>{row.report.status}</Tag>
+              </Space>
+            </Space>
+          ),
+        },
+        {
+          title: '不可变版本',
+          render: (_, row) => (
+            <Space wrap>
+              <Tag color="blue">v{row.version.versionNo}</Tag>
+              <Tag>{row.version.origin}</Tag>
+              {/* 当前版本和已确认版本可能不同，必须分别展示，不能合并成含糊的“有效”。 */}
+              {row.version.current && <Tag color="processing">当前</Tag>}
+              {row.version.confirmed && <Tag color="success">已确认</Tag>}
+            </Space>
+          ),
+        },
+        {
+          title: '引用位置',
+          render: (_, row) => (
+            <Space direction="vertical" size={0}>
+              <Typography.Text>{weeklyFieldLabel(row.fieldName)}</Typography.Text>
+              <Typography.Text code copyable>
+                {row.blockId}
+              </Typography.Text>
+            </Space>
+          ),
+        },
+        {
+          title: '冻结来源摘要',
+          dataIndex: 'sourceSummary',
+          render: displayReferenceSummary,
+        },
+        {
+          title: '引用时间',
+          dataIndex: 'linkedAt',
+          render: (value: string) => new Date(value).toLocaleString('zh-CN'),
+        },
+      ]}
+    />
+  );
+}
+
+function QuarterlyReviewReferences({ task }: { task: TaskDetail }) {
+  if (task.quarterlyReviewReferences.length === 0) {
+    return <Empty description="该任务尚未作为任何季度成果证据" />;
+  }
+  return (
+    <Table
+      rowKey="id"
+      size="small"
+      pagination={{ pageSize: 8 }}
+      dataSource={task.quarterlyReviewReferences}
+      columns={[
+        {
+          title: '季度评审',
+          render: (_, row) => (
+            <Space direction="vertical" size={0}>
+              <Typography.Link
+                strong
+                href={`/quarterly-reviews?reviewId=${encodeURIComponent(row.review.id)}`}
+              >
+                {row.review.name}
+              </Typography.Link>
+              <Typography.Text type="secondary">
+                {row.review.periodStart} ～ {row.review.periodEnd}
+              </Typography.Text>
+              <Space>
+                <Tag>{row.review.status}</Tag>
+                <Typography.Text type="secondary">聚合版本 v{row.review.version}</Typography.Text>
+              </Space>
+            </Space>
+          ),
+        },
+        {
+          title: '成果',
+          render: (_, row) => (
+            <Space direction="vertical" size={0}>
+              <Typography.Text>{row.achievement.title}</Typography.Text>
+              <Space wrap>
+                <Tag color={row.achievement.selectionStatus === 'selected' ? 'success' : 'default'}>
+                  {row.achievement.selectionStatus}
+                </Tag>
+                <Tag color={row.achievement.evidenceStatus === 'complete' ? 'success' : 'warning'}>
+                  {row.achievement.evidenceStatus}
+                </Tag>
+                <Typography.Text type="secondary">成果 v{row.achievement.version}</Typography.Text>
+              </Space>
+            </Space>
+          ),
+        },
+        {
+          title: '证据身份',
+          render: (_, row) => (
+            <Space direction="vertical" size={0}>
+              <Typography.Text>{row.evidence.title}</Typography.Text>
+              <Space wrap>
+                <Tag>{row.evidence.sourceType}</Tag>
+                {row.evidence.primary && <Tag color="gold">主证据</Tag>}
+                <Tag color={row.evidence.availabilityState === 'available' ? 'success' : 'warning'}>
+                  {row.evidence.availabilityState}
+                </Tag>
+              </Space>
+            </Space>
+          ),
+        },
+        {
+          title: '贡献角度',
+          dataIndex: ['evidence', 'contributionAngle'],
+          render: (value: string) => value || '未填写',
+        },
+        {
+          title: '引用时间',
+          dataIndex: 'linkedAt',
+          render: (value: string) => new Date(value).toLocaleString('zh-CN'),
+        },
+      ]}
+    />
+  );
+}
+
+function weeklyFieldLabel(value: string): string {
+  return (
+    {
+      reportDate: '填报日期',
+      recentGoals: '近期目标',
+      weeklyWork: '本周工作',
+      nextWeekPlans: '下周计划',
+      problems: '问题与风险',
+      other: '其他事项',
+    }[value] ?? value
+  );
+}
+
+function displayReferenceSummary(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value !== 'object' || value === null) return displaySourceValue(value);
+  const summary = value as Record<string, unknown>;
+  const issueKey = typeof summary.issueKey === 'string' ? summary.issueKey : '';
+  const title = typeof summary.title === 'string' ? summary.title : '';
+  if (issueKey || title) return [issueKey, title].filter(Boolean).join(' · ');
+  return JSON.stringify(summary);
 }
 
 function seconds(value: number | null): string {

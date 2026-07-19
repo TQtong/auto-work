@@ -49,6 +49,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { apiDownload, apiRequest } from '../api/client.js';
 import type {
   Integration,
@@ -195,6 +196,8 @@ const narrativeOriginLabels: Record<string, string> = {
 
 export function QuarterlyReviewsPage() {
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
+  const requestedReviewId = searchParams.get('reviewId');
   const [messageApi, holder] = message.useMessage();
   const [createForm] = Form.useForm<CreateReviewValues>();
   const [collectForm] = Form.useForm<CollectValues>();
@@ -206,7 +209,7 @@ export function QuarterlyReviewsPage() {
   const [narrativeForm] = Form.useForm<NarrativeValues>();
   const [selectionForm] = Form.useForm<SelectionValues>();
   const [decisionForm] = Form.useForm<DecisionValues>();
-  const [selectedReviewId, setSelectedReviewId] = useState<string | null>(null);
+  const [selectedReviewId, setSelectedReviewId] = useState<string | null>(requestedReviewId);
   const [activeStep, setActiveStep] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [collectOpen, setCollectOpen] = useState(false);
@@ -401,12 +404,24 @@ export function QuarterlyReviewsPage() {
   });
 
   useEffect(() => {
-    const first = reviews.data?.data.items[0];
-    if (!selectedReviewId && first) {
+    const items = reviews.data?.data.items ?? [];
+    const requested = requestedReviewId
+      ? items.find((review) => review.id === requestedReviewId)
+      : undefined;
+    if (requested && selectedReviewId !== requested.id) {
+      setSelectedReviewId(requested.id);
+      setActiveStep(quarterlyWorkflowStep(requested));
+      return;
+    }
+    const selectedExists = selectedReviewId
+      ? items.some((review) => review.id === selectedReviewId)
+      : false;
+    const first = items[0];
+    if ((!selectedReviewId || !selectedExists) && first) {
       setSelectedReviewId(first.id);
       setActiveStep(quarterlyWorkflowStep(first));
     }
-  }, [reviews.data, selectedReviewId]);
+  }, [requestedReviewId, reviews.data, selectedReviewId]);
 
   useEffect(() => {
     // 切换筛选后清除隐藏行选择，避免用户误以为未显示的旧行仍会进入批量动作。

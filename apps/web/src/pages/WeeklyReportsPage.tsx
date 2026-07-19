@@ -48,6 +48,7 @@ import {
 import type { UploadProps } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { ApiClientError, apiRequest } from '../api/client.js';
 import type {
   DingTalkRecipientValidation,
@@ -195,6 +196,8 @@ const originLabels: Record<string, string> = {
 
 export function WeeklyReportsPage() {
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
+  const requestedReportId = searchParams.get('reportId');
   const [messageApi, holder] = message.useMessage();
   const [form] = Form.useForm<EditorValues>();
   const [generateForm] = Form.useForm<{
@@ -207,7 +210,7 @@ export function WeeklyReportsPage() {
   const [aiForm] = Form.useForm<AiSuggestionFormValues>();
   const [manualResolutionForm] = Form.useForm<ManualResolutionValues>();
   const [deliveryRetryForm] = Form.useForm<DeliveryRetryValues>();
-  const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
+  const [selectedReportId, setSelectedReportId] = useState<string | null>(requestedReportId);
   const [generateOpen, setGenerateOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -244,6 +247,14 @@ export function WeeklyReportsPage() {
   const reportItems = reports.data?.data.items ?? [];
 
   useEffect(() => {
+    if (
+      requestedReportId &&
+      reportItems.some((report) => report.id === requestedReportId) &&
+      selectedReportId !== requestedReportId
+    ) {
+      setSelectedReportId(requestedReportId);
+      return;
+    }
     if (!selectedReportId && reportItems[0]) setSelectedReportId(reportItems[0].id);
     if (
       selectedReportId &&
@@ -252,7 +263,7 @@ export function WeeklyReportsPage() {
     ) {
       setSelectedReportId(reportItems[0]?.id ?? null);
     }
-  }, [reportItems, selectedReportId]);
+  }, [reportItems, requestedReportId, selectedReportId]);
 
   const reportDetail = useQuery({
     queryKey: ['weekly-report', selectedReportId],

@@ -408,6 +408,56 @@ export interface TaskDetail extends TaskSummary {
     observedIntervalStart: string | null;
     precision: 'observed_interval';
   }>;
+  weeklyReportReferences: Array<{
+    id: string;
+    report: {
+      id: string;
+      periodStart: string;
+      periodEnd: string;
+      reportDate: string;
+      status: string;
+    };
+    version: {
+      id: string;
+      versionNo: number;
+      origin: string;
+      current: boolean;
+      confirmed: boolean;
+      createdAt: string;
+    };
+    fieldName: string;
+    blockId: string;
+    sourceType: string;
+    sourceSummary: unknown;
+    linkedAt: string;
+  }>;
+  quarterlyReviewReferences: Array<{
+    id: string;
+    review: {
+      id: string;
+      name: string;
+      periodStart: string;
+      periodEnd: string;
+      status: string;
+      version: number;
+    };
+    achievement: {
+      id: string;
+      title: string;
+      selectionStatus: string;
+      evidenceStatus: string;
+      version: number;
+    };
+    evidence: {
+      sourceType: string;
+      sourceId: string;
+      title: string;
+      contributionAngle: string;
+      primary: boolean;
+      availabilityState: string;
+    };
+    linkedAt: string;
+  }>;
 }
 
 export interface TaskConflict {
