@@ -277,7 +277,13 @@ export class IntegrationsService {
     const job = await this.queue.enqueue({
       type: 'integration.test',
       payloadRef: id,
-      payloadSummary: { integrationType: connection.type, integrationId: id },
+      payloadSummary: {
+        integrationType: connection.type,
+        integrationId: id,
+        requestedBy: this.sessions.currentProfileId,
+        correlationId: context.correlationId,
+        clientSessionHash: this.security.sessionHash(context.sessionId),
+      },
       maxAttempts: 2,
       // 同一凭证的排队/执行中测试只允许一个；完成后仍可由用户再次显式发起。
       dedupeKey: `integration.test:${id}:${testedCredentialFingerprint}`,

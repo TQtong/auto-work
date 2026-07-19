@@ -90,6 +90,7 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
       prisma as unknown as PrismaService,
       probes,
       vault,
+      new AuditService(prisma as unknown as PrismaService),
     );
     const prismaService = prisma as unknown as PrismaService;
     const sessions = { currentProfileId: 'local-user' } as SessionService;
@@ -274,6 +275,7 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
       activeRef: 'old-ref',
       pendingRef: 'pending-good-ref',
     });
+    await createTestJob('robot-success', 'result-success');
 
     const result = await handler.execute(jobContext('robot-success'));
     const row = await prisma.integrationConnection.findUniqueOrThrow({
@@ -291,6 +293,17 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
     expect(row.lastSuccessAt).not.toBeNull();
     expect(deletedReferences).toContain('old-ref');
     expect(secrets.has('pending-good-ref')).toBe(true);
+    expect(
+      await prisma.auditEvent.findFirstOrThrow({
+        where: { action: 'integration.test_completed', targetId: 'robot-success' },
+      }),
+    ).toMatchObject({
+      actorType: 'local_user',
+      actorId: 'local-user',
+      correlationId: 'corr-result-success',
+      outcome: 'succeeded',
+      errorCode: null,
+    });
   });
 
   it('测试失败时保留旧凭证、健康状态和待测试凭证以便修正后重试', async () => {
@@ -307,6 +320,7 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
       activeRef: 'active-stable-ref',
       pendingRef: 'pending-bad-ref',
     });
+    await createTestJob('robot-failure', 'result-failure');
 
     const result = await handler.execute(jobContext('robot-failure'));
     const row = await prisma.integrationConnection.findUniqueOrThrow({
@@ -333,6 +347,17 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
     });
     expect(deletedReferences).not.toContain('active-stable-ref');
     expect(secrets.has('pending-bad-ref')).toBe(true);
+    expect(
+      await prisma.auditEvent.findFirstOrThrow({
+        where: { action: 'integration.test_completed', targetId: 'robot-failure' },
+      }),
+    ).toMatchObject({
+      actorType: 'local_user',
+      actorId: 'local-user',
+      correlationId: 'corr-result-failure',
+      outcome: 'failed',
+      errorCode: 'DINGTALK_ROBOT_SIGNATURE_INVALID',
+    });
   });
 
   async function createConnection(input: {
@@ -353,6 +378,25 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
         pendingCredentialCreatedAt: new Date(),
         status: 'healthy',
         capabilitiesJson: JSON.stringify({ existingCapability: true }),
+      },
+    });
+  }
+
+  async function createTestJob(connectionId: string, suffix: string): Promise<void> {
+    await prisma.job.create({
+      data: {
+        id: `job-${connectionId}`,
+        type: 'integration.test',
+        payloadRef: connectionId,
+        payloadSummary: JSON.stringify({
+          integrationType: 'dingtalk_robot',
+          integrationId: connectionId,
+          requestedBy: 'local-user',
+          correlationId: `corr-${suffix}`,
+          clientSessionHash: `session-hash-${suffix}`,
+        }),
+        scheduledAt: new Date(),
+        maxAttempts: 1,
       },
     });
   }
