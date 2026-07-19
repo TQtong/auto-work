@@ -10,6 +10,7 @@ export interface TaskFilters {
   sprintId?: string | undefined;
   source?: string | undefined;
   evidenceState?: string | undefined;
+  conflict?: string | undefined;
   visibility: string;
   dateFrom?: string | undefined;
   dateTo?: string | undefined;

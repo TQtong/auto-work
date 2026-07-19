@@ -351,6 +351,16 @@ export interface TaskSummary {
     total: number;
     state: 'none' | 'suggested' | 'confirmed' | 'rejected' | 'expired' | 'needs_revalidation';
   };
+  fieldSources: Record<
+    string,
+    {
+      sourceType: 'jira' | 'excel' | 'manual';
+      decision: string;
+      expiresAt: string | null;
+      conflict: boolean;
+    }
+  >;
+  conflictCount: number;
   version: number;
 }
 
@@ -382,6 +392,9 @@ export interface TaskDetail extends TaskSummary {
     reason: string | null;
     active: boolean;
     effectiveAt: string;
+    expiresAt: string | null;
+    conflictValue: unknown;
+    conflictDetectedAt: string | null;
     supersededAt: string | null;
     sourceObservationId: string | null;
     excelImportRowId: string | null;
@@ -395,6 +408,37 @@ export interface TaskDetail extends TaskSummary {
     observedIntervalStart: string | null;
     precision: 'observed_interval';
   }>;
+}
+
+export interface TaskConflict {
+  id: string;
+  task: {
+    id: string;
+    issueKey: string | null;
+    title: string;
+    version: number;
+    project: { id: string; name: string } | null;
+  };
+  fieldName: string;
+  manualValue: unknown;
+  jiraValue: unknown;
+  reason: string | null;
+  effectiveAt: string;
+  expiresAt: string | null;
+  conflictDetectedAt: string | null;
+}
+
+export interface TaskOverrideResult {
+  id: string;
+  taskId: string;
+  fieldName: string;
+  value: unknown;
+  reason: string | null;
+  effectiveAt: string;
+  expiresAt: string | null;
+  conflictValue: unknown;
+  conflictDetectedAt: string | null;
+  taskVersion: number;
 }
 
 export type EvidenceLinkStatus = 'suggested' | 'confirmed' | 'rejected' | 'expired';

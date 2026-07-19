@@ -9,7 +9,10 @@ import {
   Descriptions,
   Drawer,
   Empty,
+  Form,
   Input,
+  InputNumber,
+  Modal,
   Pagination,
   Segmented,
   Select,
@@ -21,9 +24,17 @@ import {
   message,
 } from 'antd';
 import type { TableColumnsType } from 'antd';
+import dayjs, { type Dayjs } from 'dayjs';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest } from '../api/client.js';
-import type { Integration, ProjectSummary, TaskDetail, TaskSummary } from '../api/types.js';
+import type {
+  Integration,
+  ProjectSummary,
+  TaskConflict,
+  TaskDetail,
+  TaskOverrideResult,
+  TaskSummary,
+} from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
 import { ExcelImportModal } from './ExcelImportModal.js';
 import { TaskEvidencePanel } from './TaskEvidencePanel.js';
@@ -39,6 +50,13 @@ const statusOptions = [
   { value: 'other', label: '其他' },
 ];
 
+const editableTaskFields = [
+  { fieldName: 'plannedStartDate', label: '计划开始日期' },
+  { fieldName: 'dueDate', label: '到期日期' },
+  { fieldName: 'originalEstimateSeconds', label: '原始预估工时' },
+] as const;
+type EditableTaskField = (typeof editableTaskFields)[number]['fieldName'];
+
 export function TasksPage() {
   const queryClient = useQueryClient();
   const [messageApi, holder] = message.useMessage();
@@ -51,6 +69,7 @@ export function TasksPage() {
   const [sprintId, setSprintId] = useState<string>();
   const [source, setSource] = useState<string>();
   const [evidenceState, setEvidenceState] = useState<string>();
+  const [conflict, setConflict] = useState<string>();
   const [visibility, setVisibility] = useState('visible');
   const [dateRange, setDateRange] = useState<[string, string] | undefined>();
   const [viewMode, setViewMode] = useState<'list' | 'parent'>('list');
@@ -82,6 +101,7 @@ export function TasksPage() {
       sprintId,
       source,
       evidenceState,
+      conflict,
       visibility,
       dateFrom: dateRange?.[0],
       dateTo: dateRange?.[1],
@@ -91,6 +111,17 @@ export function TasksPage() {
   const tasks = useQuery({
     queryKey: ['tasks', queryString],
     queryFn: () => apiRequest<TaskSummary[]>(`/api/v1/tasks?${queryString}`),
+    refetchInterval: 15_000,
+  });
+  const conflicts = useQuery({
+    queryKey: ['task-conflicts', projectId],
+    queryFn: () =>
+      apiRequest<TaskConflict[]>(
+        `/api/v1/tasks/conflicts?${new URLSearchParams({
+          limit: '100',
+          ...(projectId ? { projectId } : {}),
+        }).toString()}`,
+      ),
     refetchInterval: 15_000,
   });
   useEffect(() => {
@@ -143,6 +174,7 @@ export function TasksPage() {
             <Tag>{row.issueType ?? row.source}</Tag>
           </Space>
           <Typography.Text>{row.title}</Typography.Text>
+          {row.conflictCount > 0 && <Tag color="red">{row.conflictCount} 个字段冲突</Tag>}
           {row.parent.issueKey && (
             <Typography.Text type="secondary">
               父任务：{row.parent.issueKey} · {row.parent.title}
@@ -172,8 +204,12 @@ export function TasksPage() {
       width: 180,
       render: (_, row) => (
         <Space direction="vertical" size={0}>
-          <Typography.Text>开始 {row.schedule.plannedStartDate ?? '—'}</Typography.Text>
-          <Typography.Text>到期 {row.schedule.dueDate ?? '—'}</Typography.Text>
+          <Typography.Text>
+            开始 {row.schedule.plannedStartDate ?? '—'} {fieldSourceTag(row, 'plannedStartDate')}
+          </Typography.Text>
+          <Typography.Text>
+            到期 {row.schedule.dueDate ?? '—'} {fieldSourceTag(row, 'dueDate')}
+          </Typography.Text>
         </Space>
       ),
     },
@@ -182,7 +218,10 @@ export function TasksPage() {
       width: 150,
       render: (_, row) => (
         <Space direction="vertical" size={0}>
-          <Typography.Text>预估 {seconds(row.worklog.originalEstimateSeconds)}</Typography.Text>
+          <Typography.Text>
+            预估 {seconds(row.worklog.originalEstimateSeconds)}{' '}
+            {fieldSourceTag(row, 'originalEstimateSeconds')}
+          </Typography.Text>
           <Typography.Text>已耗 {seconds(row.worklog.timeSpentSeconds)}</Typography.Text>
         </Space>
       ),
@@ -261,6 +300,48 @@ export function TasksPage() {
           <Typography.Title level={3}>{counts.other ?? 0}</Typography.Title>
         </Card>
       </div>
+      {(conflicts.data?.total ?? 0) > 0 && (
+        <Card
+          title={`Jira / 人工覆盖冲突（${conflicts.data?.total ?? 0}）`}
+          extra={<Tag color="red">必须人工处理，不会静默覆盖</Tag>}
+        >
+          <Table<TaskConflict>
+            rowKey="id"
+            size="small"
+            loading={conflicts.isLoading}
+            dataSource={conflicts.data?.data ?? []}
+            pagination={{ pageSize: 10, showSizeChanger: false }}
+            onRow={(row) => ({ onClick: () => setSelectedTaskId(row.task.id) })}
+            columns={[
+              {
+                title: '任务',
+                render: (_, row) => `${row.task.issueKey ?? '本地任务'} · ${row.task.title}`,
+              },
+              {
+                title: '字段',
+                dataIndex: 'fieldName',
+                render: taskFieldLabel,
+              },
+              {
+                title: '人工值',
+                dataIndex: 'manualValue',
+                render: displayTaskFieldValue,
+              },
+              {
+                title: 'Jira 最新值',
+                dataIndex: 'jiraValue',
+                render: displayTaskFieldValue,
+              },
+              {
+                title: '有效期',
+                dataIndex: 'expiresAt',
+                render: (value: string | null) =>
+                  value ? new Date(value).toLocaleString('zh-CN') : '无',
+              },
+            ]}
+          />
+        </Card>
+      )}
       <Card>
         <Space wrap style={{ marginBottom: 16 }}>
           <Button
@@ -383,6 +464,20 @@ export function TasksPage() {
               { value: 'expired', label: '已失效' },
               { value: 'needs_revalidation', label: '需要复核' },
             ]}
+          />
+          <Select
+            allowClear
+            placeholder="字段冲突"
+            value={conflict}
+            onChange={(value) => {
+              setConflict(value);
+              resetPagination();
+            }}
+            options={[
+              { value: 'true', label: '仅有冲突' },
+              { value: 'false', label: '排除冲突' },
+            ]}
+            style={{ width: 140 }}
           />
           <DatePicker.RangePicker
             onChange={(dates) => {
@@ -523,16 +618,176 @@ export function TasksPage() {
         onClose={() => setSelectedTaskId(null)}
         destroyOnHidden
       >
-        {detail.data?.data && <TaskDetailView task={detail.data.data} />}
+        {detail.data?.data && (
+          <TaskDetailView
+            task={detail.data.data}
+            onUpdated={async () => {
+              await Promise.all([
+                queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+                queryClient.invalidateQueries({ queryKey: ['task-detail', selectedTaskId] }),
+                queryClient.invalidateQueries({ queryKey: ['task-conflicts'] }),
+              ]);
+            }}
+          />
+        )}
       </Drawer>
       <ExcelImportModal open={excelImportOpen} onClose={() => setExcelImportOpen(false)} />
     </Space>
   );
 }
 
-function TaskDetailView({ task }: { task: TaskDetail }) {
+function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () => Promise<void> }) {
+  const [messageApi, holder] = message.useMessage();
+  const [overrideField, setOverrideField] = useState<EditableTaskField>();
+  const [revokeField, setRevokeField] = useState<EditableTaskField>();
+  const [overrideForm] = Form.useForm<{
+    dateValue?: Dayjs;
+    estimateHours?: number;
+    reason: string;
+    expiresAt: Dayjs;
+  }>();
+  const [revokeForm] = Form.useForm<{ reason: string }>();
+  const setOverride = useMutation({
+    mutationFn: async (values: {
+      dateValue?: Dayjs;
+      estimateHours?: number;
+      reason: string;
+      expiresAt: Dayjs;
+    }) => {
+      if (!overrideField) throw new Error('未选择覆盖字段');
+      // 页面使用“小时”方便人工填写，接口和任务事实仍统一保存为整数秒。
+      const value =
+        overrideField === 'originalEstimateSeconds'
+          ? Math.round((values.estimateHours ?? 0) * 3_600)
+          : values.dateValue?.format('YYYY-MM-DD');
+      if (value === undefined) throw new Error('覆盖值不能为空');
+      return apiRequest<TaskOverrideResult>(`/api/v1/tasks/${task.id}/overrides`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          fieldName: overrideField,
+          value,
+          reason: values.reason,
+          expiresAt: values.expiresAt.toISOString(),
+          version: task.version,
+        }),
+      });
+    },
+    onSuccess: async () => {
+      setOverrideField(undefined);
+      overrideForm.resetFields();
+      // 覆盖会同时改变任务摘要、详情来源和冲突清单，三个缓存必须原子失效。
+      await onUpdated();
+      void messageApi.success('本地覆盖已保存；Jira 主事实仍会同步并显式提示冲突');
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+  const revokeOverride = useMutation({
+    mutationFn: async (values: { reason: string }) => {
+      if (!revokeField) throw new Error('未选择撤销字段');
+      return apiRequest(`/api/v1/tasks/${task.id}/overrides/${revokeField}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ version: task.version, reason: values.reason }),
+      });
+    },
+    onSuccess: async () => {
+      setRevokeField(undefined);
+      revokeForm.resetFields();
+      await onUpdated();
+      void messageApi.success('人工覆盖已撤销，已恢复最新可用来源事实');
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+
+  const openOverride = (fieldName: EditableTaskField) => {
+    const currentValue = taskFieldValue(task, fieldName);
+    setOverrideField(fieldName);
+    overrideForm.setFieldsValue({
+      ...(fieldName === 'originalEstimateSeconds'
+        ? typeof currentValue === 'number'
+          ? { estimateHours: currentValue / 3_600 }
+          : {}
+        : {
+            ...(typeof currentValue === 'string' && currentValue
+              ? { dateValue: dayjs(currentValue) }
+              : {}),
+          }),
+      expiresAt: dayjs().add(30, 'day').endOf('day'),
+      reason: '',
+    });
+  };
+
   return (
     <Space direction="vertical" size={20} style={{ width: '100%' }}>
+      {holder}
+      <Alert
+        type="warning"
+        showIcon
+        message="本地覆盖不会修改 Jira"
+        description="覆盖必须填写原因和有效期。Jira 新值与人工值不同时会进入冲突清单；到期或撤销后恢复最新 Jira/Excel 来源事实。"
+      />
+      <Card title="本地字段覆盖与来源">
+        <Table
+          rowKey="fieldName"
+          size="small"
+          pagination={false}
+          dataSource={editableTaskFields.map((field) => {
+            const provenance = task.fieldProvenances.find(
+              (item) => item.fieldName === field.fieldName && item.active,
+            );
+            return { ...field, value: taskFieldValue(task, field.fieldName), provenance };
+          })}
+          columns={[
+            { title: '字段', dataIndex: 'label' },
+            { title: '当前值', dataIndex: 'value', render: displayTaskFieldValue },
+            {
+              title: '生效来源',
+              render: (_, row) => (
+                <Space>
+                  <Tag color={sourceTagColor(row.provenance?.sourceType)}>
+                    {row.provenance?.sourceType ?? '未记录'}
+                  </Tag>
+                  {row.provenance?.conflictDetectedAt && <Tag color="red">与 Jira 冲突</Tag>}
+                </Space>
+              ),
+            },
+            {
+              title: '原因 / 有效期',
+              render: (_, row) => (
+                <Space direction="vertical" size={0}>
+                  <Typography.Text>{row.provenance?.reason ?? '—'}</Typography.Text>
+                  <Typography.Text type="secondary">
+                    {row.provenance?.expiresAt
+                      ? `至 ${new Date(row.provenance.expiresAt).toLocaleString('zh-CN')}`
+                      : '无人工有效期'}
+                  </Typography.Text>
+                </Space>
+              ),
+            },
+            {
+              title: '操作',
+              render: (_, row) => (
+                <Space>
+                  <Button size="small" onClick={() => openOverride(row.fieldName)}>
+                    {row.provenance?.sourceType === 'manual' ? '调整覆盖' : '人工覆盖'}
+                  </Button>
+                  {row.provenance?.sourceType === 'manual' && row.provenance.active && (
+                    <Button
+                      size="small"
+                      danger
+                      onClick={() => {
+                        revokeForm.resetFields();
+                        setRevokeField(row.fieldName);
+                      }}
+                    >
+                      撤销
+                    </Button>
+                  )}
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Card>
       <Descriptions bordered column={2} size="small">
         <Descriptions.Item label="标题" span={2}>
           {task.title}
@@ -573,7 +828,7 @@ function TaskDetailView({ task }: { task: TaskDetail }) {
               {
                 title: '字段',
                 dataIndex: 'fieldName',
-                render: (value: string) => fieldLabel(value),
+                render: (value: string) => taskFieldLabel(value),
               },
               {
                 title: '当前来源',
@@ -692,6 +947,83 @@ function TaskDetailView({ task }: { task: TaskDetail }) {
           ]}
         />
       </div>
+      <Modal
+        title={`人工覆盖：${taskFieldLabel(overrideField ?? '')}`}
+        open={Boolean(overrideField)}
+        confirmLoading={setOverride.isPending}
+        onCancel={() => setOverrideField(undefined)}
+        onOk={() => overrideForm.submit()}
+        destroyOnHidden
+      >
+        <Form
+          form={overrideForm}
+          layout="vertical"
+          onFinish={(values) => setOverride.mutate(values)}
+        >
+          {overrideField === 'originalEstimateSeconds' ? (
+            <Form.Item
+              name="estimateHours"
+              label="原始预估（小时）"
+              rules={[{ required: true, message: '请输入非负工时' }]}
+            >
+              <InputNumber min={0} max={87_660} precision={2} style={{ width: '100%' }} />
+            </Form.Item>
+          ) : (
+            <Form.Item
+              name="dateValue"
+              label="业务日期"
+              rules={[{ required: true, message: '请选择日期' }]}
+            >
+              <DatePicker style={{ width: '100%' }} />
+            </Form.Item>
+          )}
+          <Form.Item
+            name="reason"
+            label="覆盖原因"
+            rules={[{ required: true, min: 3, message: '请填写至少 3 个字符的原因' }]}
+          >
+            <Input.TextArea rows={3} maxLength={1_000} showCount />
+          </Form.Item>
+          <Form.Item
+            name="expiresAt"
+            label="有效期截止"
+            rules={[{ required: true, message: '请选择有效期' }]}
+          >
+            <DatePicker
+              showTime
+              // 服务端要求有效期处于未来且不超过 366 天，页面先行阻止明显无效日期。
+              disabledDate={(value) =>
+                value.endOf('day').isBefore(dayjs()) || value.startOf('day').isAfter(dayjs().add(366, 'day'))
+              }
+              style={{ width: '100%' }}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        title={`撤销人工覆盖：${taskFieldLabel(revokeField ?? '')}`}
+        open={Boolean(revokeField)}
+        confirmLoading={revokeOverride.isPending}
+        okButtonProps={{ danger: true }}
+        okText="确认撤销并恢复来源事实"
+        onCancel={() => setRevokeField(undefined)}
+        onOk={() => revokeForm.submit()}
+        destroyOnHidden
+      >
+        <Form
+          form={revokeForm}
+          layout="vertical"
+          onFinish={(values) => revokeOverride.mutate(values)}
+        >
+          <Form.Item
+            name="reason"
+            label="撤销原因"
+            rules={[{ required: true, min: 3, message: '请填写至少 3 个字符的原因' }]}
+          >
+            <Input.TextArea rows={3} maxLength={1_000} showCount />
+          </Form.Item>
+        </Form>
+      </Modal>
     </Space>
   );
 }
@@ -701,13 +1033,49 @@ function seconds(value: number | null): string {
   return `${(value / 3600).toFixed(value % 3600 === 0 ? 0 : 1)} h`;
 }
 
-function fieldLabel(value: string): string {
+function taskFieldLabel(value: string): string {
   return (
     {
       plannedStartDate: '计划开始',
       dueDate: '到期日',
       originalEstimateSeconds: '原始预估工时',
     }[value] ?? value
+  );
+}
+
+function taskFieldValue(task: TaskSummary, fieldName: EditableTaskField): string | number | null {
+  if (fieldName === 'plannedStartDate') return task.schedule.plannedStartDate;
+  if (fieldName === 'dueDate') return task.schedule.dueDate;
+  return task.worklog.originalEstimateSeconds;
+}
+
+function displayTaskFieldValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'number') return seconds(value);
+  if (typeof value === 'string' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  return JSON.stringify(value) ?? '—';
+}
+
+function sourceTagColor(sourceType: string | undefined): string {
+  return sourceType === 'jira'
+    ? 'blue'
+    : sourceType === 'excel'
+      ? 'green'
+      : sourceType === 'manual'
+        ? 'gold'
+        : 'default';
+}
+
+function fieldSourceTag(task: TaskSummary, fieldName: EditableTaskField) {
+  const source = task.fieldSources[fieldName];
+  if (!source) return null;
+  return (
+    <Tag color={source.conflict ? 'red' : sourceTagColor(source.sourceType)}>
+      {source.sourceType.toUpperCase()}
+      {source.conflict ? ' 冲突' : ''}
+    </Tag>
   );
 }
 
