@@ -1,0 +1,261 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-19T00:37:20.826Z",
+  "commit": "c2f68bad636f75207c022ba89e06ce2b0e8a2855",
+  "runtime": {
+    "platform": "win32",
+    "arch": "x64",
+    "node": "v22.14.0",
+    "cpuCount": 16,
+    "repositoryRoot": "D:\\company"
+  },
+  "dataset": {
+    "repositories": 14,
+    "tasks": 10000,
+    "weeklyTasks": 500,
+    "weeklyEvidence": 2000,
+    "measuredRounds": 30,
+    "gitRounds": 10
+  },
+  "results": {
+    "repositoryList": {
+      "name": "repository-list",
+      "sampleCount": 30,
+      "minimumMs": 13.11,
+      "medianMs": 15.59,
+      "p95Ms": 25.19,
+      "maximumMs": 30.95,
+      "samplesMs": [
+        16.18, 14.78, 15.36, 15.8, 16.32, 15.54, 24.51, 15.59, 30.95, 17.07, 25.19, 15.51, 14.76,
+        16.25, 16.37, 15.47, 16.44, 17.65, 14.92, 16.27, 17.25, 14.42, 17.8, 14.69, 13.11, 16.18,
+        13.64, 15.5, 14.52, 14.37
+      ]
+    },
+    "taskList": {
+      "name": "task-list",
+      "sampleCount": 30,
+      "minimumMs": 30.86,
+      "medianMs": 33.18,
+      "p95Ms": 36.87,
+      "maximumMs": 37.68,
+      "samplesMs": [
+        36.87, 37.68, 34.75, 32.89, 34.19, 32.78, 35.32, 35.47, 32.69, 30.96, 32.75, 32.58, 33.91,
+        33.42, 32.27, 33.88, 34.22, 34.3, 32.19, 33.77, 30.86, 34.59, 32.24, 32.1, 32.34, 33.04,
+        33.71, 33.18, 34.73, 33.1
+      ]
+    },
+    "weeklyRules": {
+      "name": "weekly-rules",
+      "sampleCount": 30,
+      "minimumMs": 28.99,
+      "medianMs": 35.01,
+      "p95Ms": 45.25,
+      "maximumMs": 46.43,
+      "samplesMs": [
+        41.64, 44.67, 46.43, 45.25, 45.03, 41.03, 36.85, 41.61, 41.18, 40.6, 42.55, 35.01, 31.97,
+        30.29, 32.71, 31.56, 31.37, 32.33, 35.59, 32.92, 32.85, 29.42, 30.06, 33.3, 39.91, 39.06,
+        38.77, 34.83, 30.57, 28.99
+      ]
+    },
+    "localGit": {
+      "repositoryCount": 14,
+      "overallP95Ms": 684.81,
+      "worstRepositoryP95Ms": 1065.8,
+      "maximumMs": 1065.8,
+      "layers": {
+        "small": {
+          "repositoryCount": 5,
+          "p95Ms": 503.38
+        },
+        "medium": {
+          "repositoryCount": 5,
+          "p95Ms": 514.6
+        },
+        "large": {
+          "repositoryCount": 4,
+          "p95Ms": 772.5
+        }
+      },
+      "repositories": [
+        {
+          "name": "cesiumlabsource",
+          "sizePackKiB": 802006,
+          "p95Ms": 802.72,
+          "maximumMs": 802.72,
+          "samplesMs": [
+            664.76, 679.21, 802.72, 667.44, 697.24, 774.92, 769.26, 772.5, 718.7, 684.81
+          ],
+          "layer": "large"
+        },
+        {
+          "name": "cps-converter-server",
+          "sizePackKiB": 319106,
+          "p95Ms": 436.18,
+          "maximumMs": 436.18,
+          "samplesMs": [
+            361.07, 436.18, 384.81, 375.93, 373.67, 360.33, 396.41, 396.92, 361.33, 344.5
+          ],
+          "layer": "medium"
+        },
+        {
+          "name": "cps-converter-ui",
+          "sizePackKiB": 398027,
+          "p95Ms": 526.39,
+          "maximumMs": 526.39,
+          "samplesMs": [
+            391.33, 403.89, 405.02, 424.34, 431.48, 526.39, 489.78, 429.18, 438.63, 521.13
+          ],
+          "layer": "large"
+        },
+        {
+          "name": "cps-extent-map-web",
+          "sizePackKiB": 33989,
+          "p95Ms": 515.47,
+          "maximumMs": 515.47,
+          "samplesMs": [
+            413.46, 383.98, 401.66, 490.9, 406.17, 368.17, 355.8, 446.88, 515.47, 400.77
+          ],
+          "layer": "small"
+        },
+        {
+          "name": "cps-fds-surface-web",
+          "sizePackKiB": 132353,
+          "p95Ms": 509.97,
+          "maximumMs": 509.97,
+          "samplesMs": [
+            349.02, 353.64, 398.41, 359.36, 501.58, 425.11, 424.75, 442.44, 468.71, 509.97
+          ],
+          "layer": "medium"
+        },
+        {
+          "name": "cps-soonbi-web",
+          "sizePackKiB": 88917,
+          "p95Ms": 665.67,
+          "maximumMs": 665.67,
+          "samplesMs": [
+            476.14, 526.68, 455.81, 665.67, 423.75, 471.97, 383.29, 377.05, 436.07, 363.34
+          ],
+          "layer": "medium"
+        },
+        {
+          "name": "enterprise-web",
+          "sizePackKiB": 39743,
+          "p95Ms": 430.13,
+          "maximumMs": 430.13,
+          "samplesMs": [
+            384.12, 370.01, 425.26, 397.44, 392.83, 406.03, 387.64, 392.26, 430.13, 372.59
+          ],
+          "layer": "small"
+        },
+        {
+          "name": "login-web",
+          "sizePackKiB": 23689,
+          "p95Ms": 1065.8,
+          "maximumMs": 1065.8,
+          "samplesMs": [
+            356.92, 396.86, 406.76, 396.78, 410.09, 411.32, 366.06, 361.07, 1065.8, 437.67
+          ],
+          "layer": "small"
+        },
+        {
+          "name": "operate-web",
+          "sizePackKiB": 4023,
+          "p95Ms": 503.38,
+          "maximumMs": 503.38,
+          "samplesMs": [
+            361.64, 412.86, 353.71, 423.56, 352.56, 428.98, 503.38, 380.3, 430.52, 441.89
+          ],
+          "layer": "small"
+        },
+        {
+          "name": "soonmanager-bimeditor-web",
+          "sizePackKiB": 124629,
+          "p95Ms": 514.6,
+          "maximumMs": 514.6,
+          "samplesMs": [
+            477.96, 424.52, 482.52, 426.64, 470.36, 495.52, 514.6, 501.61, 424.29, 453.98
+          ],
+          "layer": "medium"
+        },
+        {
+          "name": "soonmanager-web",
+          "sizePackKiB": 56392,
+          "p95Ms": 441.44,
+          "maximumMs": 441.44,
+          "samplesMs": [
+            356.5, 441.44, 334.91, 342.04, 394.56, 362.5, 398.66, 363.7, 377.56, 422.33
+          ],
+          "layer": "medium"
+        },
+        {
+          "name": "soonspacejs",
+          "sizePackKiB": 2823033,
+          "p95Ms": 473.09,
+          "maximumMs": 473.09,
+          "samplesMs": [
+            456.12, 413.83, 418.93, 473.09, 420.32, 413.51, 440.08, 402.71, 452.28, 446.65
+          ],
+          "layer": "large"
+        },
+        {
+          "name": "ugis-sdk-expand",
+          "sizePackKiB": 10431,
+          "p95Ms": 430.24,
+          "maximumMs": 430.24,
+          "samplesMs": [
+            395.2, 383.67, 423.31, 360.16, 366.27, 393.52, 391.42, 430.24, 425.11, 399.24
+          ],
+          "layer": "small"
+        },
+        {
+          "name": "ugis-web",
+          "sizePackKiB": 8919964,
+          "p95Ms": 438.22,
+          "maximumMs": 438.22,
+          "samplesMs": [
+            382.35, 369.19, 427.88, 438.22, 359.27, 385.73, 388.94, 374.34, 394.65, 372.87
+          ],
+          "layer": "large"
+        }
+      ]
+    }
+  },
+  "checks": [
+    {
+      "id": "AC-NFR-PERF-01",
+      "description": "14 仓库缓存首屏",
+      "observedMs": 25.19,
+      "thresholdMs": 2000,
+      "passed": true
+    },
+    {
+      "id": "任务列表容量",
+      "description": "10,000 条本地记录分页",
+      "observedMs": 36.87,
+      "thresholdMs": 2000,
+      "passed": true
+    },
+    {
+      "id": "AC-NFR-PERF-03",
+      "description": "500 任务/2,000 证据规则生成",
+      "observedMs": 45.25,
+      "thresholdMs": 10000,
+      "passed": true
+    },
+    {
+      "id": "AC-NFR-PERF-02",
+      "description": "最慢单仓库本地状态刷新",
+      "observedMs": 1065.8,
+      "thresholdMs": 5000,
+      "passed": true
+    },
+    {
+      "id": "PRJ-001",
+      "description": "真实仓库根目录一级 Git 仓库数量",
+      "observed": 14,
+      "expected": 14,
+      "passed": true
+    }
+  ],
+  "passed": true
+}
