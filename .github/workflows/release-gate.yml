@@ -65,25 +65,38 @@ jobs:
         run: |
           set -euo pipefail
           cleanup() {
-            docker compose logs --no-color --tail=150 auto-work || true
+            status="$?"
+            # 仅在失败时打印末尾日志，成功时保持流水线输出简洁。
+            if [ "$status" -ne 0 ]; then
+              docker compose logs --no-color --tail=150 auto-work || true
+            fi
             docker compose down --volumes || true
+            return "$status"
           }
           trap cleanup EXIT
 
+          smoke_dir="${RUNNER_TEMP}/auto-work-docker-smoke"
+          mkdir -p "$smoke_dir"
+
           docker compose up --detach --wait --wait-timeout 180
-          curl --fail --silent --show-error http://127.0.0.1:3760/api/v1/health > health.json
-          grep --quiet '"status":"ready"' health.json
-          curl --fail --silent --show-error http://127.0.0.1:3760/ | grep --quiet '<div id="root">'
+          curl --fail --silent --show-error http://127.0.0.1:3760/api/v1/health > "$smoke_dir/health.json"
+          grep --quiet '"status":"ready"' "$smoke_dir/health.json"
+          curl --fail --silent --show-error http://127.0.0.1:3760/ > "$smoke_dir/index.html"
+          grep --quiet '<div id="root">' "$smoke_dir/index.html"
 
           container="$(docker compose ps --quiet auto-work)"
           test "$(docker inspect "$container" --format '{{.Config.User}}')" = 'node'
           test "$(docker inspect "$container" --format '{{.HostConfig.ReadonlyRootfs}}')" = 'true'
-          docker inspect "$container" --format '{{json .HostConfig.CapDrop}}' | grep --quiet 'ALL'
-          docker inspect "$container" --format '{{json .HostConfig.SecurityOpt}}' | grep --quiet 'no-new-privileges'
+          cap_drop="$(docker inspect "$container" --format '{{json .HostConfig.CapDrop}}')"
+          security_options="$(docker inspect "$container" --format '{{json .HostConfig.SecurityOpt}}')"
+          [[ "$cap_drop" == *'ALL'* ]]
+          [[ "$security_options" == *'no-new-privileges'* ]]
 
           docker exec "$container" sh -c "printf '%s' 'persisted' > /app/data/ci-volume-smoke"
           docker compose restart auto-work
           docker compose up --detach --wait --wait-timeout 180
           container="$(docker compose ps --quiet auto-work)"
           test "$(docker exec "$container" cat /app/data/ci-volume-smoke)" = 'persisted'
-          docker compose logs --no-color auto-work | grep --quiet 'No pending migrations to apply.'
+          # 先完整保存日志再断言，避免 grep -q 提前关管道触发 Compose broken pipe（退出码 255）。
+          docker compose logs --no-color auto-work > "$smoke_dir/container.log"
+          grep --quiet 'No pending migrations to apply.' "$smoke_dir/container.log"
