@@ -10,8 +10,10 @@ import type { LocalSecurityService } from '../src/infrastructure/http/local-secu
 import type { CredentialVault } from '../src/infrastructure/vault/credential-vault.js';
 import type { AiProviderClient } from '../src/modules/ai/ai-provider.client.js';
 import { AuditService } from '../src/modules/audit/audit.service.js';
+import { IdempotencyService } from '../src/modules/idempotency/idempotency.service.js';
 import { QuarterlyCompletenessService } from '../src/modules/quarterly-reviews/quarterly-completeness.service.js';
 import { QuarterlyNarrativeConfirmationService } from '../src/modules/quarterly-reviews/quarterly-narrative-confirmation.service.js';
+import { QuarterlyReviewController } from '../src/modules/quarterly-reviews/quarterly-review.controller.js';
 import { QuarterlyReviewService } from '../src/modules/quarterly-reviews/quarterly-review.service.js';
 import { QuarterlyReviewAiService } from '../src/modules/quarterly-reviews/quarterly-review-ai.service.js';
 import type { SessionService } from '../src/modules/session/session.service.js';
@@ -21,6 +23,7 @@ describe('季度自评版本、确认前置检查与完整冻结快照', () => {
   let prisma: PrismaClient;
   let reviews: QuarterlyReviewService;
   let narratives: QuarterlyNarrativeConfirmationService;
+  let controller: QuarterlyReviewController;
   let quarterlyAi: QuarterlyReviewAiService;
   let confirmedReviewId = '';
   const generate = vi.fn<AiProviderClient['generate']>();
@@ -63,6 +66,16 @@ describe('季度自评版本、确认前置检查与完整冻结快照', () => {
       audit,
       security,
       completeness,
+    );
+    controller = new QuarterlyReviewController(
+      reviews,
+      {} as never,
+      {} as never,
+      narratives,
+      {} as never,
+      {} as never,
+      new IdempotencyService(prismaService),
+      sessions,
     );
     quarterlyAi = new QuarterlyReviewAiService(
       prismaService,
@@ -202,28 +215,42 @@ describe('季度自评版本、确认前置检查与完整冻结快照', () => {
       confirmable: true,
       requiredAcknowledgements: [expect.objectContaining({ code: 'SOURCE_FRESHNESS_RISK' })],
     });
+    const missingAcknowledgementInput = {
+      reviewVersion: narrative.reviewVersion,
+      narrativeVersionId: narrative.narrative.id,
+      acknowledgements: [],
+    };
     await expect(
-      narratives.confirm(
+      controller.confirm(review.id, missingAcknowledgementInput, undefined, request('missing-key')),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_KEY_REQUIRED' });
+    await expect(
+      controller.confirm(
         review.id,
-        {
-          reviewVersion: narrative.reviewVersion,
-          narrativeVersionId: narrative.narrative.id,
-          acknowledgements: [],
-        },
-        context('missing-ack'),
+        missingAcknowledgementInput,
+        'quarterly-missing-ack',
+        request('missing-ack'),
       ),
     ).rejects.toMatchObject({ code: 'QUARTERLY_COMPLETENESS_ACK_REQUIRED' });
-    const confirmed = await narratives.confirm(
+    expect(
+      await prisma.idempotencyRecord.findFirstOrThrow({
+        where: { idempotencyKey: 'quarterly-missing-ack' },
+      }),
+    ).toMatchObject({ state: 'failed', errorCode: 'QUARTERLY_COMPLETENESS_ACK_REQUIRED' });
+
+    const confirmationInput = {
+      reviewVersion: narrative.reviewVersion,
+      narrativeVersionId: narrative.narrative.id,
+      acknowledgements: [
+        { code: 'SOURCE_FRESHNESS_RISK', reason: '已人工复核本周期来源与验收记录' },
+      ],
+    };
+    const firstEnvelope = await controller.confirm(
       review.id,
-      {
-        reviewVersion: narrative.reviewVersion,
-        narrativeVersionId: narrative.narrative.id,
-        acknowledgements: [
-          { code: 'SOURCE_FRESHNESS_RISK', reason: '已人工复核本周期来源与验收记录' },
-        ],
-      },
-      context('confirm'),
+      confirmationInput,
+      'quarterly-confirm-success',
+      request('confirm'),
     );
+    const confirmed = firstEnvelope.data as Awaited<ReturnType<typeof narratives.confirm>>;
     expect(confirmed.confirmation).toMatchObject({
       status: 'active',
       calculation: { finalTotal: 4.5 },
@@ -238,20 +265,48 @@ describe('季度自评版本、确认前置检查与完整冻结快照', () => {
       materialCompletenessOnly: true,
     });
     expect(confirmed.confirmation.snapshotHash).toMatch(/^[a-f0-9]{64}$/u);
-    const replayed = await narratives.confirm(
+    const idempotentReplay = await controller.confirm(
+      review.id,
+      confirmationInput,
+      'quarterly-confirm-success',
+      request('confirm-idempotent-replay'),
+    );
+    expect(idempotentReplay.data).toEqual(firstEnvelope.data);
+    await expect(
+      controller.confirm(
+        review.id,
+        {
+          ...confirmationInput,
+          acknowledgements: [
+            { code: 'SOURCE_FRESHNESS_RISK', reason: '同一键不得替换首次请求内容' },
+          ],
+        },
+        'quarterly-confirm-success',
+        request('confirm-conflict'),
+      ),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    const businessReplayEnvelope = await controller.confirm(
       review.id,
       {
-        reviewVersion: narrative.reviewVersion,
-        narrativeVersionId: narrative.narrative.id,
-        acknowledgements: [{ code: 'SOURCE_FRESHNESS_RISK', reason: '重复请求不得创建第二份确认' }],
+        ...confirmationInput,
+        acknowledgements: [{ code: 'SOURCE_FRESHNESS_RISK', reason: '新请求也不得创建第二份确认' }],
       },
-      context('confirm-replay'),
+      'quarterly-confirm-business-replay',
+      request('confirm-business-replay'),
     );
-    expect(replayed).toMatchObject({
+    expect(businessReplayEnvelope.data).toMatchObject({
       replayed: true,
       confirmation: { id: confirmed.confirmation.id },
       reviewVersion: confirmed.reviewVersion,
     });
+    expect(await prisma.quarterlyReviewConfirmation.count({ where: { reviewId: review.id } })).toBe(
+      1,
+    );
+    expect(
+      await prisma.idempotencyRecord.findFirstOrThrow({
+        where: { idempotencyKey: 'quarterly-confirm-success' },
+      }),
+    ).toMatchObject({ state: 'completed', httpStatus: 201, errorCode: null });
 
     await reviews.updateScores(
       review.id,
@@ -453,5 +508,14 @@ describe('季度自评版本、确认前置检查与完整冻结快照', () => {
 
   function context(suffix: string) {
     return { correlationId: `corr-${suffix}`, sessionId: `session-${suffix}` };
+  }
+
+  function request(suffix: string) {
+    return {
+      autoWork: {
+        correlationId: `corr-${suffix}`,
+        sessionId: `session-${suffix}`,
+      },
+    } as never;
   }
 });

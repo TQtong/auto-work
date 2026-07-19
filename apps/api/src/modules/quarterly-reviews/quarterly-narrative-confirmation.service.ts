@@ -25,6 +25,10 @@ interface MutationContext {
   sessionId: string;
 }
 
+interface IdempotentMutationContext extends MutationContext {
+  idempotencyRecordId: string;
+}
+
 interface FrozenFacts {
   review: {
     id: string;
@@ -307,7 +311,7 @@ export class QuarterlyNarrativeConfirmationService {
       narrativeVersionId: string;
       acknowledgements: Array<{ code: string; reason: string }>;
     },
-    context: MutationContext,
+    context: IdempotentMutationContext,
   ) {
     return this.prisma.$transaction(async (tx) => {
       const review = await tx.quarterlyReview.findFirst({
@@ -324,11 +328,14 @@ export class QuarterlyNarrativeConfirmationService {
           active.narrativeVersionId === input.narrativeVersionId &&
           active.reviewVersion === input.reviewVersion
         ) {
-          return {
+          const response = {
             replayed: true,
             confirmation: this.serializeConfirmation(active, true),
             reviewVersion: review.version,
           };
+          // 业务层安全重放也必须冻结到本次 HTTP 幂等账本，避免后续重试悬挂在 processing。
+          await this.completeIdempotency(tx, context.idempotencyRecordId, response);
+          return response;
         }
       }
       if (review.version !== input.reviewVersion) this.versionConflict(review.version);
@@ -428,11 +435,14 @@ export class QuarterlyNarrativeConfirmationService {
         },
         clientSessionHash: this.security.sessionHash(context.sessionId),
       });
-      return {
+      const response = {
         replayed: false,
         confirmation: this.serializeConfirmation(confirmation, true),
         reviewVersion: review.version + 1,
       };
+      // 确认快照、聚合版本、审计事件和响应账本同事务提交，杜绝“业务成功但无法重放”。
+      await this.completeIdempotency(tx, context.idempotencyRecordId, response);
+      return response;
     });
   }
 
@@ -456,6 +466,22 @@ export class QuarterlyNarrativeConfirmationService {
     });
     if (!row) throw new DomainError(errorCodes.notFound, '季度确认快照不存在', { httpStatus: 404 });
     return this.serializeConfirmation(row, true);
+  }
+
+  private async completeIdempotency(
+    tx: Prisma.TransactionClient,
+    recordId: string,
+    response: unknown,
+  ): Promise<void> {
+    await tx.idempotencyRecord.update({
+      where: { id: recordId },
+      data: {
+        state: 'completed',
+        httpStatus: 201,
+        responseJson: JSON.stringify(response),
+        errorCode: null,
+      },
+    });
   }
 
   private async createVersion(

@@ -379,19 +379,49 @@ export class QuarterlyReviewController {
   }
 
   @Post(':id/confirmations')
+  @HttpCode(201)
   public async confirm(
     @Param('id') id: string,
     @Body() body: unknown,
+    @Headers('idempotency-key') key: string | undefined,
     @Req() request: FastifyRequest,
   ) {
-    return apiResponse(
-      await this.narratives.confirm(
-        id,
-        confirmQuarterlyReviewSchema.parse(body),
-        this.context(request),
-      ),
-      request.autoWork.correlationId,
-    );
+    const input = confirmQuarterlyReviewSchema.parse(body);
+    if (!key || !/^[A-Za-z0-9._:-]{8,200}$/u.test(key)) {
+      throw new DomainError(
+        'IDEMPOTENCY_KEY_REQUIRED',
+        '季度绩效确认必须提供格式有效的 Idempotency-Key',
+        { httpStatus: 422 },
+      );
+    }
+    const started = await this.idempotency.start({
+      actorId: this.sessions.currentProfileId,
+      route: `/api/v1/quarterly-reviews/${id}/confirmations`,
+      key,
+      requestHash: requestHash({ reviewId: id, ...input }),
+    });
+    if (started.kind === 'replay') {
+      return apiResponse(started.response, request.autoWork.correlationId);
+    }
+    if (started.kind === 'processing') {
+      throw new DomainError('IDEMPOTENCY_REQUEST_PROCESSING', '相同季度确认请求正在处理中', {
+        httpStatus: 409,
+        retryable: true,
+      });
+    }
+    try {
+      const result = await this.narratives.confirm(id, input, {
+        ...this.context(request),
+        idempotencyRecordId: started.recordId,
+      });
+      return apiResponse(result, request.autoWork.correlationId);
+    } catch (error) {
+      await this.idempotency.fail(
+        started.recordId,
+        error instanceof DomainError ? error.code : 'QUARTERLY_CONFIRMATION_FAILED',
+      );
+      throw error;
+    }
   }
 
   @Get(':id/confirmations')
