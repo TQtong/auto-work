@@ -22,6 +22,8 @@ const gateEnvironment = {
 };
 
 try {
+  // 干净安装无法从 monorepo 根目录自动定位 API schema，必须先生成带完整模型类型的 Prisma Client。
+  runPnpm(['db:generate'], gateEnvironment);
   runPnpm(['verify'], gateEnvironment);
   runPnpm(['db:validate'], gateEnvironment);
   runPnpm(['db:deploy'], gateEnvironment);
