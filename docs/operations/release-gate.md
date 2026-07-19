@@ -37,7 +37,9 @@ pnpm release:gate
 
 ## 4. CI
 
-`.github/workflows/release-gate.yml` 在 Windows runner 上对 PR 执行同一门禁，并上传 14 天保留的候选发布物。CI 不是签名服务；当前版本提供哈希完整性，不提供 Authenticode 发布者身份保证。
+`.github/workflows/release-gate.yml` 在 Windows runner 上对 PR 执行同一门禁，并上传 14 天保留的候选发布物。四个第三方 action 均使用声明 `node24` 的稳定版本并锁定到 40 位 commit SHA，禁止浮动 tag；应用构建与测试仍由 setup-node 固定到 Node.js 22.14.0。CI 不是签名服务；当前版本提供哈希完整性，不提供 Authenticode 发布者身份保证。
+
+最终维护基线 `f611b0908c42bd4cf096eb84171e2945f780ad7d` 的 run `29676804507` 已验证新 action 组合：完整发布门禁和 upload-artifact v7 均成功，check annotation 为 0。PR 事件中的 `${{ github.sha }}` 是 GitHub 生成的合并提交，因此制品名使用该合并 SHA；`release-manifest.json` 仍是候选包内容与源码提交绑定的权威事实。
 
 ## 5. 人工发布签字项
 
