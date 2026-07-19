@@ -132,7 +132,7 @@ describe('GitLab 多资源缓存集成', () => {
         },
       ],
     });
-  }, 30_000);
+  }, 60_000); // Windows CI 并行创建多套 SQLite 数据库时，完整迁移允许使用统一的初始化预算。
 
   afterAll(async () => {
     await prisma.$disconnect();

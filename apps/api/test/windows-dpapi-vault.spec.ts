@@ -42,5 +42,5 @@ describe.runIf(process.platform === 'win32')('Windows DPAPI 保险箱', () => {
 
     await vault.delete(reference);
     await expect(vault.get(reference)).rejects.toMatchObject({ code: 'ENOENT' });
-  }, 15_000); // DPAPI 会启动多个 powershell.exe 子进程；全量并行测试时 Windows 调度可能超过默认 5 秒。
+  }, 45_000); // DPAPI 会启动多个 powershell.exe 子进程；测试预算必须覆盖生产级 30 秒终止与清理过程。
 });
