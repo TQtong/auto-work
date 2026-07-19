@@ -255,6 +255,7 @@ export class TasksController {
 
   @Get(':id')
   public async detail(@Param('id') id: string, @Req() request: FastifyRequest) {
+    const ownerProfileId = this.sessions?.currentProfileId;
     const task = await this.prisma.task.findUnique({
       where: { id },
       include: {
@@ -269,6 +270,78 @@ export class TasksController {
           take: 100,
         },
         evidenceLinks: { select: { status: true, revalidationState: true } },
+        reportSourceLinks: {
+          // 只回看当前本机用户自己的周报版本，避免历史资料跨用户串读。
+          ...(ownerProfileId
+            ? { where: { version: { report: { ownerProfileId } } } }
+            : {}),
+          orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+          take: 100,
+          select: {
+            id: true,
+            fieldName: true,
+            blockId: true,
+            sourceType: true,
+            sourceSummaryJson: true,
+            createdAt: true,
+            version: {
+              select: {
+                id: true,
+                versionNo: true,
+                origin: true,
+                createdAt: true,
+                report: {
+                  select: {
+                    id: true,
+                    periodStart: true,
+                    periodEnd: true,
+                    reportDate: true,
+                    status: true,
+                    currentVersionId: true,
+                    confirmedVersionId: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+        achievementEvidences: {
+          // 绩效引用以成果证据为入口，保留成果和季度评审的双层上下文。
+          ...(ownerProfileId
+            ? { where: { achievement: { review: { ownerProfileId } } } }
+            : {}),
+          orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+          take: 100,
+          select: {
+            id: true,
+            sourceType: true,
+            sourceId: true,
+            title: true,
+            contributionAngle: true,
+            primaryEvidence: true,
+            availabilityState: true,
+            createdAt: true,
+            achievement: {
+              select: {
+                id: true,
+                title: true,
+                selectionStatus: true,
+                evidenceStatus: true,
+                version: true,
+                review: {
+                  select: {
+                    id: true,
+                    name: true,
+                    periodStart: true,
+                    periodEnd: true,
+                    status: true,
+                    version: true,
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     });
     if (!task) throw new DomainError(errorCodes.notFound, '任务不存在', { httpStatus: 404 });
@@ -324,6 +397,56 @@ export class TasksController {
           observedAt: event.observedAt.toISOString(),
           observedIntervalStart: event.observedIntervalStart?.toISOString() ?? null,
           precision: 'observed_interval',
+        })),
+        weeklyReportReferences: task.reportSourceLinks.map((link) => ({
+          id: link.id,
+          report: {
+            id: link.version.report.id,
+            periodStart: link.version.report.periodStart,
+            periodEnd: link.version.report.periodEnd,
+            reportDate: link.version.report.reportDate,
+            status: link.version.report.status,
+          },
+          version: {
+            id: link.version.id,
+            versionNo: link.version.versionNo,
+            origin: link.version.origin,
+            current: link.version.report.currentVersionId === link.version.id,
+            confirmed: link.version.report.confirmedVersionId === link.version.id,
+            createdAt: link.version.createdAt.toISOString(),
+          },
+          fieldName: link.fieldName,
+          blockId: link.blockId,
+          sourceType: link.sourceType,
+          sourceSummary: JSON.parse(link.sourceSummaryJson) as unknown,
+          linkedAt: link.createdAt.toISOString(),
+        })),
+        quarterlyReviewReferences: task.achievementEvidences.map((evidence) => ({
+          id: evidence.id,
+          review: {
+            id: evidence.achievement.review.id,
+            name: evidence.achievement.review.name,
+            periodStart: evidence.achievement.review.periodStart,
+            periodEnd: evidence.achievement.review.periodEnd,
+            status: evidence.achievement.review.status,
+            version: evidence.achievement.review.version,
+          },
+          achievement: {
+            id: evidence.achievement.id,
+            title: evidence.achievement.title,
+            selectionStatus: evidence.achievement.selectionStatus,
+            evidenceStatus: evidence.achievement.evidenceStatus,
+            version: evidence.achievement.version,
+          },
+          evidence: {
+            sourceType: evidence.sourceType,
+            sourceId: evidence.sourceId,
+            title: evidence.title,
+            contributionAngle: evidence.contributionAngle,
+            primary: evidence.primaryEvidence,
+            availabilityState: evidence.availabilityState,
+          },
+          linkedAt: evidence.createdAt.toISOString(),
         })),
       },
       request.autoWork.correlationId,

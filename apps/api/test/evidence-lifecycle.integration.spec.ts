@@ -61,6 +61,9 @@ describe('证据关系确认、拒绝、撤销与过期', () => {
     await prisma.evidenceLinkEvent.deleteMany();
     await prisma.evidenceLink.deleteMany();
     await prisma.evidence.deleteMany();
+    await prisma.taskFieldProvenance.deleteMany();
+    await prisma.taskStatusEvent.deleteMany();
+    await prisma.taskSourceObservation.deleteMany();
     await prisma.task.deleteMany();
     await prisma.project.deleteMany();
     await prisma.project.create({
@@ -524,5 +527,212 @@ describe('证据关系确认、拒绝、撤销与过期', () => {
         where: { action: { in: ['task.manual_override_set', 'task.manual_override_revoked'] } },
       }),
     ).toBe(2);
+  });
+
+  it('任务详情回看真实周报段落和季度绩效成果引用，并隔离其他用户资料', async () => {
+    await prisma.userProfile.upsert({
+      where: { id: 'local-user' },
+      create: {
+        id: 'local-user',
+        windowsSid: 'S-1-5-21-task-reference-local',
+        displayName: '任务引用验收用户',
+      },
+      update: {},
+    });
+    await prisma.userProfile.create({
+      data: {
+        id: 'other-user',
+        windowsSid: 'S-1-5-21-task-reference-other',
+        displayName: '其他隔离用户',
+      },
+    });
+
+    const createReportReference = async (ownerProfileId: string, suffix: string) => {
+      await prisma.weeklyReport.create({
+        data: {
+          id: `report-${suffix}`,
+          ownerProfileId,
+          periodStart: '2026-07-13',
+          periodEnd: '2026-07-19',
+          reportDate: '2026-07-18',
+          status: 'confirmed',
+        },
+      });
+      await prisma.reportSourceSnapshot.create({
+        data: {
+          id: `snapshot-${suffix}`,
+          reportId: `report-${suffix}`,
+          periodStart: '2026-07-13',
+          periodEnd: '2026-07-19',
+          reportDate: '2026-07-18',
+          timezone: 'Asia/Shanghai',
+          profileId: ownerProfileId,
+          profileVersion: 1,
+          taskFactsJson: '[]',
+          evidenceFactsJson: '[]',
+          freshnessPolicyJson: '{}',
+          ruleVersion: 'weekly-report-rule-v1',
+          sanitizationPolicyVersion: 'weekly-report-ai-sanitization-v1',
+          generationHash: suffix.repeat(64).slice(0, 64),
+          sourceContentHash: `${suffix}f`.repeat(64).slice(0, 64),
+          createdBy: ownerProfileId,
+        },
+      });
+      await prisma.weeklyReportVersion.create({
+        data: {
+          id: `report-version-${suffix}`,
+          reportId: `report-${suffix}`,
+          versionNo: 1,
+          origin: 'rule',
+          reportDateText: '2026-07-18',
+          recentGoalsText: '保持交付节奏',
+          weeklyWorkText: '完成证据生命周期任务',
+          nextWeekPlansText: '继续验证',
+          problemsText: '暂无',
+          otherText: '暂无',
+          fieldsJson: '{}',
+          sourceSnapshotId: `snapshot-${suffix}`,
+          contentHash: `${suffix}c`.repeat(64).slice(0, 64),
+          createdBy: ownerProfileId,
+        },
+      });
+      await prisma.reportSourceLink.create({
+        data: {
+          id: `report-link-${suffix}`,
+          snapshotId: `snapshot-${suffix}`,
+          versionId: `report-version-${suffix}`,
+          fieldName: 'weeklyWork',
+          blockId: `block-${suffix}`,
+          sourceType: 'task',
+          sourceId: 'task-1',
+          taskId: 'task-1',
+          sourceContentHash: `${suffix}l`.repeat(64).slice(0, 64),
+          sourceSummaryJson: JSON.stringify({ issueKey: 'PROJ-1', title: '证据生命周期' }),
+        },
+      });
+      await prisma.weeklyReport.update({
+        where: { id: `report-${suffix}` },
+        data: {
+          currentVersionId: `report-version-${suffix}`,
+          confirmedVersionId: `report-version-${suffix}`,
+        },
+      });
+    };
+
+    const createQuarterlyReference = async (ownerProfileId: string, suffix: string) => {
+      await prisma.quarterlyReview.create({
+        data: {
+          id: `review-${suffix}`,
+          ownerProfileId,
+          name: `2026 Q3 任务引用-${suffix}`,
+          periodStart: '2026-07-01',
+          periodEnd: '2026-09-30',
+          nextPeriodStart: '2026-10-01',
+          year: 2026,
+          quarter: 3,
+          status: 'scoring',
+        },
+      });
+      await prisma.achievement.create({
+        data: {
+          id: `achievement-${suffix}`,
+          reviewId: `review-${suffix}`,
+          sourceType: 'collected',
+          sourceKey: `task:task-1:${suffix}`,
+          title: '完成任务证据生命周期闭环',
+          situation: '需要建立可追溯任务证据',
+          action: '实现确认、拒绝、撤销与过期',
+          result: '任务事实和证据关系可核对',
+          impact: '支持周报和绩效材料复用',
+          contributionBoundary: '本人完成实现与验证',
+          periodStart: '2026-07-01',
+          periodEnd: '2026-07-19',
+          selectionStatus: 'selected',
+          evidenceStatus: 'complete',
+          createdBy: ownerProfileId,
+        },
+      });
+      await prisma.achievementEvidence.create({
+        data: {
+          id: `achievement-evidence-${suffix}`,
+          achievementId: `achievement-${suffix}`,
+          sourceType: 'task',
+          sourceId: 'task-1',
+          taskId: 'task-1',
+          title: 'PROJ-1 任务事实',
+          sourceContentHash: `${suffix}e`.repeat(64).slice(0, 64),
+          contributionAngle: '证明任务已完成且字段来源可追溯',
+          primaryEvidence: true,
+        },
+      });
+    };
+
+    try {
+      await createReportReference('local-user', 'a');
+      await createReportReference('other-user', 'b');
+      await createQuarterlyReference('local-user', 'a');
+      await createQuarterlyReference('other-user', 'b');
+
+      const tasks = new TasksController(
+        prisma as unknown as PrismaService,
+        undefined,
+        { currentProfileId: 'local-user' } as SessionService,
+      );
+      const detail = await tasks.detail('task-1', request);
+
+      expect(detail.data.weeklyReportReferences).toMatchObject([
+        {
+          id: 'report-link-a',
+          report: { id: 'report-a', status: 'confirmed' },
+          version: {
+            id: 'report-version-a',
+            versionNo: 1,
+            current: true,
+            confirmed: true,
+          },
+          fieldName: 'weeklyWork',
+          sourceSummary: { issueKey: 'PROJ-1', title: '证据生命周期' },
+        },
+      ]);
+      expect(detail.data.quarterlyReviewReferences).toMatchObject([
+        {
+          id: 'achievement-evidence-a',
+          review: { id: 'review-a', status: 'scoring' },
+          achievement: {
+            id: 'achievement-a',
+            selectionStatus: 'selected',
+            evidenceStatus: 'complete',
+          },
+          evidence: { primary: true, sourceType: 'task' },
+        },
+      ]);
+    } finally {
+      await prisma.achievementEvidence.deleteMany({
+        where: { id: { in: ['achievement-evidence-a', 'achievement-evidence-b'] } },
+      });
+      await prisma.achievement.deleteMany({
+        where: { id: { in: ['achievement-a', 'achievement-b'] } },
+      });
+      await prisma.quarterlyReview.deleteMany({
+        where: { id: { in: ['review-a', 'review-b'] } },
+      });
+      await prisma.reportSourceLink.deleteMany({
+        where: { id: { in: ['report-link-a', 'report-link-b'] } },
+      });
+      await prisma.weeklyReport.updateMany({
+        where: { id: { in: ['report-a', 'report-b'] } },
+        data: { currentVersionId: null, confirmedVersionId: null },
+      });
+      await prisma.weeklyReportVersion.deleteMany({
+        where: { id: { in: ['report-version-a', 'report-version-b'] } },
+      });
+      await prisma.reportSourceSnapshot.deleteMany({
+        where: { id: { in: ['snapshot-a', 'snapshot-b'] } },
+      });
+      await prisma.weeklyReport.deleteMany({
+        where: { id: { in: ['report-a', 'report-b'] } },
+      });
+      await prisma.userProfile.deleteMany({ where: { id: 'other-user' } });
+    }
   });
 });
