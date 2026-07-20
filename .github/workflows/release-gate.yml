@@ -78,11 +78,47 @@ jobs:
           smoke_dir="${RUNNER_TEMP}/auto-work-docker-smoke"
           mkdir -p "$smoke_dir"
 
+          # 构造真实一级仓库，确保 Linux 容器不仅能启动，还能实际执行 Git 扫描。
+          mkdir -p repositories/ci-sample
+          git -C repositories/ci-sample init
+          git -C repositories/ci-sample config user.name 'Auto Work CI'
+          git -C repositories/ci-sample config user.email 'ci@auto-work.local'
+          printf '%s\n' '# CI repository' > repositories/ci-sample/README.md
+          git -C repositories/ci-sample add README.md
+          git -C repositories/ci-sample commit -m '初始化 Docker 扫描仓库'
+
           docker compose up --detach --wait --wait-timeout 180
           curl --fail --silent --show-error http://127.0.0.1:3760/api/v1/health > "$smoke_dir/health.json"
           grep --quiet '"status":"ready"' "$smoke_dir/health.json"
           curl --fail --silent --show-error http://127.0.0.1:3760/ > "$smoke_dir/index.html"
           grep --quiet '<div id="root">' "$smoke_dir/index.html"
+
+          curl --fail --silent --show-error \
+            --cookie-jar "$smoke_dir/cookies.txt" \
+            http://127.0.0.1:3760/api/v1/session > "$smoke_dir/session.json"
+          csrf_token="$(jq --raw-output '.data.csrfToken' "$smoke_dir/session.json")"
+          curl --fail --silent --show-error \
+            --cookie "$smoke_dir/cookies.txt" \
+            --header "X-CSRF-Token: ${csrf_token}" \
+            --header 'Origin: http://127.0.0.1:3760' \
+            --header 'Content-Type: application/json; charset=utf-8' \
+            --request POST \
+            --data '{}' \
+            http://127.0.0.1:3760/api/v1/projects/discover > "$smoke_dir/discover.json"
+          operation_path="$(jq --raw-output '.data.statusUrl' "$smoke_dir/discover.json")"
+          for _ in $(seq 1 120); do
+            curl --fail --silent --show-error \
+              --cookie "$smoke_dir/cookies.txt" \
+              "http://127.0.0.1:3760${operation_path}" > "$smoke_dir/discover-status.json"
+            operation_status="$(jq --raw-output '.data.status' "$smoke_dir/discover-status.json")"
+            if [[ "$operation_status" != 'queued' && "$operation_status" != 'running' ]]; then
+              break
+            fi
+            sleep 0.5
+          done
+          jq --exit-status \
+            '(.data.status == "succeeded") and ((.data.result.repositories | length) == 1) and ((.data.result.warnings | length) == 0)' \
+            "$smoke_dir/discover-status.json"
 
           container="$(docker compose ps --quiet auto-work)"
           test "$(docker inspect "$container" --format '{{.Config.User}}')" = 'node'

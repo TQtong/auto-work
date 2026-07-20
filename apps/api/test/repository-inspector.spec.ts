@@ -4,13 +4,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../src/config/config.module.js';
-import { GitProcessService } from '../src/infrastructure/git/git-process.service.js';
+import { gitExecutable, GitProcessService } from '../src/infrastructure/git/git-process.service.js';
 import { RepositoryInspectorService } from '../src/modules/repositories/repository-inspector.service.js';
 
 const temporaryDirectories: string[] = [];
 let rootDirectory = '';
 let repositoryDirectory = '';
 let inspector: RepositoryInspectorService;
+
+describe('跨平台 Git 执行文件选择', () => {
+  it('Windows 使用 git.exe，Linux 与 macOS 使用 PATH 中的 git', () => {
+    expect(gitExecutable('win32')).toBe('git.exe');
+    expect(gitExecutable('linux')).toBe('git');
+    expect(gitExecutable('darwin')).toBe('git');
+  });
+});
 
 function git(cwd: string, args: string[]): void {
   execFileSync('git.exe', args, { cwd, windowsHide: true, stdio: 'ignore' });
@@ -56,6 +64,49 @@ afterEach(async () => {
 });
 
 describe.runIf(process.platform === 'win32')('仓库发现与只读状态', () => {
+  it('扫描前返回宿主机路径、容器路径和一级 Git 候选统计', async () => {
+    const config = await inspector.discoveryConfiguration();
+    expect(config).toMatchObject({
+      deploymentMode: 'native',
+      configuredRoot: rootDirectory,
+      hostRoot: rootDirectory,
+      accessible: true,
+      status: 'ready',
+      scanDepth: 1,
+      directoryCount: 1,
+      gitCandidateCount: 1,
+    });
+  });
+
+  it('目录不可用时返回稳定诊断而不是泄漏底层文件系统异常', async () => {
+    const unavailable = new RepositoryInspectorService(
+      {
+        host: '127.0.0.1',
+        port: 3760,
+        dataDir: join(rootDirectory, 'data'),
+        webDist: join(rootDirectory, 'web'),
+        databaseUrl: `file:${join(rootDirectory, 'test.db').replaceAll('\\', '/')}`,
+        repositoryRoot: join(rootDirectory, '不存在'),
+        repositoryHostPath: 'D:/company',
+        deploymentMode: 'docker',
+        vaultBackend: 'sealed',
+        vaultKeyFile: join(rootDirectory, 'data', 'vault-master.key'),
+        logLevel: 'info',
+        environment: 'test',
+      },
+      new GitProcessService(),
+    );
+
+    await expect(unavailable.discoveryConfiguration()).resolves.toMatchObject({
+      deploymentMode: 'docker',
+      hostRoot: 'D:/company',
+      accessible: false,
+      status: 'unavailable',
+      directoryCount: 0,
+      gitCandidateCount: 0,
+    });
+  });
+
   it('识别一级仓库、分支、身份，并在远端入库前丢弃凭证', async () => {
     const identity = await inspector.inspect(repositoryDirectory);
     expect(identity.gitDirKind).toBe('normal');

@@ -1,8 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { spawn } from 'node:child_process';
+import { resolve } from 'node:path';
 import { DomainError } from '@auto-work/contracts';
 
 const DEFAULT_OUTPUT_LIMIT = 2 * 1024 * 1024;
+
+export function gitExecutable(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? 'git.exe' : 'git';
+}
 
 export interface GitCommandResult {
   stdout: Buffer;
@@ -65,13 +70,20 @@ export class GitProcessService {
         GIT_CONFIG_NOSYSTEM: '1',
         LC_ALL: 'C.UTF-8',
       });
-      const child = spawn('git.exe', ['--no-pager', ...args], {
-        cwd,
-        windowsHide: true,
-        shell: false,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: environment,
-      });
+      // Docker Desktop 的 bind mount 在 Linux VM 内通常显示为 root 所有；只对白名单校验后的
+      // 当前工作目录声明 safe.directory，既支持非 root 容器，也不放宽到通配符目录。
+      const safeDirectory = resolve(cwd).replaceAll('\\', '/');
+      const child = spawn(
+        gitExecutable(),
+        ['--no-pager', '-c', `safe.directory=${safeDirectory}`, ...args],
+        {
+          cwd,
+          windowsHide: true,
+          shell: false,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: environment,
+        },
+      );
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
       const outputLimit = options.outputLimit ?? DEFAULT_OUTPUT_LIMIT;

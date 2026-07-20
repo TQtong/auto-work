@@ -135,6 +135,15 @@ export class RepositoriesController {
     });
   }
 
+  @Get('repositories/discovery-config')
+  public async discoveryConfig(@Req() request: FastifyRequest) {
+    return apiResponse(
+      await this.inspector.discoveryConfiguration(),
+      request.autoWork.correlationId,
+      { asOf: new Date().toISOString() },
+    );
+  }
+
   @Post('repositories/sync')
   public async syncAll(@Req() request: FastifyRequest) {
     const job = await this.queue.enqueue({

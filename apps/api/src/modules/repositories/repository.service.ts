@@ -46,11 +46,10 @@ export class RepositoryService {
         const identity = await this.inspector.inspect(candidatePath, root);
         seenPaths.add(identity.canonicalPath.toLowerCase());
         const repository = await this.upsertObservation(identity);
-        const snapshot = await this.collectAndPersistSnapshot(
-          repository.id,
-          identity.canonicalPath,
-        );
-        repositories.push(this.toRepositoryView({ ...repository, snapshots: [snapshot] }));
+        // 发现阶段只读取仓库身份并完成登记，不同步执行可能很慢的完整工作区状态扫描。
+        // Docker Desktop bind mount 上大型仓库的 git status 可能需要数分钟；它应由独立刷新作业处理，
+        // 不能让已经识别成功的仓库在发现报告中被误写成“跳过”。
+        repositories.push(this.toRepositoryView({ ...repository, snapshots: [] }));
       } catch (error) {
         const domainError = error as DomainError;
         warnings.push({
