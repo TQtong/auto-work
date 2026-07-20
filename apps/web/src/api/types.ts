@@ -747,6 +747,35 @@ export interface RepositoryView {
   taskSummary: RepositoryTaskSummary;
 }
 
+export interface RepositoryDiscoveryConfiguration {
+  deploymentMode: 'native' | 'docker';
+  configuredRoot: string;
+  hostRoot: string;
+  configurationKey: 'AUTO_WORK_REPOSITORY_ROOT' | 'AUTO_WORK_REPOSITORY_PATH';
+  changeRequiresRestart: boolean;
+  accessible: boolean;
+  status: 'ready' | 'unavailable' | 'empty' | 'no_git_candidates';
+  statusMessage: string;
+  scanDepth: 1;
+  directoryCount: number;
+  gitCandidateCount: number;
+  skippedEntryCount: number;
+  detectedAt: string;
+}
+
+export interface RepositoryDiscoveryWarning {
+  directory: string;
+  code: string;
+  message: string;
+}
+
+export interface RepositoryDiscoveryResult {
+  root: string;
+  repositories: RepositoryView[];
+  warnings: RepositoryDiscoveryWarning[];
+  scannedDirectoryCount: number;
+}
+
 export interface RepositoryTaskSummary {
   sourceStatus: 'unmapped' | 'not_configured' | 'empty' | 'fresh' | 'stale';
   visibleCount: number;

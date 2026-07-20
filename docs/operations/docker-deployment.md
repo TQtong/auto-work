@@ -66,6 +66,27 @@ http://127.0.0.1:3760
 数据库路径、容器监听地址、Web 产物路径和密封保险箱后端由 Compose 固定为容器安全值，不建议在 `.env` 中覆盖。
 如果修改端口，容器内外必须保持相同；当前严格 Host/Origin 校验不支持“宿主机 8080 转发容器 3760”。
 
+### 3.2 在界面中检查和修改扫描目录
+
+“项目与仓库”页面会在扫描前调用只读诊断接口，显示：
+
+- `.env` 配置的宿主机路径，例如 `D:/company`；
+- 容器内固定安全边界 `/repositories`；
+- 目录是否可访问、一级目录数、带 `.git` 标记的候选数；
+- 当前部署方式、扫描深度和修改配置所需的重建命令。
+
+点击“配置并扫描”可以输入新宿主机路径并复制 `AUTO_WORK_REPOSITORY_PATH="..."`。该输入用于生成安全配置，
+不会声称在运行时动态挂载目录：Docker bind mount 由 daemon 在创建容器时决定，应用容器既没有 Docker socket，也
+不会获得整块磁盘权限。把配置保存到项目根目录 `.env` 后执行：
+
+```powershell
+docker compose up --detach --force-recreate --wait
+```
+
+状态变为“就绪”后再开始扫描。发现阶段只验证并登记一级仓库身份；完整工作区 `git status` 由“刷新全部”后台作业独立
+采集，避免 Docker Desktop bind mount 上的大仓库阻塞发现并被误报为未登记。扫描弹窗会保留最近一次的目录数、登记数
+和逐项警告。
+
 ## 4. 日常操作
 
 ```powershell
@@ -190,8 +211,11 @@ docker compose logs --tail=200 auto-work
 ### 仓库不可见或 Git 写入失败
 
 - 检查 `.env` 中 `AUTO_WORK_REPOSITORY_PATH` 是否为宿主机绝对路径；
+- 在“配置并扫描”中确认“宿主机目录”和“Git 候选”符合预期；若仍显示 `./repositories`，说明 `.env` 尚未生效；
+- 修改 `.env` 后必须执行 `docker compose up --detach --force-recreate --wait`，普通页面刷新不会改变 bind mount；
 - Windows Docker Desktop 检查驱动器共享权限，并使用 `D:/company` 形式；
 - Linux 检查目录对 UID/GID 1000 的权限；
+- Linux 容器调用 PATH 中的 `git`；Windows 本机进程调用 `git.exe`。出现 `spawn git.exe ENOENT` 表示镜像版本过旧；
 - 不要通过给容器 root 权限来绕过宿主机目录权限。
 
 ### 端口占用
@@ -221,4 +245,5 @@ docker compose up --detach --wait
 7. 新增测试集成后数据目录不含凭据明文；
 8. 重启容器后数据库记录、密钥、密文和仓库挂载仍可用；
 9. 完成一次应用内备份、校验和恢复演练；
-10. 企业 GitLab/Jira/钉钉/AI 仍需使用获批测试账号单独 UAT。
+10. “配置并扫描”显示预期宿主机路径、候选数，并完成一次真实仓库发现且警告为 0；
+11. 企业 GitLab/Jira/钉钉/AI 仍需使用获批测试账号单独 UAT。

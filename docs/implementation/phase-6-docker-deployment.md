@@ -17,6 +17,9 @@
 - 兼容：Windows 默认仍用 DPAPI；备份目标路径改为平台原生分隔符；
 - 构建：修复 `dist` 缺失而增量缓存存在时的工作区错误判定，基础包强制项目构建；
 - 运维：README 和 Docker 安装、升级、备份、恢复、密钥、排障文档。
+- 仓库：新增扫描目录状态 API 与配置弹窗，展示宿主机/容器路径、访问性、候选数、重建步骤和完整扫描报告；
+- Git：执行文件按 Windows/Linux 自动选择，对 Docker bind mount 仅注入当前仓库精确 `safe.directory`；
+- 发现：身份登记与完整 `git status` 解耦，避免大仓库超时后已入库却在报告中被误写为跳过。
 
 ## 自动化证据
 
@@ -31,6 +34,9 @@
 - `docker inspect` 验证用户 `node`、只读根文件系统、`CapDrop=[ALL]`、`no-new-privileges`；
 - 真实 HTTP/CSRF 创建测试集成，卷内生成 32 字节主密钥的 Base64 文件与 sealed 密文，全文扫描无测试 token 明文；
 - 容器重启后 SQLite、主密钥、密文和集成记录仍在原命名卷。
+- Windows Docker Desktop 真实挂载 `D:/company`，诊断得到 14 个一级目录和 14 个 Git 候选；
+- HTTP/CSRF 真实发现 14 个仓库耗时 3.78 秒，结果登记 14、警告 0，列表名称与宿主机目录集合一致；
+- 浏览器实测配置弹窗、14 行列表和扫描路径状态，无页面横向溢出；Linux Docker CI 增加真实临时 Git 仓库发现。
 
 ## 边界
 

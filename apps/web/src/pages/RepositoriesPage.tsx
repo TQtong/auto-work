@@ -1,10 +1,11 @@
 import {
   ApartmentOutlined,
   BranchesOutlined,
-  FileSearchOutlined,
+  FolderOpenOutlined,
   PlusOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -12,8 +13,10 @@ import {
   Button,
   Card,
   Descriptions,
+  Divider,
   Form,
   Input,
+  List,
   message,
   Modal,
   Select,
@@ -25,8 +28,18 @@ import {
 } from 'antd';
 import { useState } from 'react';
 import { apiRequest } from '../api/client.js';
-import type { ProjectSummary, RepositoryView } from '../api/types.js';
+import type {
+  ProjectSummary,
+  RepositoryDiscoveryConfiguration,
+  RepositoryDiscoveryResult,
+  RepositoryView,
+} from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
+import {
+  isRepositoryDiscoveryResult,
+  repositoryPathEnvironmentLine,
+  summarizeRepositoryDiscovery,
+} from './repository-discovery-view-model.js';
 
 interface OperationReference {
   operationId: string;
@@ -39,6 +52,7 @@ interface OperationDetail {
   status: string;
   progress: number;
   error?: { code: string; message: string };
+  result?: unknown;
 }
 
 interface ConfirmValues {
@@ -54,6 +68,9 @@ export function RepositoriesPage() {
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState<RepositoryView | null>(null);
   const [projectModalOpen, setProjectModalOpen] = useState(false);
+  const [discoveryModalOpen, setDiscoveryModalOpen] = useState(false);
+  const [desiredHostRoot, setDesiredHostRoot] = useState('');
+  const [discoveryResult, setDiscoveryResult] = useState<RepositoryDiscoveryResult | null>(null);
   const [confirmForm] = Form.useForm<ConfirmValues>();
   const [projectForm] = Form.useForm<{ name: string; alias?: string; description?: string }>();
   const repositories = useQuery({
@@ -65,6 +82,12 @@ export function RepositoriesPage() {
     queryKey: ['projects'],
     queryFn: () => apiRequest<ProjectSummary[]>('/api/v1/projects'),
   });
+  const discoveryConfig = useQuery({
+    queryKey: ['repository-discovery-config'],
+    queryFn: () =>
+      apiRequest<RepositoryDiscoveryConfiguration>('/api/v1/repositories/discovery-config'),
+    refetchInterval: discoveryModalOpen ? 5_000 : 30_000,
+  });
 
   const waitForOperation = async (operation: OperationReference) => {
     for (let attempt = 0; attempt < 240; attempt += 1) {
@@ -73,7 +96,7 @@ export function RepositoriesPage() {
         if (current.data.status !== 'succeeded') {
           throw new Error(current.data.error?.message ?? `作业结束状态：${current.data.status}`);
         }
-        return;
+        return current.data.result;
       }
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
     }
@@ -81,18 +104,27 @@ export function RepositoriesPage() {
   };
 
   const runOperation = useMutation({
-    mutationFn: async (input: { path: string; label: string }) => {
+    mutationFn: async (input: { path: string; label: string; kind?: 'discover' | 'sync' }) => {
       const operation = await apiRequest<OperationReference>(input.path, {
         method: 'POST',
         body: '{}',
       });
       message.loading({ content: `${input.label}已进入持久化队列`, key: 'repository-operation' });
-      await waitForOperation(operation.data);
-      return input.label;
+      const result = await waitForOperation(operation.data);
+      return { label: input.label, result };
     },
-    onSuccess: async (label) => {
+    onSuccess: async ({ label, result }, input) => {
       await queryClient.invalidateQueries({ queryKey: ['repositories'] });
-      message.success({ content: `${label}完成`, key: 'repository-operation' });
+      if (input.kind === 'discover' && isRepositoryDiscoveryResult(result)) {
+        setDiscoveryResult(result);
+        message.success({
+          content: summarizeRepositoryDiscovery(result),
+          key: 'repository-operation',
+        });
+      } else {
+        message.success({ content: `${label}完成`, key: 'repository-operation' });
+      }
+      await discoveryConfig.refetch();
     },
     onError: (error) => {
       message.error({ content: error.message, key: 'repository-operation' });
@@ -154,6 +186,28 @@ export function RepositoriesPage() {
   const data = repositories.data?.data ?? [];
   const confirmedCount = data.filter((item) => item.whitelistStatus === 'confirmed').length;
   const changedCount = data.filter((item) => item.whitelistStatus === 'needs_review').length;
+  const configuredDiscovery = discoveryConfig.data?.data;
+  const environmentLine = configuredDiscovery
+    ? repositoryPathEnvironmentLine(configuredDiscovery.configurationKey, desiredHostRoot)
+    : null;
+
+  const openDiscoveryConfiguration = () => {
+    setDesiredHostRoot(configuredDiscovery?.hostRoot ?? 'D:/company');
+    setDiscoveryModalOpen(true);
+  };
+
+  const copyConfiguration = async () => {
+    if (!environmentLine) {
+      message.error('路径不能为空，也不能包含换行或控制字符');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(environmentLine);
+      message.success('环境变量配置已复制');
+    } catch {
+      message.error('浏览器无法写入剪贴板，请手动复制配置内容');
+    }
+  };
 
   return (
     <Space direction="vertical" size="large" className="page-stack">
@@ -168,14 +222,8 @@ export function RepositoriesPage() {
           <Button icon={<PlusOutlined />} onClick={() => setProjectModalOpen(true)}>
             新建业务项目
           </Button>
-          <Button
-            icon={<FileSearchOutlined />}
-            loading={runOperation.isPending}
-            onClick={() =>
-              runOperation.mutate({ path: '/api/v1/projects/discover', label: '仓库发现' })
-            }
-          >
-            扫描允许根目录
+          <Button icon={<SettingOutlined />} onClick={openDiscoveryConfiguration}>
+            配置并扫描
           </Button>
           <Button
             type="primary"
@@ -190,6 +238,25 @@ export function RepositoriesPage() {
           </Button>
         </Space>
       </div>
+
+      <Alert
+        showIcon
+        type={configuredDiscovery?.status === 'ready' ? 'success' : 'warning'}
+        icon={<FolderOpenOutlined />}
+        message={
+          configuredDiscovery ? `扫描目录：${configuredDiscovery.hostRoot}` : '正在读取仓库扫描目录'
+        }
+        description={
+          configuredDiscovery
+            ? `${configuredDiscovery.statusMessage}；仅扫描一级子目录。容器内路径：${configuredDiscovery.configuredRoot}`
+            : '请稍候，系统正在检查目录挂载和访问权限。'
+        }
+        action={
+          <Button size="small" onClick={openDiscoveryConfiguration}>
+            查看配置
+          </Button>
+        }
+      />
 
       <div className="summary-grid">
         <Card>
@@ -346,11 +413,12 @@ export function RepositoriesPage() {
                     <BranchesOutlined />{' '}
                     {record.latestSnapshot?.detached
                       ? 'detached HEAD'
-                      : record.latestSnapshot?.branchName || 'unborn'}
+                      : record.latestSnapshot?.branchName || record.baselineBranch || '待首次刷新'}
                   </Typography.Text>
                   <Typography.Text type="secondary">
-                    ↑{record.latestSnapshot?.aheadCount ?? 0} ↓
-                    {record.latestSnapshot?.behindCount ?? 0}
+                    {record.latestSnapshot
+                      ? `↑${record.latestSnapshot.aheadCount} ↓${record.latestSnapshot.behindCount}`
+                      : '完整状态待刷新'}
                   </Typography.Text>
                 </Space>
               ),
@@ -358,22 +426,23 @@ export function RepositoriesPage() {
             {
               title: '工作区',
               key: 'workspace',
-              render: (_, record) => (
-                <Space wrap size={[4, 4]}>
-                  <Tag color={(record.latestSnapshot?.stagedCount ?? 0) > 0 ? 'blue' : 'default'}>
-                    暂存 {record.latestSnapshot?.stagedCount ?? 0}
-                  </Tag>
-                  <Tag
-                    color={(record.latestSnapshot?.unstagedCount ?? 0) > 0 ? 'orange' : 'default'}
-                  >
-                    修改 {record.latestSnapshot?.unstagedCount ?? 0}
-                  </Tag>
-                  <Tag>未跟踪 {record.latestSnapshot?.untrackedCount ?? 0}</Tag>
-                  {(record.latestSnapshot?.conflictedCount ?? 0) > 0 && (
-                    <Tag color="red">冲突 {record.latestSnapshot?.conflictedCount}</Tag>
-                  )}
-                </Space>
-              ),
+              render: (_, record) =>
+                record.latestSnapshot ? (
+                  <Space wrap size={[4, 4]}>
+                    <Tag color={record.latestSnapshot.stagedCount > 0 ? 'blue' : 'default'}>
+                      暂存 {record.latestSnapshot.stagedCount}
+                    </Tag>
+                    <Tag color={record.latestSnapshot.unstagedCount > 0 ? 'orange' : 'default'}>
+                      修改 {record.latestSnapshot.unstagedCount}
+                    </Tag>
+                    <Tag>未跟踪 {record.latestSnapshot.untrackedCount}</Tag>
+                    {record.latestSnapshot.conflictedCount > 0 && (
+                      <Tag color="red">冲突 {record.latestSnapshot.conflictedCount}</Tag>
+                    )}
+                  </Space>
+                ) : (
+                  <Tag color="gold">状态待刷新</Tag>
+                ),
             },
             {
               title: 'GitLab',
@@ -517,6 +586,123 @@ export function RepositoriesPage() {
           ]}
         />
       </Card>
+
+      <Modal
+        title="配置仓库扫描目录"
+        open={discoveryModalOpen}
+        width={760}
+        onCancel={() => setDiscoveryModalOpen(false)}
+        okText="开始扫描"
+        cancelText="关闭"
+        confirmLoading={runOperation.isPending}
+        okButtonProps={{ disabled: configuredDiscovery?.status !== 'ready' }}
+        onOk={() =>
+          runOperation.mutate({
+            path: '/api/v1/projects/discover',
+            label: '仓库发现',
+            kind: 'discover',
+          })
+        }
+      >
+        {configuredDiscovery ? (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Alert
+              showIcon
+              type={configuredDiscovery.status === 'ready' ? 'success' : 'warning'}
+              message={configuredDiscovery.statusMessage}
+              description={
+                configuredDiscovery.status === 'ready'
+                  ? '目录已经挂载且存在 Git 仓库候选，可以开始扫描。'
+                  : '请按下方配置修改路径并重建容器，然后点击“重新检查”。'
+              }
+            />
+            <Descriptions bordered size="small" column={2}>
+              <Descriptions.Item label="部署方式">
+                {configuredDiscovery.deploymentMode === 'docker' ? 'Docker' : '本机进程'}
+              </Descriptions.Item>
+              <Descriptions.Item label="扫描深度">仅一级子目录</Descriptions.Item>
+              <Descriptions.Item label="宿主机目录" span={2}>
+                <Typography.Text copyable>{configuredDiscovery.hostRoot}</Typography.Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="运行时目录" span={2}>
+                <Typography.Text code>{configuredDiscovery.configuredRoot}</Typography.Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="一级目录">
+                {configuredDiscovery.directoryCount}
+              </Descriptions.Item>
+              <Descriptions.Item label="Git 候选">
+                {configuredDiscovery.gitCandidateCount}
+              </Descriptions.Item>
+            </Descriptions>
+
+            <Divider plain>修改扫描目录</Divider>
+            <Typography.Text strong>新的宿主机仓库根目录</Typography.Text>
+            <Input
+              value={desiredHostRoot}
+              onChange={(event) => setDesiredHostRoot(event.target.value)}
+              placeholder="例如 D:/company"
+            />
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+              扫描根目录同时是 Git 写操作白名单。Docker bind mount
+              必须在容器启动前确定，网页不会挂载整块磁盘或访问任意目录。
+            </Typography.Paragraph>
+            {environmentLine && (
+              <Typography.Paragraph code copyable={{ text: environmentLine }}>
+                {environmentLine}
+              </Typography.Paragraph>
+            )}
+            <Space wrap>
+              <Button onClick={() => void copyConfiguration()}>复制环境变量</Button>
+              <Button
+                icon={<ReloadOutlined />}
+                loading={discoveryConfig.isFetching}
+                onClick={() => void discoveryConfig.refetch()}
+              >
+                重新检查
+              </Button>
+            </Space>
+            <Alert
+              type="info"
+              showIcon
+              message="保存到项目根目录 .env 后重建容器"
+              description={
+                <Typography.Text code>docker compose up -d --force-recreate</Typography.Text>
+              }
+            />
+
+            {discoveryResult && (
+              <>
+                <Divider plain>最近一次扫描结果</Divider>
+                <Alert
+                  type={discoveryResult.warnings.length > 0 ? 'warning' : 'success'}
+                  showIcon
+                  message={summarizeRepositoryDiscovery(discoveryResult)}
+                  description={`实际扫描根目录：${discoveryResult.root}`}
+                />
+                {discoveryResult.warnings.length > 0 && (
+                  <List
+                    size="small"
+                    bordered
+                    dataSource={discoveryResult.warnings.slice(0, 50)}
+                    renderItem={(warning) => (
+                      <List.Item>
+                        <Space direction="vertical" size={0}>
+                          <Typography.Text strong>{warning.directory}</Typography.Text>
+                          <Typography.Text type="secondary">
+                            {warning.code}：{warning.message}
+                          </Typography.Text>
+                        </Space>
+                      </List.Item>
+                    )}
+                  />
+                )}
+              </>
+            )}
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">正在读取扫描目录配置……</Typography.Text>
+        )}
+      </Modal>
 
       <Modal
         title="确认仓库白名单"

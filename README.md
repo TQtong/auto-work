@@ -21,12 +21,17 @@ docker compose ps
 docker compose logs --follow --tail=200 auto-work
 ```
 
+进入“项目与仓库”后，页面会直接显示宿主机仓库路径、容器内路径、可访问状态、一级目录数和 Git
+候选数。“配置并扫描”会给出可复制的环境变量及容器重建命令；配置正确时再启动后台扫描，并展示登记数量和逐项警告。
+Docker 的宿主机 bind mount 必须在容器启动前确定，因此修改路径后必须重新创建容器，不能只在网页中保存一个无效路径。
+
 默认部署具备以下完整运行能力：
 
 - 启动前自动、幂等执行全部 Prisma 迁移，迁移失败则拒绝启动；
 - Web 静态站点与 API 由同一容器提供，并带数据库/调度器就绪健康检查；
 - SQLite、备份、导出、诊断包、凭据密文和保险箱主密钥持久化到 `auto-work-data` 卷；
 - 宿主机仓库根目录挂载到容器 `/repositories`，Git 读写仍受应用固定动作和批准流程限制；
+- Windows 与 Linux 容器自动选择 `git.exe`/`git`，并只对当前已校验仓库声明精确 `safe.directory`；
 - 容器以非 root 用户运行，根文件系统只读，移除全部 Linux capabilities；
 - 容器内部监听 `0.0.0.0`，但 Compose 只把端口发布到宿主机 `127.0.0.1`，不开放局域网访问；
 - Linux/Docker 使用 AES-256-GCM 认证加密凭据，Windows 源码运行继续默认使用当前用户 DPAPI。

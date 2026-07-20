@@ -2,7 +2,7 @@
 
 ## 1. 功能边界
 
-本模块提供仓库发现、项目登记、本地状态采集、GitLab 只读元数据、受控 Git 写操作和批次结果管理。GitLab API 不替代本地 Git：工作区、Index、本地分支和真实写操作必须来自 `git.exe`；GitLab 提供远端平台视角。
+本模块提供仓库发现、项目登记、本地状态采集、GitLab 只读元数据、受控 Git 写操作和批次结果管理。GitLab API 不替代本地 Git：工作区、Index、本地分支和真实写操作必须来自平台 Git CLI（Windows 为 `git.exe`，Linux/macOS 为 `git`）；GitLab 提供远端平台视角。
 
 ## 2. 仓库发现
 
@@ -16,6 +16,10 @@
 6. 与已有 registry 按规范路径、仓库 identity 和 remote URL 匹配：同路径新 identity 进入 `needs_review`，不能继承旧白名单。
 7. 新仓库状态为 `discovered`；用户确认显示名、项目归属、remote 和基线后转 `confirmed`。
 8. 已登记但本次不存在的仓库标记 `missing`；不删除历史。
+9. 发现只完成身份读取和登记；完整 porcelain 工作区状态由独立刷新作业采集，避免大仓库超时抹掉已成功的发现结果。
+
+页面在扫描前读取只读配置状态，明确区分 Docker 宿主机 bind source 与容器内固定允许根。Web 输入只能生成启动配置和重建
+指引，不能要求应用容器自行控制 Docker daemon 或挂载任意宿主机路径。
 
 ### 2.2 URL 规范化
 
@@ -88,18 +92,18 @@
 
 ## 6. 结构化动作模型
 
-| 动作 | 必要参数 | 预检重点 | 成功判定 |
-|---|---|---|---|
-| fetch_prune | remote | 仓库/remote 可用、无活跃写锁 | fetch 退出 0，刷新远端引用 |
-| pull_ff_only | remote、branch | 工作区策略、当前分支、upstream、可快进 | `--ff-only` 成功且 HEAD 为预期后继 |
-| create_branch | branch、baseline | 分支名合法、不存在、基线可解析 | 新分支指向预检基线并 checkout |
-| checkout | target branch | 分支存在、切换不覆盖修改 | 当前分支为目标 |
-| push_set_upstream | remote、branch | 本地分支、远端冲突、非 force | upstream 建立且远端包含 SHA |
-| push | remote、refspec（受限） | upstream、非快进风险 | 普通 push 成功 |
-| stash_create | message、include_untracked | 有可 stash 修改、路径状态 | 产生新 stash OID |
-| stash_apply | stash OID | OID 存在、工作区影响/冲突风险 | apply 退出 0；冲突则 needs_review |
-| stage_paths | 明确路径列表 | 路径来自快照、仍在仓库 | Index 状态符合所选路径 |
-| commit | message、预期 staged 摘要 | staged 非空、HEAD/Index 未变、身份可用 | 新 Commit 产生，父为预检 HEAD |
+| 动作              | 必要参数                   | 预检重点                               | 成功判定                           |
+| ----------------- | -------------------------- | -------------------------------------- | ---------------------------------- |
+| fetch_prune       | remote                     | 仓库/remote 可用、无活跃写锁           | fetch 退出 0，刷新远端引用         |
+| pull_ff_only      | remote、branch             | 工作区策略、当前分支、upstream、可快进 | `--ff-only` 成功且 HEAD 为预期后继 |
+| create_branch     | branch、baseline           | 分支名合法、不存在、基线可解析         | 新分支指向预检基线并 checkout      |
+| checkout          | target branch              | 分支存在、切换不覆盖修改               | 当前分支为目标                     |
+| push_set_upstream | remote、branch             | 本地分支、远端冲突、非 force           | upstream 建立且远端包含 SHA        |
+| push              | remote、refspec（受限）    | upstream、非快进风险                   | 普通 push 成功                     |
+| stash_create      | message、include_untracked | 有可 stash 修改、路径状态              | 产生新 stash OID                   |
+| stash_apply       | stash OID                  | OID 存在、工作区影响/冲突风险          | apply 退出 0；冲突则 needs_review  |
+| stage_paths       | 明确路径列表               | 路径来自快照、仍在仓库                 | Index 状态符合所选路径             |
+| commit            | message、预期 staged 摘要  | staged 非空、HEAD/Index 未变、身份可用 | 新 Commit 产生，父为预检 HEAD      |
 
 命令语义必须固定：`fetch_prune` 等价于受控的 `git fetch <remote> --prune`；`pull_ff_only` 等价于 `git pull --ff-only`（可带已验证 remote/branch）；首次推送只允许普通 `git push --set-upstream`，后续只允许普通 `git push`。展示层可以用更易读的顺序显示选项，但 Worker 参数模板必须经过测试并保持同等安全语义。
 
