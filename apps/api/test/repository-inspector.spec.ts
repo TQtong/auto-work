@@ -68,6 +68,7 @@ describe.runIf(process.platform === 'win32')('仓库发现与只读状态', () =
     const config = await inspector.discoveryConfiguration();
     expect(config).toMatchObject({
       deploymentMode: 'native',
+      directoryPickerMode: 'native',
       configuredRoot: rootDirectory,
       hostRoot: rootDirectory,
       accessible: true,
@@ -99,6 +100,7 @@ describe.runIf(process.platform === 'win32')('仓库发现与只读状态', () =
 
     await expect(unavailable.discoveryConfiguration()).resolves.toMatchObject({
       deploymentMode: 'docker',
+      directoryPickerMode: 'browser_assisted',
       hostRoot: 'D:/company',
       accessible: false,
       status: 'unavailable',

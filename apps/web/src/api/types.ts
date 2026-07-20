@@ -749,6 +749,7 @@ export interface RepositoryView {
 
 export interface RepositoryDiscoveryConfiguration {
   deploymentMode: 'native' | 'docker';
+  directoryPickerMode: 'native' | 'browser_assisted';
   configuredRoot: string;
   hostRoot: string;
   configurationKey: 'AUTO_WORK_REPOSITORY_ROOT' | 'AUTO_WORK_REPOSITORY_PATH';
@@ -762,6 +763,9 @@ export interface RepositoryDiscoveryConfiguration {
   skippedEntryCount: number;
   detectedAt: string;
 }
+
+export type RepositoryDirectorySelection =
+  { status: 'selected'; path: string } | { status: 'cancelled'; path: null };
 
 export interface RepositoryDiscoveryWarning {
   directory: string;

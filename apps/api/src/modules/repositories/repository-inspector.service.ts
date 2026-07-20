@@ -11,6 +11,7 @@ import type {
   RepositoryDiscoveryConfiguration,
   RepositoryIdentity,
 } from './repository.types.js';
+import { repositoryDirectoryPickerMode } from './repository-directory-picker.service.js';
 
 @Injectable()
 export class RepositoryInspectorService {
@@ -39,6 +40,7 @@ export class RepositoryInspectorService {
     const detectedAt = new Date().toISOString();
     const base = {
       deploymentMode: this.deploymentMode,
+      directoryPickerMode: repositoryDirectoryPickerMode(this.deploymentMode, process.platform),
       configuredRoot: resolve(this.configuredRoot),
       hostRoot: this.configuredHostRoot,
       configurationKey:

@@ -32,6 +32,7 @@ import type {
   ProjectSummary,
   RepositoryDiscoveryConfiguration,
   RepositoryDiscoveryResult,
+  RepositoryDirectorySelection,
   RepositoryView,
 } from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
@@ -40,6 +41,10 @@ import {
   repositoryPathEnvironmentLine,
   summarizeRepositoryDiscovery,
 } from './repository-discovery-view-model.js';
+import {
+  type BrowserDirectoryPickerWindow,
+  selectBrowserDirectory,
+} from './repository-directory-picker.js';
 
 interface OperationReference {
   operationId: string;
@@ -70,6 +75,9 @@ export function RepositoriesPage() {
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [discoveryModalOpen, setDiscoveryModalOpen] = useState(false);
   const [desiredHostRoot, setDesiredHostRoot] = useState('');
+  const [browserSelectedDirectoryName, setBrowserSelectedDirectoryName] = useState<string | null>(
+    null,
+  );
   const [discoveryResult, setDiscoveryResult] = useState<RepositoryDiscoveryResult | null>(null);
   const [confirmForm] = Form.useForm<ConfirmValues>();
   const [projectForm] = Form.useForm<{ name: string; alias?: string; description?: string }>();
@@ -183,6 +191,22 @@ export function RepositoriesPage() {
     onError: (error) => message.error(error.message),
   });
 
+  const nativeDirectoryPicker = useMutation({
+    mutationFn: () =>
+      apiRequest<RepositoryDirectorySelection>('/api/v1/repositories/directory-picker', {
+        method: 'POST',
+        body: JSON.stringify({ initialPath: desiredHostRoot || undefined }),
+      }),
+    onSuccess: ({ data: selection }) => {
+      if (selection.status === 'selected') {
+        setDesiredHostRoot(selection.path);
+        setBrowserSelectedDirectoryName(null);
+        message.success('已回填所选目录的完整路径');
+      }
+    },
+    onError: (error) => message.error(error.message),
+  });
+
   const data = repositories.data?.data ?? [];
   const confirmedCount = data.filter((item) => item.whitelistStatus === 'confirmed').length;
   const changedCount = data.filter((item) => item.whitelistStatus === 'needs_review').length;
@@ -193,7 +217,42 @@ export function RepositoriesPage() {
 
   const openDiscoveryConfiguration = () => {
     setDesiredHostRoot(configuredDiscovery?.hostRoot ?? 'D:/company');
+    setBrowserSelectedDirectoryName(null);
     setDiscoveryModalOpen(true);
+  };
+
+  const chooseHostDirectory = async () => {
+    if (configuredDiscovery?.directoryPickerMode === 'native') {
+      nativeDirectoryPicker.mutate();
+      return;
+    }
+    try {
+      const selection = await selectBrowserDirectory(
+        window as unknown as BrowserDirectoryPickerWindow,
+      );
+      if (selection.status === 'cancelled') return;
+      if (selection.status === 'unsupported') {
+        Modal.info({
+          title: '当前浏览器不支持目录选择',
+          content:
+            '请使用最新版 Edge 或 Chrome，或者从资源管理器地址栏复制完整目录并粘贴到输入框。',
+        });
+        return;
+      }
+      setBrowserSelectedDirectoryName(selection.displayName);
+      if (selection.absolutePath) {
+        setDesiredHostRoot(selection.absolutePath);
+        message.success('已回填所选目录的完整路径');
+        return;
+      }
+      Modal.info({
+        title: `已选择目录“${selection.displayName}”`,
+        content:
+          '浏览器安全策略不允许网页读取该目录的绝对路径。请从资源管理器地址栏复制完整路径并粘贴到输入框；系统不会猜测磁盘位置。',
+      });
+    } catch {
+      message.error('目录选择器打开失败，请手工粘贴完整路径');
+    }
   };
 
   const copyConfiguration = async () => {
@@ -637,14 +696,35 @@ export function RepositoriesPage() {
 
             <Divider plain>修改扫描目录</Divider>
             <Typography.Text strong>新的宿主机仓库根目录</Typography.Text>
-            <Input
-              value={desiredHostRoot}
-              onChange={(event) => setDesiredHostRoot(event.target.value)}
-              placeholder="例如 D:/company"
-            />
+            <Space.Compact block>
+              <Input
+                value={desiredHostRoot}
+                onChange={(event) => {
+                  setDesiredHostRoot(event.target.value);
+                  setBrowserSelectedDirectoryName(null);
+                }}
+                placeholder="例如 D:/company"
+              />
+              <Button
+                icon={<FolderOpenOutlined />}
+                loading={nativeDirectoryPicker.isPending}
+                onClick={() => void chooseHostDirectory()}
+              >
+                选择目录
+              </Button>
+            </Space.Compact>
+            {browserSelectedDirectoryName && (
+              <Alert
+                type="warning"
+                showIcon
+                message={`浏览器已选择：${browserSelectedDirectoryName}`}
+                description="浏览器未提供绝对路径，请从资源管理器地址栏复制完整路径到上方输入框。"
+              />
+            )}
             <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
               扫描根目录同时是 Git 写操作白名单。Docker bind mount
-              必须在容器启动前确定，网页不会挂载整块磁盘或访问任意目录。
+              必须在容器启动前确定，网页不会挂载整块磁盘或访问任意目录。Docker
+              模式的目录按钮由浏览器打开系统选择器，标准浏览器可能不会返回绝对路径。
             </Typography.Paragraph>
             {environmentLine && (
               <Typography.Paragraph code copyable={{ text: environmentLine }}>

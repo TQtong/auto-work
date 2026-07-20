@@ -102,17 +102,18 @@ HTTP 语义：400 格式/规则、401 本机会话、403 安全策略、404 资�
 
 ### 4.2 查询与刷新
 
-| 方法与路径                           | 说明                                                                                 |
-| ------------------------------------ | ------------------------------------------------------------------------------------ |
-| GET `/projects`                      | 项目摘要，可按 archived/status 过滤                                                  |
-| GET `/projects/:id`                  | 项目、仓库、任务摘要                                                                 |
-| GET `/repositories`                  | 仓库中心读模型                                                                       |
-| GET `/repositories/discovery-config` | 扫描根目录只读状态：宿主机/运行时路径、访问性、一级目录和 Git 候选数、修改是否需重启 |
-| GET `/repositories/:id`              | 仓库、本地/GitLab 状态、刷新时间                                                     |
-| POST `/repositories/:id/sync`        | 刷新本地与可用远端元数据；202                                                        |
-| POST `/repositories/sync`            | 批量只读刷新；202                                                                    |
-| PUT `/repositories/:id`              | 更新别名、项目、基线等；需 version                                                   |
-| POST `/repositories/:id/disable`     | 移出可写白名单但保留历史                                                             |
+| 方法与路径                            | 说明                                                                                         |
+| ------------------------------------- | -------------------------------------------------------------------------------------------- |
+| GET `/projects`                       | 项目摘要，可按 archived/status 过滤                                                          |
+| GET `/projects/:id`                   | 项目、仓库、任务摘要                                                                         |
+| GET `/repositories`                   | 仓库中心读模型                                                                               |
+| GET `/repositories/discovery-config`  | 扫描根目录只读状态：宿主机/运行时路径、访问性、一级目录、Git 候选数、目录选择能力和重启要求  |
+| POST `/repositories/directory-picker` | 仅 Windows 本机进程打开原生目录窗口；返回 selected/绝对路径或 cancelled，Docker 返回稳定 409 |
+| GET `/repositories/:id`               | 仓库、本地/GitLab 状态、刷新时间                                                             |
+| POST `/repositories/:id/sync`         | 刷新本地与可用远端元数据；202                                                                |
+| POST `/repositories/sync`             | 批量只读刷新；202                                                                            |
+| PUT `/repositories/:id`               | 更新别名、项目、基线等；需 version                                                           |
+| POST `/repositories/:id/disable`      | 移出可写白名单但保留历史                                                                     |
 
 ## 5. Git 批次
 
