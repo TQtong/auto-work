@@ -1,13 +1,14 @@
 import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import type { IntegrationConnection, Prisma } from '@prisma/client';
 import { DomainError } from '@auto-work/contracts';
-import { requestHash } from '@auto-work/domain';
+import { newId, requestHash } from '@auto-work/domain';
 import type { CredentialVault } from '../../infrastructure/vault/credential-vault.js';
 import { CREDENTIAL_VAULT } from '../../infrastructure/vault/credential-vault.js';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import type { JobExecutionContext, JobHandler } from '../jobs/job-registry.service.js';
 import { JobRegistryService } from '../jobs/job-registry.service.js';
+import { JobQueueService } from '../jobs/job-queue.service.js';
 import { IntegrationProbeRegistry, type IntegrationType } from './integration-probe.registry.js';
 
 interface TestAuditContext {
@@ -30,6 +31,7 @@ export class IntegrationTestHandler implements JobHandler, OnModuleInit {
     private readonly probes: IntegrationProbeRegistry,
     @Inject(CREDENTIAL_VAULT) private readonly vault: CredentialVault,
     private readonly audit: AuditService,
+    private readonly queue: JobQueueService,
   ) {}
 
   public onModuleInit(): void {
@@ -77,6 +79,9 @@ export class IntegrationTestHandler implements JobHandler, OnModuleInit {
       });
       await this.recordResultAudit(tx, connection, result, auditContext);
     });
+    if (connection.type === 'jira' && result.healthy) {
+      await this.enqueueInitialJiraSync(connection.id, result.capabilities);
+    }
     return result;
   }
 
@@ -226,6 +231,57 @@ export class IntegrationTestHandler implements JobHandler, OnModuleInit {
       },
       clientSessionHash: context.clientSessionHash,
       ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+    });
+  }
+
+  private async enqueueInitialJiraSync(
+    connectionId: string,
+    capabilities: Record<string, unknown>,
+  ): Promise<void> {
+    const active = await this.prisma.job.findFirst({
+      where: {
+        dedupeKey: `jira.sync:${connectionId}:full`,
+        status: { in: ['queued', 'running'] },
+      },
+      select: { id: true },
+    });
+    if (active) return;
+    const configuredId = capabilities.automaticReadConfigVersionId;
+    const mapping =
+      typeof configuredId === 'string'
+        ? await this.prisma.fieldMappingVersion.findFirst({
+            where: { id: configuredId, connectionId },
+          })
+        : await this.prisma.fieldMappingVersion.findFirst({
+            where: { connectionId },
+            orderBy: { versionNo: 'desc' },
+          });
+    if (!mapping) {
+      throw new DomainError('JIRA_READ_CONFIG_REQUIRED', 'Jira 自动读取配置不存在', {
+        httpStatus: 409,
+      });
+    }
+    const request = { scope: 'full' as const };
+    const run = await this.prisma.jiraSyncRun.create({
+      data: {
+        id: newId(),
+        connectionId,
+        scope: request.scope,
+        trigger: 'automatic_after_connection',
+        status: 'queued',
+        mappingVersionId: mapping.id,
+        queryHash: requestHash(request),
+        requestJson: JSON.stringify(request),
+        startedAt: new Date(),
+      },
+    });
+    await this.queue.enqueue({
+      type: 'jira.sync',
+      payloadRef: run.id,
+      payloadSummary: { connectionId, scope: request.scope, runId: run.id },
+      priority: 35,
+      maxAttempts: 3,
+      dedupeKey: `jira.sync:${connectionId}:full`,
     });
   }
 }

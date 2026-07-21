@@ -9,8 +9,8 @@ import {
 } from '@auto-work/domain';
 import { z } from 'zod';
 
-export const weeklyAiPromptTemplateVersion = 'weekly-report-ai-prompt-v1';
-export const weeklyAiSanitizationPolicyVersion = 'weekly-report-ai-sanitization-v1';
+export const weeklyAiPromptTemplateVersion = 'weekly-report-ai-prompt-v2';
+export const weeklyAiSanitizationPolicyVersion = 'weekly-report-ai-sanitization-v2';
 export const weeklyAiMaximumRawOutputBytes = 2 * 1024 * 1024;
 
 export const weeklyAiFields = [
@@ -53,6 +53,7 @@ interface WeeklyAiValidationReference extends WeeklyAiStoredReference {
   dates: Set<string>;
   numbers: Set<string>;
   projectNames: Set<string>;
+  sourceTexts: Set<string>;
 }
 
 interface WeeklyAiSanitizedSource {
@@ -155,12 +156,15 @@ export function sanitizeWeeklyAiInput(
   const inputCategories = new Set<string>();
 
   for (const field of selectedFields) {
+    const baseText = input.baseFields[field].trim();
+    // AI 填写允许从空白周报开始；空栏位不是事实来源，直接跳过即可。
+    if (!baseText) continue;
     addSource(
       {
         refId: referenceId(),
         kind: 'base_field',
         field,
-        text: requireSafeText(input.baseFields[field], `baseFields.${field}`),
+        text: requireSafeText(baseText, `baseFields.${field}`),
       },
       field,
       field,
@@ -225,6 +229,17 @@ export function sanitizeWeeklyAiInput(
     inputCategories.add('manual_inputs');
   }
 
+  if (sources.length === 0) {
+    throw new DomainError(
+      'AI_SANITIZED_INPUT_EMPTY',
+      '没有可用于 AI 生成的白名单事实，请先同步任务或填写周报内容',
+      {
+        httpStatus: 422,
+        details: { policyVersion: weeklyAiSanitizationPolicyVersion },
+      },
+    );
+  }
+
   const sanitizedInput: WeeklyAiSanitizedInput = {
     policyVersion: weeklyAiSanitizationPolicyVersion,
     purpose: 'weekly_report',
@@ -269,6 +284,7 @@ export function sanitizeWeeklyAiInput(
       dates: extractDates(source),
       numbers: extractNumbers(source),
       projectNames: source.projectName ? new Set([normalizeFact(source.projectName)]) : new Set(),
+      sourceTexts: extractProjectSupportingTexts(source),
     });
   }
 }
@@ -282,6 +298,7 @@ export function buildWeeklyAiGenerationRequest(policy: WeeklyAiSanitizationResul
   const systemPrompt = [
     '你是本地周报的文字改写器，只能依据用户消息中的白名单事实改写，不能补充、推断或编造。',
     '每个段落必须给出至少一个 citations 引用；日期、数字、工单号和项目名必须被所引引用直接支持。',
+    'projectName 只能填写当前段落 citations 明确支持的项目名；没有项目依据时必须返回 null。',
     '不得输出动作、工具调用、代码、HTML、Markdown 代码块、源码、diff、凭证或附件内容。',
     '不要使用带数字的列表编号；无法可靠改写时，应忠实复述已引用的原文。',
     '只返回符合 JSON Schema 的 JSON，不得返回解释或代码围栏。',
@@ -355,11 +372,11 @@ export function validateWeeklyAiOutput(
       });
       if (
         paragraph.projectName &&
-        !cited.some((reference) =>
-          reference.projectNames.has(normalizeFact(paragraph.projectName!)),
-        )
+        !isProjectSupported(paragraph.projectName, cited)
       ) {
-        throw outputError('AI_OUTPUT_PROJECT_UNSUPPORTED', 'AI 输出中的项目名没有引用依据');
+        // projectName 只是展示分组元数据。模型偶尔会把其他段落的项目标签复制过来；
+        // 本地直接丢弃无依据标签，正文仍必须继续通过逐项事实与引用校验。
+        paragraph.projectName = null;
       }
       assertFactsSupported('issue', extractIssueKeys(paragraph.text), cited);
       assertFactsSupported('date', extractDates(paragraph.text), cited);
@@ -538,6 +555,26 @@ function extractNumbers(value: unknown): Set<string> {
     json.match(/(?<![\p{L}\p{N}_])\d+(?:\.\d+)?(?:\s*(?:小时|分钟|秒|天|个|项|次|%))?/gu) ?? [];
   return new Set(
     matches.map((fact) => normalizeFact(fact.replace(/(?:小时|分钟|秒|天|个|项|次|%)$/u, ''))),
+  );
+}
+
+function extractProjectSupportingTexts(source: WeeklyAiSanitizedSource): Set<string> {
+  return new Set(
+    [source.projectName, source.title, source.text]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map(normalizeFact),
+  );
+}
+
+function isProjectSupported(
+  projectName: string,
+  citations: WeeklyAiValidationReference[],
+): boolean {
+  const normalizedProjectName = normalizeFact(projectName);
+  return citations.some(
+    (citation) =>
+      citation.projectNames.has(normalizedProjectName) ||
+      [...citation.sourceTexts].some((text) => text.includes(normalizedProjectName)),
   );
 }
 

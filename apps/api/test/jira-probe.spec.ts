@@ -1,8 +1,8 @@
 import { DomainError } from '@auto-work/contracts';
 import { describe, expect, it, vi } from 'vitest';
-import type { PrismaService } from '../src/infrastructure/database/prisma.service.js';
 import type { IntegrationProbeRegistry } from '../src/modules/integrations/integration-probe.registry.js';
 import type { JiraApiClient } from '../src/modules/jira/jira-api.client.js';
+import type { JiraMappingService } from '../src/modules/jira/jira-mapping.service.js';
 import { JiraProbeService } from '../src/modules/jira/jira-probe.service.js';
 
 const target = {
@@ -14,7 +14,7 @@ const target = {
 };
 
 describe('Jira 能力探测', () => {
-  it('严格按身份、字段、项目、POST 搜索顺序探测并提示配置映射', async () => {
+  it('严格按身份、字段、项目、POST 搜索顺序探测并自动建立只读配置', async () => {
     const calls: string[] = [];
     const get = vi.fn((_base: string, _credential: unknown, path: string) => {
       calls.push(path);
@@ -55,28 +55,29 @@ describe('Jira 能力探测', () => {
     const service = new JiraProbeService(
       { register: vi.fn() } as unknown as IntegrationProbeRegistry,
       {
-        fieldMappingVersion: { findFirst: vi.fn().mockResolvedValue(null) },
-      } as unknown as PrismaService,
+        ensureAutomatic: vi.fn().mockResolvedValue({ id: 'auto-1', versionNo: 1 }),
+      } as unknown as JiraMappingService,
       { get, searchPage } as unknown as JiraApiClient,
     );
     const result = await service.probe(target);
 
     expect(calls).toEqual(['/myself', '/field', '/project', '/search:post', '/status']);
     expect(result).toMatchObject({
-      healthy: false,
-      status: 'configuration_required',
+      healthy: true,
+      status: 'healthy',
       identity: { id: 'u1', name: '当前用户' },
-      errorCode: 'JIRA_MAPPING_REQUIRED',
     });
     expect(result.capabilities).toMatchObject({
       authenticated: true,
       search: { post: true, selectedMethod: 'post' },
       sampleIssueCount: 1,
       readOnly: true,
+      taskScope: 'all_assigned_to_current_user',
+      automaticReadConfigVersionNo: 1,
     });
   });
 
-  it('POST search 不受支持时只回退一次 GET，已有映射后连接健康', async () => {
+  it('POST search 不受支持时只回退一次 GET，自动读取配置后连接健康', async () => {
     const get = vi.fn((_base: string, _credential: unknown, path: string) => {
       if (path === '/myself')
         return Promise.resolve({
@@ -93,10 +94,8 @@ describe('Jira 能力探测', () => {
     const service = new JiraProbeService(
       { register: vi.fn() } as unknown as IntegrationProbeRegistry,
       {
-        fieldMappingVersion: {
-          findFirst: vi.fn().mockResolvedValue({ id: 'mapping-1', versionNo: 1 }),
-        },
-      } as unknown as PrismaService,
+        ensureAutomatic: vi.fn().mockResolvedValue({ id: 'mapping-1', versionNo: 1 }),
+      } as unknown as JiraMappingService,
       { get, searchPage } as unknown as JiraApiClient,
     );
     const result = await service.probe(target);
@@ -106,7 +105,7 @@ describe('Jira 能力探测', () => {
     expect(result).toMatchObject({ healthy: true, status: 'healthy' });
     expect(result.capabilities).toMatchObject({
       search: { post: false, getFallback: true, selectedMethod: 'get' },
-      currentMappingVersionNo: 1,
+      automaticReadConfigVersionNo: 1,
     });
   });
 
@@ -145,8 +144,8 @@ describe('Jira 能力探测', () => {
     const service = new JiraProbeService(
       { register: vi.fn() } as unknown as IntegrationProbeRegistry,
       {
-        fieldMappingVersion: { findFirst: vi.fn().mockResolvedValue(null) },
-      } as unknown as PrismaService,
+        ensureAutomatic: vi.fn().mockResolvedValue({ id: 'auto-1', versionNo: 1 }),
+      } as unknown as JiraMappingService,
       { get, searchPage } as unknown as JiraApiClient,
     );
 
@@ -166,7 +165,7 @@ describe('Jira 能力探测', () => {
     for (const code of ['JIRA_CREDENTIAL_INVALID', 'JIRA_PERMISSION_DENIED']) {
       const service = new JiraProbeService(
         { register: vi.fn() } as unknown as IntegrationProbeRegistry,
-        {} as PrismaService,
+        {} as JiraMappingService,
         {
           get: vi.fn().mockRejectedValue(new DomainError(code, '访问失败')),
         } as unknown as JiraApiClient,

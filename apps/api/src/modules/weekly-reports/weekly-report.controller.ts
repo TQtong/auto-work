@@ -27,6 +27,7 @@ import {
   generateWeeklyReportSchema,
   listWeeklyReportsQuerySchema,
   notifyWeeklyReportGroupSchema,
+  notifyWeeklyReportTestGroupSchema,
   notifyWeeklyReportFailureSchema,
   reconcileWeeklyReportDeliverySchema,
   notifyWeeklyReportRiskSchema,
@@ -317,6 +318,24 @@ export class WeeklyReportController {
       { id, ...input },
       request,
       (recordId) => this.delivery.notifyGroup(id, input, this.context(request, recordId)),
+    );
+  }
+
+  @Post(':id/notifications/test-group')
+  @HttpCode(202)
+  public async notifyTestGroup(
+    @Param('id') id: string,
+    @Body() rawBody: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    const input = notifyWeeklyReportTestGroupSchema.parse(rawBody);
+    return this.mutate(
+      `/api/v1/weekly-reports/${id}/notifications/test-group`,
+      key,
+      { id, ...input },
+      request,
+      (recordId) => this.notifications.notifyTestReport(id, input, this.context(request, recordId)),
     );
   }
 

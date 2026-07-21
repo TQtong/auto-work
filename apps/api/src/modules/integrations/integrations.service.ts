@@ -109,6 +109,7 @@ export class IntegrationsService {
       ? this.validateCredential(input.type, input.credential)
       : undefined;
     let credentialRef: string | null = null;
+    let connectionPersisted = false;
     try {
       if (credential) credentialRef = await this.vault.put(JSON.stringify(credential));
       const connection = await this.prisma.integrationConnection.create({
@@ -130,8 +131,10 @@ export class IntegrationsService {
               : null,
           pendingCredentialCreatedAt:
             credential && input.type === 'dingtalk_robot' ? new Date() : null,
+          ...(input.type === 'jira' && credential ? { status: 'testing' } : {}),
         },
       });
+      connectionPersisted = true;
       await this.audit.record({
         actorId: this.sessions.currentProfileId,
         action: 'integration.created',
@@ -148,9 +151,30 @@ export class IntegrationsService {
         },
         clientSessionHash: this.security.sessionHash(context.sessionId),
       });
+      if (input.type === 'jira' && credentialRef) {
+        const testedCredentialFingerprint = requestHash({
+          connectionId: connection.id,
+          credentialRef,
+          configJson: connection.configJson,
+        });
+        await this.queue.enqueue({
+          type: 'integration.test',
+          payloadRef: connection.id,
+          payloadSummary: {
+            integrationType: 'jira',
+            integrationId: connection.id,
+            requestedBy: this.sessions.currentProfileId,
+            correlationId: context.correlationId,
+            clientSessionHash: this.security.sessionHash(context.sessionId),
+            automatic: true,
+          },
+          maxAttempts: 2,
+          dedupeKey: `integration.test:${connection.id}:${testedCredentialFingerprint}`,
+        });
+      }
       return this.toPublic(connection);
     } catch (error) {
-      if (credentialRef) await this.vault.delete(credentialRef);
+      if (credentialRef && !connectionPersisted) await this.vault.delete(credentialRef);
       throw error;
     }
   }

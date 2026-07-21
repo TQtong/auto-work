@@ -19,6 +19,7 @@ import {
   List,
   message,
   Modal,
+  Popconfirm,
   Select,
   Space,
   Table,
@@ -158,7 +159,7 @@ export function RepositoriesPage() {
       setConfirming(null);
       confirmForm.resetFields();
       await queryClient.invalidateQueries({ queryKey: ['repositories'] });
-      message.success('仓库已确认并加入白名单');
+      message.success('仓库配置已保存并启用');
     },
     onError: (error) => message.error(error.message),
   });
@@ -219,6 +220,20 @@ export function RepositoriesPage() {
     setDesiredHostRoot(configuredDiscovery?.hostRoot ?? 'D:/company');
     setBrowserSelectedDirectoryName(null);
     setDiscoveryModalOpen(true);
+  };
+
+  const openRepositoryConfiguration = (repository: RepositoryView) => {
+    confirmForm.resetFields();
+    setConfirming(repository);
+    const values: ConfirmValues = {
+      displayName: repository.displayName,
+      baselineBranch: repository.baselineBranch || repository.latestSnapshot?.branchName || 'main',
+    };
+    if (repository.alias) values.alias = repository.alias;
+    if (repository.project) values.projectId = repository.project.id;
+    if (repository.remoteName) values.remoteName = repository.remoteName;
+    if (repository.gitlabSummary) values.gitlabProjectRef = repository.gitlabSummary.id;
+    confirmForm.setFieldsValue(values);
   };
 
   const chooseHostDirectory = async () => {
@@ -594,50 +609,49 @@ export function RepositoriesPage() {
               key: 'actions',
               render: (_, record) => (
                 <Space wrap>
-                  {record.whitelistStatus !== 'confirmed' &&
-                    record.whitelistStatus !== 'disabled' && (
-                      <Button
-                        type="primary"
-                        size="small"
-                        onClick={() => {
-                          setConfirming(record);
-                          const values: ConfirmValues = {
-                            displayName: record.displayName,
-                            baselineBranch:
-                              record.baselineBranch || record.latestSnapshot?.branchName || 'main',
-                          };
-                          if (record.alias) values.alias = record.alias;
-                          if (record.project) values.projectId = record.project.id;
-                          if (record.remoteName) values.remoteName = record.remoteName;
-                          if (record.gitlabSummary)
-                            values.gitlabProjectRef = record.gitlabSummary.id;
-                          confirmForm.setFieldsValue(values);
-                        }}
-                      >
-                        确认
-                      </Button>
-                    )}
-                  <Button
-                    size="small"
-                    icon={<ReloadOutlined />}
-                    onClick={() =>
-                      runOperation.mutate({
-                        path: `/api/v1/repositories/${record.id}/sync`,
-                        label: `${record.displayName} 刷新`,
-                      })
-                    }
-                  >
-                    刷新
-                  </Button>
-                  {record.whitelistStatus === 'confirmed' && (
+                  {record.whitelistStatus !== 'missing' && (
                     <Button
-                      danger
+                      type={
+                        ['discovered', 'needs_review'].includes(record.whitelistStatus)
+                          ? 'primary'
+                          : 'default'
+                      }
                       size="small"
-                      loading={disableRepository.isPending}
-                      onClick={() => disableRepository.mutate(record)}
+                      onClick={() => openRepositoryConfiguration(record)}
                     >
-                      禁用
+                      {record.whitelistStatus === 'disabled'
+                        ? '重新启用'
+                        : record.whitelistStatus === 'confirmed'
+                          ? '配置'
+                          : '确认'}
                     </Button>
+                  )}
+                  {!['disabled', 'missing'].includes(record.whitelistStatus) && (
+                    <Button
+                      size="small"
+                      icon={<ReloadOutlined />}
+                      onClick={() =>
+                        runOperation.mutate({
+                          path: `/api/v1/repositories/${record.id}/sync`,
+                          label: `${record.displayName} 刷新`,
+                        })
+                      }
+                    >
+                      刷新
+                    </Button>
+                  )}
+                  {record.whitelistStatus === 'confirmed' && (
+                    <Popconfirm
+                      title="确认禁用这个仓库？"
+                      description="禁用后将移出可写白名单，但可以稍后重新启用并修改归属。"
+                      okText="禁用"
+                      cancelText="取消"
+                      onConfirm={() => disableRepository.mutate(record)}
+                    >
+                      <Button danger size="small" loading={disableRepository.isPending}>
+                        禁用
+                      </Button>
+                    </Popconfirm>
                   )}
                 </Space>
               ),
@@ -785,10 +799,19 @@ export function RepositoriesPage() {
       </Modal>
 
       <Modal
-        title="确认仓库白名单"
+        title={
+          confirming?.whitelistStatus === 'disabled'
+            ? '重新启用并配置仓库'
+            : confirming?.whitelistStatus === 'confirmed'
+              ? '配置仓库'
+              : '确认仓库白名单'
+        }
         open={Boolean(confirming)}
-        onCancel={() => setConfirming(null)}
-        okText="复核无误并确认"
+        onCancel={() => {
+          setConfirming(null);
+          confirmForm.resetFields();
+        }}
+        okText={confirming?.whitelistStatus === 'disabled' ? '保存并重新启用' : '保存配置'}
         confirmLoading={confirmRepository.isPending}
         onOk={() =>
           void confirmForm.validateFields().then((values) => confirmRepository.mutate(values))

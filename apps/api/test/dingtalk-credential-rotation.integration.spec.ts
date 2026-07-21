@@ -91,6 +91,7 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
       probes,
       vault,
       new AuditService(prisma as unknown as PrismaService),
+      { enqueue } as unknown as JobQueueService,
     );
     const prismaService = prisma as unknown as PrismaService;
     const sessions = { currentProfileId: 'local-user' } as SessionService;

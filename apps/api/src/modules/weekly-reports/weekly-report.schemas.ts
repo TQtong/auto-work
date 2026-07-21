@@ -237,6 +237,15 @@ export const notifyWeeklyReportGroupSchema = z
   })
   .strict();
 
+export const notifyWeeklyReportTestGroupSchema = z
+  .object({
+    versionId: z.string().trim().min(1).max(100),
+    robotConnectionId: z.string().trim().min(1).max(100),
+    reportVersion: z.number().int().positive(),
+    confirmSendTestReport: z.literal(true),
+  })
+  .strict();
+
 export const notifyWeeklyReportFailureSchema = z
   .object({
     robotConnectionId: z.string().trim().min(1).max(100),
@@ -354,6 +363,9 @@ export type AdoptWeeklyAiSuggestionInput = z.infer<typeof adoptWeeklyAiSuggestio
 export type RejectWeeklyAiSuggestionInput = z.infer<typeof rejectWeeklyAiSuggestionSchema>;
 export type SubmitWeeklyReportLogInput = z.infer<typeof submitWeeklyReportLogSchema>;
 export type NotifyWeeklyReportGroupInput = z.infer<typeof notifyWeeklyReportGroupSchema>;
+export type NotifyWeeklyReportTestGroupInput = z.infer<
+  typeof notifyWeeklyReportTestGroupSchema
+>;
 export type NotifyWeeklyReportFailureInput = z.infer<typeof notifyWeeklyReportFailureSchema>;
 export type NotifyWeeklyReportRiskInput = z.infer<typeof notifyWeeklyReportRiskSchema>;
 export type UpdateWeeklyReminderPolicyInput = z.infer<typeof updateWeeklyReminderPolicySchema>;

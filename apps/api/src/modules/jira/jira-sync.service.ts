@@ -76,7 +76,8 @@ export class JiraSyncService {
     >;
     const parserRules = JSON.parse(mapping.parserRulesJson) as Record<string, unknown>;
     const identity = this.identity(capabilities);
-    const cursorScope = `jira:${request.scope}`;
+    // 全量与后续每日增量共享同一个水位；否则首次增量会从纪元时间重新读取全部任务。
+    const cursorScope = `jira:${request.scope === 'incremental' ? 'full' : request.scope}`;
     const cursor = await this.prisma.syncCursor.upsert({
       where: { connectionId_scope: { connectionId: connection.id, scope: cursorScope } },
       create: { id: newId(), connectionId: connection.id, scope: cursorScope },

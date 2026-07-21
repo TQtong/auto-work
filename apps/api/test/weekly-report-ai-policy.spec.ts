@@ -117,6 +117,27 @@ describe('周报 AI 白名单净化与事实校验', () => {
     expect(request.estimatedInputTokens).toBeGreaterThan(0);
   });
 
+  it('允许空白周报栏位使用任务事实生成，不再把空栏位当作安全错误', () => {
+    const sanitized = sanitizeWeeklyAiInput(
+      input({ baseFields: { ...baseFields(), recentGoals: '   ' } }),
+    );
+
+    expect(sanitized.storedReferences).toHaveLength(1);
+    expect(sanitized.storedReferences[0]?.sourceType).toBe('task');
+    expect(sanitized.inputCategories).toEqual(['jira_metadata']);
+  });
+
+  it('没有任何可引用事实时给出明确的空输入错误', () => {
+    expect(() =>
+      sanitizeWeeklyAiInput(
+        input({
+          baseFields: { ...baseFields(), recentGoals: '' },
+          tasks: [],
+        }),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'AI_SANITIZED_INPUT_EMPTY' }));
+  });
+
   it('只接受被段落引用直接支持的工单号、日期、数字和项目名', () => {
     const sanitized = sanitizeWeeklyAiInput(input());
     const taskRef = sanitized.storedReferences.find((item) => item.sourceType === 'task')!.refId;
@@ -141,12 +162,35 @@ describe('周报 AI 白名单净化与事实校验', () => {
     expect(result.fieldTexts.weeklyWork).toBe('本周原始工作');
   });
 
+  it('接受引用正文中明确出现的项目名，即使来源没有独立 projectName 字段', () => {
+    const fields = { ...baseFields(), recentGoals: '推进凤凰平台的周报生成能力。' };
+    const sanitized = sanitizeWeeklyAiInput(input({ baseFields: fields, tasks: [] }));
+    const baseRef = sanitized.storedReferences[0]!.refId;
+    const raw = JSON.stringify({
+      fields: [
+        {
+          field: 'recentGoals',
+          paragraphs: [
+            {
+              projectName: '凤凰平台',
+              text: '推进凤凰平台的周报生成能力。',
+              citations: [baseRef],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(validateWeeklyAiOutput(raw, sanitized, fields).fieldTexts.recentGoals).toBe(
+      '推进凤凰平台的周报生成能力。',
+    );
+  });
+
   it.each([
     ['AI_OUTPUT_CITATION_UNKNOWN', { citations: ['ref_not_in_this_request'] }],
     ['AI_OUTPUT_NUMBER_UNSUPPORTED', { text: '推进 Alpha 项目 AW-12，已投入 3 小时。' }],
     ['AI_OUTPUT_ISSUE_UNSUPPORTED', { text: '推进 Alpha 项目 AW-999，已投入 2 小时。' }],
     ['AI_OUTPUT_DATE_UNSUPPORTED', { text: '推进 Alpha 项目 AW-12，截止 2027-01-01。' }],
-    ['AI_OUTPUT_PROJECT_UNSUPPORTED', { projectName: 'Imaginary' }],
     ['AI_OUTPUT_ACTIVE_CONTENT_REJECTED', { text: '<script>alert(1)</script>' }],
     [
       'AI_OUTPUT_SECURITY_BLOCKED',
@@ -173,6 +217,29 @@ describe('周报 AI 白名单净化与事实校验', () => {
     expect(() => validateWeeklyAiOutput(raw, sanitized, baseFields())).toThrowError(
       expect.objectContaining({ code }),
     );
+  });
+
+  it('清空无引用依据的项目标签，但保留通过事实校验的正文', () => {
+    const sanitized = sanitizeWeeklyAiInput(input());
+    const taskRef = sanitized.storedReferences.find((item) => item.sourceType === 'task')!.refId;
+    const raw = JSON.stringify({
+      fields: [
+        {
+          field: 'recentGoals',
+          paragraphs: [
+            {
+              projectName: 'Imaginary',
+              text: '推进 Alpha 项目 AW-12，已投入 2 小时。',
+              citations: [taskRef],
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = validateWeeklyAiOutput(raw, sanitized, baseFields());
+    expect(result.fields[0]?.paragraphs[0]?.projectName).toBeNull();
+    expect(result.fieldTexts.recentGoals).toBe('推进 Alpha 项目 AW-12，已投入 2 小时。');
   });
 
   it('拒绝字段缺失、重复和额外动作结构', () => {

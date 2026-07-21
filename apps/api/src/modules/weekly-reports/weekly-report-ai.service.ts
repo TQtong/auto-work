@@ -34,6 +34,11 @@ import {
   type WeeklyAiValidatedOutput,
 } from './weekly-report-ai.policy.js';
 
+const weeklyAiTransactionOptions = {
+  maxWait: 10_000,
+  timeout: 30_000,
+} as const;
+
 interface MutationContext {
   correlationId: string;
   sessionId: string;
@@ -449,7 +454,7 @@ export class WeeklyReportAiService {
       };
       await this.completeIdempotency(tx, context.idempotencyRecordId, response);
       return response;
-    });
+    }, weeklyAiTransactionOptions);
   }
 
   public async reject(
@@ -504,7 +509,7 @@ export class WeeklyReportAiService {
       };
       await this.completeIdempotency(tx, context.idempotencyRecordId, response);
       return response;
-    });
+    }, weeklyAiTransactionOptions);
   }
 
   private async persistSuggestion(
@@ -521,8 +526,11 @@ export class WeeklyReportAiService {
     },
     context: MutationContext,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    let persistenceStage = 'transaction_start';
+    try {
+      return await this.prisma.$transaction(async (tx) => {
       // 这里只预留聚合版本并创建独立建议；当前正文指针必须保持在人工核对前的基线。
+      persistenceStage = 'reserve_report_version';
       const reserved = await tx.weeklyReport.updateMany({
         where: {
           id: attempt.reportId,
@@ -535,6 +543,7 @@ export class WeeklyReportAiService {
       });
       if (reserved.count !== 1) this.throwBaseChanged();
 
+      persistenceStage = 'create_generation_record';
       const generation = await tx.aiGeneration.create({
         data: {
           ...this.generationBaseData(attempt),
@@ -553,6 +562,7 @@ export class WeeklyReportAiService {
           completedAt: new Date(),
         },
       });
+      persistenceStage = 'read_latest_version';
       const latest = await tx.weeklyReportVersion.aggregate({
         where: { reportId: attempt.reportId },
         _max: { versionNo: true },
@@ -579,6 +589,7 @@ export class WeeklyReportAiService {
         scheduleAt: base.scheduleAt?.toISOString() ?? null,
         sourceSnapshotId: base.sourceSnapshotId,
       });
+      persistenceStage = 'create_suggestion_version';
       const suggestion = await tx.weeklyReportVersion.create({
         data: {
           id: newId(),
@@ -612,6 +623,7 @@ export class WeeklyReportAiService {
           createdBy: this.sessions.currentProfileId,
         },
       });
+      persistenceStage = 'create_suggestion_links';
       await this.createSuggestionLinks(
         tx,
         base,
@@ -620,6 +632,7 @@ export class WeeklyReportAiService {
         structured.blocks,
         attempt.policy!,
       );
+      persistenceStage = 'write_audit_event';
       await this.audit.recordInTransaction(tx, {
         actorId: this.sessions.currentProfileId,
         action: 'weekly_report.ai_suggestion_created',
@@ -639,6 +652,7 @@ export class WeeklyReportAiService {
         },
         clientSessionHash: this.security.sessionHash(context.sessionId),
       });
+      persistenceStage = 'read_persisted_generation';
       const fullGeneration = await tx.aiGeneration.findUniqueOrThrow({
         where: { id: generation.id },
         include: { generatedVersions: true },
@@ -654,9 +668,25 @@ export class WeeklyReportAiService {
           version: attempt.baseReportVersion + 1,
         },
       };
+      persistenceStage = 'complete_idempotency';
       await this.completeIdempotency(tx, context.idempotencyRecordId, response);
       return response;
-    });
+      }, weeklyAiTransactionOptions);
+    } catch (error) {
+      throw new DomainError(
+        'AI_SUGGESTION_PERSIST_FAILED',
+        `AI 建议已生成，但保存建议版本失败（${persistenceStage}）`,
+        {
+          httpStatus: 500,
+          details: {
+            stage: persistenceStage,
+            errorClass: error instanceof Error ? error.name : typeof error,
+          },
+          retryable: true,
+          suggestedAction: 'manual_review',
+        },
+      );
+    }
   }
 
   private async recordNonSuccess(
@@ -729,7 +759,7 @@ export class WeeklyReportAiService {
       };
       await this.completeIdempotency(tx, context.idempotencyRecordId, response);
       return response;
-    });
+    }, weeklyAiTransactionOptions);
   }
 
   private generationBaseData(attempt: GenerationAttemptFacts) {
@@ -830,16 +860,21 @@ export class WeeklyReportAiService {
     for (const [blockId, block] of blocks) {
       for (const citation of block.citations) {
         const reference = references.get(citation)!;
+        // report_source_link 的历史数据库约束只允许 task/evidence/manual。
+        // 周报原正文属于本地人工事实，在持久化引用图中按 manual 保存；
+        // aiRefId 与原始 sourceType 仍保留在摘要中供诊断和审计。
+        const persistedSourceType =
+          reference.sourceType === 'base_field' ? 'manual' : reference.sourceType;
         data.push({
           id: newId(),
           snapshotId: base.sourceSnapshotId,
           versionId: suggestionVersionId,
           fieldName: block.field,
           blockId,
-          sourceType: reference.sourceType,
+          sourceType: persistedSourceType,
           sourceId: reference.sourceId,
-          taskId: reference.sourceType === 'task' ? reference.sourceId : null,
-          evidenceId: reference.sourceType === 'evidence' ? reference.sourceId : null,
+          taskId: persistedSourceType === 'task' ? reference.sourceId : null,
+          evidenceId: persistedSourceType === 'evidence' ? reference.sourceId : null,
           sourceContentHash: reference.contentHash,
           sourceSummaryJson: JSON.stringify({
             aiRefId: reference.refId,

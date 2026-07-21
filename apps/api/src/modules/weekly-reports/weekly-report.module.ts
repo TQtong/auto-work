@@ -14,6 +14,7 @@ import { WeeklyReportNotificationHandler } from './weekly-report-notification.ha
 import { WeeklyReportNotificationService } from './weekly-report-notification.service.js';
 import { WeeklyReportReminderPolicyService } from './weekly-report-reminder-policy.service.js';
 import { WeeklyReportReminderSchedulerService } from './weekly-report-reminder-scheduler.service.js';
+import { WeeklyReportAutomaticDraftService } from './weekly-report-automatic-draft.service.js';
 
 @Module({
   imports: [AiModule, DingTalkModule],
@@ -30,6 +31,7 @@ import { WeeklyReportReminderSchedulerService } from './weekly-report-reminder-s
     WeeklyReportNotificationService,
     WeeklyReportReminderPolicyService,
     WeeklyReportReminderSchedulerService,
+    WeeklyReportAutomaticDraftService,
     WeeklyReportDeliveryHandler,
   ],
   exports: [WeeklyReportService],

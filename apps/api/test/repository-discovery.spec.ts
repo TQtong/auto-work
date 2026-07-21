@@ -76,4 +76,107 @@ describe('仓库发现与状态采集解耦', () => {
     expect(result.warnings).toEqual([]);
     expect(collectStatus).not.toHaveBeenCalled();
   });
+
+  it('重新扫描到曾经缺失的仓库时恢复为待确认状态并清除缺失原因', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'auto-work-discovery-restored-'));
+    temporaryDirectories.push(root);
+    const repositoryPath = join(root, '重新出现的仓库');
+    await mkdir(repositoryPath);
+    const missingRepository = {
+      id: 'repository-restored',
+      canonicalPath: repositoryPath,
+      realPathHash: 'real-path-hash',
+      identityHash: 'identity-hash',
+      displayName: '重新出现的仓库',
+      alias: null,
+      gitDirKind: 'normal',
+      remoteName: null,
+      remoteUrl: null,
+      remoteProtocol: null,
+      remoteHost: null,
+      remotePort: null,
+      remotePath: null,
+      gitlabConnectionId: null,
+      gitlabProjectRef: null,
+      baselineBranch: 'main',
+      whitelistStatus: 'missing',
+      statusReason: '本次一级目录扫描未发现该仓库',
+      lastSeenAt: new Date('2026-07-20T00:00:00.000Z'),
+      lastLocalRefreshAt: null,
+      version: 1,
+    };
+    const restoredRepository = {
+      ...missingRepository,
+      whitelistStatus: 'discovered',
+      statusReason: null,
+      version: 2,
+      lastSeenAt: new Date(),
+    };
+    const inspector = {
+      canonicalRoot: vi.fn().mockResolvedValue(root),
+      inspect: vi.fn().mockResolvedValue({
+        canonicalPath: repositoryPath,
+        realPathHash: 'real-path-hash',
+        identityHash: 'identity-hash',
+        displayName: '重新出现的仓库',
+        gitDirKind: 'normal',
+        headSha: 'a'.repeat(40),
+        branchName: 'main',
+        unborn: false,
+        defaultRemote: null,
+        remotes: [],
+      }),
+    } as unknown as RepositoryInspectorService;
+    const update = vi.fn((input: unknown) => {
+      void input;
+      return Promise.resolve(restoredRepository);
+    });
+    const prisma = {
+      repository: {
+        findUnique: vi.fn().mockResolvedValue(missingRepository),
+        update,
+        findMany: vi.fn().mockResolvedValue([restoredRepository]),
+      },
+    } as unknown as PrismaService;
+
+    const result = await new RepositoryService(prisma, inspector).discover(true);
+
+    expect(update).toHaveBeenCalledOnce();
+    expect(update.mock.calls[0]?.[0]).toMatchObject({
+      where: { id: 'repository-restored' },
+      data: {
+        whitelistStatus: 'discovered',
+        statusReason: null,
+        version: { increment: 1 },
+      },
+    });
+    expect(result.repositories[0]).toMatchObject({
+      whitelistStatus: 'discovered',
+      statusReason: null,
+      version: 2,
+    });
+  });
+
+  it('缺失仓库不能确认，且不会继续访问不存在的路径', async () => {
+    const inspect = vi.fn();
+    const inspector = { inspect } as unknown as RepositoryInspectorService;
+    const prisma = {
+      repository: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 'repository-missing',
+          canonicalPath: 'D:\\repositories\\missing',
+          whitelistStatus: 'missing',
+        }),
+      },
+    } as unknown as PrismaService;
+
+    await expect(
+      new RepositoryService(prisma, inspector).confirm('repository-missing', {
+        displayName: 'missing',
+        baselineBranch: 'main',
+        discoverySnapshotVersion: 1,
+      }),
+    ).rejects.toMatchObject({ code: 'REPOSITORY_PATH_UNAVAILABLE' });
+    expect(inspect).not.toHaveBeenCalled();
+  });
 });

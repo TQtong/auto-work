@@ -1,11 +1,25 @@
 import { Injectable } from '@nestjs/common';
 import { lookup } from 'node:dns/promises';
+import type { LookupAddress } from 'node:dns';
 import { request } from 'node:https';
 import type { LookupFunction } from 'node:net';
 import { DomainError } from '@auto-work/contracts';
 import { isAddressAllowed } from '@auto-work/domain';
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+export function createPinnedLookup(selected: LookupAddress): LookupFunction {
+  return (_hostname, options, callback) => {
+    // Node 20+ may request all addresses while auto-selecting an IP family. In that mode the
+    // lookup callback must return an array; returning the legacy address/family pair makes
+    // node:net read `address.address` from a string and fail with ERR_INVALID_IP_ADDRESS.
+    if (options.all) {
+      callback(null, [{ address: selected.address, family: selected.family }]);
+      return;
+    }
+    callback(null, selected.address, selected.family);
+  };
+}
 
 export interface SecureHttpResponse {
   status: number;
@@ -70,9 +84,7 @@ export class SecureHttpService {
       });
     }
     const selected = addresses[0]!;
-    const pinnedLookup: LookupFunction = (_hostname, _options, callback) => {
-      callback(null, selected.address, selected.family);
-    };
+    const pinnedLookup = createPinnedLookup(selected);
 
     return new Promise((resolvePromise, reject) => {
       let settled = false;

@@ -28,11 +28,29 @@ export function buildJiraQuery(input: JiraQueryInput): string {
     }
     case 'incremental': {
       const floor = input.updatedFloor ?? new Date(0);
-      return `assignee = currentUser() AND updated >= "${floor.toISOString()}" ORDER BY updated ASC, key ASC`;
+      return `assignee = currentUser() AND updated >= "${jiraDateTime(floor)}" ORDER BY updated ASC, key ASC`;
     }
     case 'full':
       return 'assignee = currentUser() ORDER BY updated ASC, key ASC';
   }
+}
+
+function jiraDateTime(value: Date): string {
+  // Jira JQL 接受 yyyy-MM-dd HH:mm；ISO 8601 的 T、毫秒和 Z 在部分 Server/DC 版本会被拒绝。
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(value)
+      .map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
 function assertBusinessDate(value: string | undefined, label: string): string {

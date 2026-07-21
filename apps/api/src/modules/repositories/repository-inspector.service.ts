@@ -135,7 +135,15 @@ export class RepositoryInspectorService {
 
   public async inspect(candidatePath: string, rootPath?: string): Promise<RepositoryIdentity> {
     const root = rootPath ?? (await this.canonicalRoot());
-    const candidate = resolve(await realpath(candidatePath));
+    const candidate = resolve(
+      await realpath(candidatePath).catch(() => {
+        throw new DomainError(
+          'REPOSITORY_PATH_UNAVAILABLE',
+          '仓库目录不存在或当前进程无权访问，请检查扫描目录后重新扫描',
+          { httpStatus: 409, suggestedAction: 'refresh' },
+        );
+      }),
+    );
     this.assertDirectChild(root, candidate);
     const gitMarker = resolve(candidate, '.git');
     const markerStat = await lstat(gitMarker).catch(() => null);

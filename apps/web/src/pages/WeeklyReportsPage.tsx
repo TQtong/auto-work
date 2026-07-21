@@ -4,6 +4,7 @@ import {
   DiffOutlined,
   DownloadOutlined,
   ExclamationCircleOutlined,
+  ExperimentOutlined,
   FileAddOutlined,
   HistoryOutlined,
   PaperClipOutlined,
@@ -49,7 +50,7 @@ import type { UploadProps } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ApiClientError, apiRequest } from '../api/client.js';
+import { ApiClientError, apiRequest, type ApiEnvelope } from '../api/client.js';
 import type {
   DingTalkRecipientValidation,
   DingTalkTemplateMappingHistory,
@@ -238,6 +239,7 @@ export function WeeklyReportsPage() {
   const [confirmedEditingUnlocked, setConfirmedEditingUnlocked] = useState(false);
   const [redoStack, setRedoStack] = useState<string[]>([]);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const locallySavedVersionId = useRef<string | null>(null);
 
   const reports = useQuery({
     queryKey: ['weekly-reports'],
@@ -424,6 +426,49 @@ export function WeeklyReportsPage() {
     ]);
   };
 
+  const applyLocalEditResult = (response: ApiEnvelope<ReportMutationResult>) => {
+    const updatedReport = response.data.report;
+    const updatedVersion = response.data.version;
+    locallySavedVersionId.current = updatedVersion.id;
+    queryClient.setQueryData<ApiEnvelope<WeeklyReport>>(
+      ['weekly-report', updatedReport.id],
+      (cached) => ({
+        data: updatedReport,
+        meta: cached?.meta ?? response.meta,
+      }),
+    );
+    queryClient.setQueryData<ApiEnvelope<WeeklyReportVersion>>(
+      ['weekly-report-version', updatedReport.id, updatedVersion.id],
+      { data: updatedVersion, meta: response.meta },
+    );
+    queryClient.setQueryData<ApiEnvelope<WeeklyReportVersionSummary[]>>(
+      ['weekly-report-versions', updatedReport.id],
+      (cached) =>
+        cached
+          ? {
+              ...cached,
+              data: [
+                updatedVersion,
+                ...cached.data.filter((item) => item.id !== updatedVersion.id),
+              ],
+            }
+          : cached,
+    );
+    queryClient.setQueryData<ApiEnvelope<WeeklyReportList>>(['weekly-reports'], (cached) =>
+      cached
+        ? {
+            ...cached,
+            data: {
+              ...cached.data,
+              items: cached.data.items.map((item) =>
+                item.id === updatedReport.id ? updatedReport : item,
+              ),
+            },
+          }
+        : cached,
+    );
+  };
+
   const editMutation = useMutation({
     mutationFn: (action: EditAction) =>
       apiRequest<ReportMutationResult>(`/api/v1/weekly-reports/${action.reportId}`, {
@@ -449,15 +494,23 @@ export function WeeklyReportsPage() {
     },
     onSuccess: async (response, action) => {
       if (action.source !== 'autosave') setRedoStack([]);
+      if (action.source === 'autosave' || action.source === 'manual') {
+        const hasNewerInput = action.fields
+          ? !sameWeeklyFields(editorFields(form.getFieldsValue()), action.fields)
+          : false;
+        applyLocalEditResult(response);
+        setDirty(hasNewerInput);
+        setAutosaveState(hasNewerInput ? 'dirty' : 'saved');
+        if (action.source === 'manual' && !response.data.replayed) {
+          void messageApi.success(`已创建 v${response.data.version.versionNo}`);
+        }
+        return;
+      }
       setDirty(false);
       setAutosaveState('saved');
       await invalidateReport(action.reportId);
       if (!response.data.replayed) {
-        void messageApi.success(
-          action.source === 'autosave'
-            ? `已自动保存为 v${response.data.version.versionNo}`
-            : `已创建 v${response.data.version.versionNo}`,
-        );
+        void messageApi.success(`已创建 v${response.data.version.versionNo}`);
       }
     },
     onError: (error: Error) => {
@@ -597,6 +650,37 @@ export function WeeklyReportsPage() {
       await invalidateReport(response.data.intent.reportId);
       void messageApi.success(
         response.data.replayed ? '已返回原群通知意图，不会重复发送' : '群摘要通知已进入受控队列',
+      );
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+
+  const testNotifyGroupMutation = useMutation({
+    mutationFn: (input: {
+      reportId: string;
+      versionId: string;
+      robotConnectionId: string;
+      reportVersion: number;
+    }) =>
+      apiRequest<NotificationRequestResult>(
+        `/api/v1/weekly-reports/${input.reportId}/notifications/test-group`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey('weekly-test-notify-group') },
+          body: JSON.stringify({
+            versionId: input.versionId,
+            robotConnectionId: input.robotConnectionId,
+            reportVersion: input.reportVersion,
+            confirmSendTestReport: true,
+          }),
+        },
+      ),
+    onSuccess: async (response, input) => {
+      await invalidateReport(input.reportId);
+      void messageApi.success(
+        response.data.disposition === 'created'
+          ? '当前周报测试消息已进入群机器人发送队列'
+          : '同一次测试请求已经存在，不会重复发送',
       );
     },
     onError: (error: Error) => void messageApi.error(error.message),
@@ -784,6 +868,7 @@ export function WeeklyReportsPage() {
       baseVersionId: string;
       reportVersion: number;
       values: AiSuggestionFormValues;
+      mode: 'suggestion' | 'fill';
     }) =>
       apiRequest<WeeklyAiSuggestionResult>(
         `/api/v1/weekly-reports/${input.reportId}/ai-suggestions`,
@@ -803,7 +888,7 @@ export function WeeklyReportsPage() {
           }),
         },
       ),
-    onSuccess: async (response) => {
+    onSuccess: async (response, input) => {
       setSelectedAiGenerationId(response.data.generation.id);
       if (response.data.report) await invalidateReport(response.data.report.id);
       else if (response.data.generation.reportId) {
@@ -813,7 +898,7 @@ export function WeeklyReportsPage() {
         void messageApi.warning(
           `AI 未改变正文，已回退当前版本：${response.data.fallbackReasonCode ?? '未知原因'}`,
         );
-      } else {
+      } else if (input.mode === 'suggestion') {
         void messageApi.success(
           `已生成独立 AI 建议 v${response.data.suggestionVersion?.versionNo ?? '—'}，需人工比较后采纳`,
         );
@@ -830,6 +915,7 @@ export function WeeklyReportsPage() {
       baseVersionId: string;
       reportVersion: number;
       decisionReason: string;
+      uiSource?: 'manual' | 'auto_fill';
     }) =>
       apiRequest<AiDecisionResult>(
         `/api/v1/weekly-reports/${input.reportId}/ai-generations/${input.generationId}/adopt`,
@@ -844,12 +930,19 @@ export function WeeklyReportsPage() {
           }),
         },
       ),
-    onSuccess: async (response) => {
+    onSuccess: async (response, input) => {
       if (response.data.report) await invalidateReport(response.data.report.id);
       setSelectedAiGenerationId(response.data.generation.id);
-      void messageApi.success(
-        `已人工采纳为 v${response.data.adoptedVersion?.versionNo ?? '—'}；AI 原建议仍完整保留`,
-      );
+      if (input.uiSource === 'auto_fill') {
+        setAiOpen(false);
+        void messageApi.success(
+          `AI 已填写周报并保存为 v${response.data.adoptedVersion?.versionNo ?? '—'}`,
+        );
+      } else {
+        void messageApi.success(
+          `已人工采纳为 v${response.data.adoptedVersion?.versionNo ?? '—'}；AI 原建议仍完整保留`,
+        );
+      }
     },
     onError: (error: Error) => void messageApi.error(error.message),
   });
@@ -873,6 +966,59 @@ export function WeeklyReportsPage() {
     },
     onError: (error: Error) => void messageApi.error(error.message),
   });
+
+  const fillReportWithAi = async () => {
+    if (!report || !version) return;
+    try {
+      const values = await aiForm.validateFields();
+      const suggested = await aiSuggestionMutation.mutateAsync({
+        reportId: report.id,
+        baseVersionId: version.id,
+        reportVersion: report.version,
+        values,
+        mode: 'fill',
+      });
+      const suggestionVersion = suggested.data.suggestionVersion;
+      const suggestionReport = suggested.data.report;
+      if (suggested.data.fallback || !suggestionVersion || !suggestionReport) return;
+      await adoptAiMutation.mutateAsync({
+        reportId: report.id,
+        generationId: suggested.data.generation.id,
+        suggestionVersionId: suggestionVersion.id,
+        baseVersionId: suggestionReport.currentVersionId,
+        reportVersion: suggestionReport.version,
+        decisionReason: '测试操作：AI 自动填写当前周报',
+        uiSource: 'auto_fill',
+      });
+    } catch {
+      // Form validation renders inline errors; request mutations surface their own API messages.
+    }
+  };
+
+  const loadWeeklyAiTestData = async () => {
+    if (!report || !version) return;
+    const fields = {
+      reportDate: version.fields.reportDate,
+      ...weeklyAiTestFields,
+    };
+    form.setFieldsValue({
+      reportDate: dayjs(version.fields.reportDate),
+      ...weeklyAiTestFields,
+    });
+    try {
+      await editMutation.mutateAsync({
+        reportId: report.id,
+        baseVersionId: version.id,
+        reportVersion: report.version,
+        fields,
+        changeReason: '测试数据：周报 AI 全流程基线',
+        source: 'manual',
+      });
+      void messageApi.success('已填入明确标识的 AI 全流程测试数据，现在可以真实生成并填入');
+    } catch {
+      // editMutation 已显示具体错误，并保留表单中的测试数据供人工重试。
+    }
+  };
 
   useEffect(() => {
     const healthy = aiConnections.find((connection) => connection.status === 'healthy');
@@ -912,6 +1058,10 @@ export function WeeklyReportsPage() {
 
   useEffect(() => {
     if (!version) return;
+    if (locallySavedVersionId.current === version.id) {
+      locallySavedVersionId.current = null;
+      return;
+    }
     form.setFieldsValue({
       reportDate: dayjs(version.fields.reportDate),
       recentGoals: version.fields.recentGoals,
@@ -936,6 +1086,8 @@ export function WeeklyReportsPage() {
 
   useEffect(() => {
     if (!dirty || !report || !version || editMutation.isPending) return;
+    // 保存失败/冲突后保留未保存内容，但不循环重试；用户再次编辑会把状态改回 dirty。
+    if (autosaveState === 'error' || autosaveState === 'conflict') return;
     if (report.status === 'confirmed' && !confirmedEditingUnlocked) return;
     if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
     // 自动保存也创建不可变版本；基准版本和聚合版本共同防止覆盖其他窗口的修改。
@@ -953,7 +1105,15 @@ export function WeeklyReportsPage() {
     return () => {
       if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
     };
-  }, [dirty, report, version, editMutation.isPending, confirmedEditingUnlocked, form]);
+  }, [
+    dirty,
+    report,
+    version,
+    editMutation.isPending,
+    autosaveState,
+    confirmedEditingUnlocked,
+    form,
+  ]);
 
   const gate =
     report && version
@@ -1017,6 +1177,13 @@ export function WeeklyReportsPage() {
     report.logDeliveryState !== 'submitted' ||
     !selectedRobotConnectionId ||
     Boolean(selectedRobotIntent);
+  const testRobotNotificationBlocked =
+    !report ||
+    !version ||
+    !selectedRobotConnectionId ||
+    dirty ||
+    autosaveState === 'saving' ||
+    editMutation.isPending;
   const failureNotificationBlocked =
     !report || !canNotifyFormalLogFailure(logIntent) || !selectedRobotConnectionId;
   const riskNotificationBlocked =
@@ -1275,7 +1442,9 @@ export function WeeklyReportsPage() {
             message="群消息只发送交付摘要"
             description="仅包含周期、报告日期、状态、最多三个项目名和正式日志 ID；不会发送六字段全文、附件、凭证或 localhost 链接。"
           />
-          <Typography.Text>目标机器人：{robot?.name ?? selectedRobotConnectionId}</Typography.Text>
+          <Typography.Text>
+            目标群聊：{robot ? robotGroupLabel(robot) : selectedRobotConnectionId}
+          </Typography.Text>
         </Space>
       ),
       okText: '确认发送摘要',
@@ -1284,6 +1453,41 @@ export function WeeklyReportsPage() {
         notifyGroupMutation.mutateAsync({
           reportId: report.id,
           confirmationId: report.currentConfirmation!.id,
+          robotConnectionId: selectedRobotConnectionId,
+          reportVersion: report.version,
+        }),
+    });
+  };
+
+  const confirmTestNotifyGroup = () => {
+    if (!report || !version || !selectedRobotConnectionId || testRobotNotificationBlocked) return;
+    const robot = healthyRobotConnections.find(
+      (connection) => connection.id === selectedRobotConnectionId,
+    );
+    Modal.confirm({
+      title: '将当前周报作为测试消息发送到群聊？',
+      icon: <ExperimentOutlined />,
+      width: 680,
+      content: (
+        <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 12 }}>
+          <Alert
+            type="warning"
+            showIcon
+            message="这会真实调用群机器人"
+            description="当前版本的五项周报正文会发送到所选群聊，并明确标注为测试消息；不会创建钉钉正式日志，也不会改变周报的确认或提交状态。疑似凭证与带查询参数的 URL 会在服务端脱敏，过长字段会截断。"
+          />
+          <Typography.Text>当前版本：v{version.versionNo}</Typography.Text>
+          <Typography.Text>
+            目标群聊：{robot ? robotGroupLabel(robot) : selectedRobotConnectionId}
+          </Typography.Text>
+        </Space>
+      ),
+      okText: '确认测试发送',
+      cancelText: '取消',
+      onOk: () =>
+        testNotifyGroupMutation.mutateAsync({
+          reportId: report.id,
+          versionId: version.id,
           robotConnectionId: selectedRobotConnectionId,
           reportVersion: report.version,
         }),
@@ -1318,8 +1522,8 @@ export function WeeklyReportsPage() {
             <Descriptions.Item label="错误代码">
               {logIntent.lastErrorCode ?? '未提供'}
             </Descriptions.Item>
-            <Descriptions.Item label="目标机器人">
-              {robot?.name ?? selectedRobotConnectionId}
+            <Descriptions.Item label="目标群聊">
+              {robot ? robotGroupLabel(robot) : selectedRobotConnectionId}
             </Descriptions.Item>
           </Descriptions>
         </Space>
@@ -1477,6 +1681,62 @@ export function WeeklyReportsPage() {
             />
           </Card>
 
+          <Card title="群聊测试（无需钉钉正式日志权限）">
+            <Space direction="vertical" size={14} style={{ width: '100%' }}>
+              <Alert
+                type="info"
+                showIcon
+                icon={<ExperimentOutlined />}
+                message="测试链路：生成测试数据 → AI 填写周报 → 选择群机器人 → 测试发送到群聊"
+                description="这里直接发送当前保存版本，不要求模板映射、接收范围、正式确认或钉钉日志应用权限。发送成功只代表群机器人链路可用。"
+              />
+              {healthyRobotConnections.length === 0 ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="还没有可用的群机器人"
+                  description="请先在设置中完成机器人 Webhook/加签配置并通过真实连接测试。"
+                />
+              ) : (
+                <Space wrap align="end">
+                  <div>
+                    <Typography.Text strong>测试目标群聊</Typography.Text>
+                    <Select
+                      value={selectedRobotConnectionId}
+                      placeholder="选择要测试发送到的群聊"
+                      style={{ width: 360, display: 'block', marginTop: 6 }}
+                      onChange={(value: string) => setSelectedRobotConnectionId(value)}
+                      options={healthyRobotConnections.map((connection) => ({
+                        value: connection.id,
+                        label: robotGroupLabel(connection),
+                      }))}
+                    />
+                  </div>
+                  <Tooltip
+                    title={
+                      dirty || autosaveState === 'saving' || editMutation.isPending
+                        ? '正在保存编辑，请等待当前版本保存完成后再发送'
+                        : undefined
+                    }
+                  >
+                    <Button
+                      type="primary"
+                      icon={<SendOutlined />}
+                      disabled={testRobotNotificationBlocked}
+                      loading={testNotifyGroupMutation.isPending}
+                      onClick={confirmTestNotifyGroup}
+                    >
+                      测试发送当前周报
+                    </Button>
+                  </Tooltip>
+                  <Typography.Text type="secondary">
+                    当前将发送 v{version.versionNo}；不会创建正式日志
+                  </Typography.Text>
+                </Space>
+              )}
+            </Space>
+          </Card>
+
           {report.status === 'confirmed' && (
             <Alert
               type="success"
@@ -1589,17 +1849,20 @@ export function WeeklyReportsPage() {
                   提交钉钉正式日志
                 </Button>
                 <div>
-                  <Typography.Text type="secondary">群通知机器人</Typography.Text>
+                  <Typography.Text type="secondary">目标群聊</Typography.Text>
                   <Select
                     value={selectedRobotConnectionId}
-                    placeholder="选择已测试健康的机器人"
-                    style={{ width: 280, display: 'block', marginTop: 4 }}
+                    placeholder="选择要发送到的群聊"
+                    style={{ width: 340, display: 'block', marginTop: 4 }}
                     onChange={(value: string) => setSelectedRobotConnectionId(value)}
                     options={healthyRobotConnections.map((connection) => ({
                       value: connection.id,
-                      label: connection.name,
+                      label: robotGroupLabel(connection),
                     }))}
                   />
+                  <Typography.Text type="secondary" style={{ display: 'block', marginTop: 3 }}>
+                    每个加签机器人对应一个固定群聊
+                  </Typography.Text>
                 </div>
                 <Button
                   icon={<RobotOutlined />}
@@ -1962,7 +2225,7 @@ export function WeeklyReportsPage() {
                       重做
                     </Button>
                     <Button icon={<RobotOutlined />} onClick={() => setAiOpen(true)}>
-                      AI 建议与依据
+                      AI 填写 / 建议
                     </Button>
                     <Button icon={<HistoryOutlined />} onClick={() => setHistoryOpen(true)}>
                       历史
@@ -1982,7 +2245,7 @@ export function WeeklyReportsPage() {
                 <Form<EditorValues>
                   form={form}
                   layout="vertical"
-                  disabled={readOnly || editMutation.isPending}
+                  disabled={readOnly}
                   onValuesChange={() => {
                     setDirty(true);
                     setAutosaveState('dirty');
@@ -1993,11 +2256,10 @@ export function WeeklyReportsPage() {
                       key={definition.key}
                       name={definition.key}
                       label={definition.label}
-                      rules={[{ required: true, message: `${definition.label}不能为空` }]}
-                      extra={
-                        definition.key === 'problems'
-                          ? '没有问题时请明确填写“暂无”，不能留空。'
-                          : undefined
+                      rules={
+                        definition.key === 'reportDate'
+                          ? [{ required: true, message: '填写日期不能为空' }]
+                          : []
                       }
                     >
                       {definition.key === 'reportDate' ? (
@@ -2784,7 +3046,10 @@ export function WeeklyReportsPage() {
             description="正文由服务端从当前不可变版本提取并生成固定短模板；页面不能提交任意风险文字，六字段全文、附件、凭证和本机链接不会外发。"
           />
           <Typography.Text>
-            目标机器人：{selectedRobotConnection?.name ?? selectedRobotConnectionId ?? '未选择'}
+            目标群聊：
+            {selectedRobotConnection
+              ? robotGroupLabel(selectedRobotConnection)
+              : (selectedRobotConnectionId ?? '未选择')}
           </Typography.Text>
           {severeRiskWarnings.length === 0 ? (
             <Empty description="当前版本没有符合机器人严重规则配置的 warning" />
@@ -2832,8 +3097,8 @@ export function WeeklyReportsPage() {
             type="info"
             showIcon
             icon={<SafetyCertificateOutlined />}
-            message="规则版本始终是回退基线，AI 只能生成独立建议"
-            description="模型只接收冻结快照重新构造的白名单元数据。源码、diff、环境变量、凭证和附件正文没有发送路径；失败、拒绝、安全拦截或事实校验不通过时，当前规则/人工正文保持不变。"
+            message="AI 先生成独立建议，也可以由你明确点击后直接填入周报"
+            description="“AI 生成并填入周报”会在建议通过事实校验后立即采纳为当前版本，便于测试和继续手动编辑。模型只接收冻结快照重新构造的白名单元数据；失败或安全拦截时当前正文保持不变。"
           />
 
           <Card title="生成新的 AI 建议" size="small">
@@ -2853,6 +3118,7 @@ export function WeeklyReportsPage() {
                   baseVersionId: version.id,
                   reportVersion: report.version,
                   values,
+                  mode: 'suggestion',
                 });
               }}
             >
@@ -2913,17 +3179,37 @@ export function WeeklyReportsPage() {
                 description="命中私钥、Authorization、token、连接串、凭证赋值、源码、diff 或客户高敏标记时会本地阻断；记录和页面只显示类别，不显示命中原文。"
                 style={{ marginTop: 16, marginBottom: 16 }}
               />
-              <Button
-                type="primary"
-                htmlType="submit"
-                icon={<RobotOutlined />}
-                loading={aiSuggestionMutation.isPending}
-                disabled={
-                  !report || !version || aiConnections.every((item) => item.status !== 'healthy')
-                }
-              >
-                从当前冻结版本生成独立建议
-              </Button>
+              <Space wrap>
+                <Button
+                  icon={<ExperimentOutlined />}
+                  loading={editMutation.isPending}
+                  disabled={!report || !version || readOnly || editMutation.isPending}
+                  onClick={() => void loadWeeklyAiTestData()}
+                >
+                  填入测试数据
+                </Button>
+                <Button
+                  htmlType="submit"
+                  icon={<RobotOutlined />}
+                  loading={aiSuggestionMutation.isPending}
+                  disabled={
+                    !report || !version || aiConnections.every((item) => item.status !== 'healthy')
+                  }
+                >
+                  仅生成独立建议
+                </Button>
+                <Button
+                  type="primary"
+                  icon={<RobotOutlined />}
+                  loading={aiSuggestionMutation.isPending || adoptAiMutation.isPending}
+                  disabled={
+                    !report || !version || aiConnections.every((item) => item.status !== 'healthy')
+                  }
+                  onClick={() => void fillReportWithAi()}
+                >
+                  AI 生成并填入周报
+                </Button>
+              </Space>
             </Form>
           </Card>
 
@@ -3297,6 +3583,25 @@ function editorFields(values: EditorValues): WeeklyReportVersion['fields'] {
   };
 }
 
+const weeklyAiTestFields = {
+  recentGoals: '【测试数据】Alpha 测试项目：验证周报 AI 从事实输入、生成建议到自动采纳的完整流程。',
+  weeklyWork:
+    '【测试数据】Alpha 测试项目：已完成硅基流动模型连接验证、结构化输出校验和周报自动填入测试。',
+  nextWeekPlans: '【测试数据】Alpha 测试项目：继续验证手动编辑、自动保存、版本历史和群聊通知流程。',
+  problems: '【测试数据】Alpha 测试项目：当前风险是模型输出格式可能波动，需要验证本地回退机制。',
+  other: '【测试数据】本内容仅用于测试环境的真实流程模拟，不代表实际工作记录。',
+} satisfies Pick<
+  WeeklyReportVersion['fields'],
+  'recentGoals' | 'weeklyWork' | 'nextWeekPlans' | 'problems' | 'other'
+>;
+
+function sameWeeklyFields(
+  left: WeeklyReportVersion['fields'],
+  right: WeeklyReportVersion['fields'],
+): boolean {
+  return weeklyReportFields.every((field) => left[field.key] === right[field.key]);
+}
+
 function idempotencyKey(prefix: string): string {
   return `${prefix}:${crypto.randomUUID()}`;
 }
@@ -3378,6 +3683,7 @@ function notificationTypeLabel(type: WeeklyReportRobotNotification['notification
     generation_reminder: '生成提醒',
     confirmation_reminder: '确认提醒',
     deadline_reminder: '截止提醒',
+    test_report: '周报测试发送',
     submission_success: '提交成功摘要',
     submission_failure: '提交失败提醒',
     risk_alert: '严重风险提醒',
@@ -3410,6 +3716,14 @@ function safeText(value: unknown, fallback: string): string {
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
     ? String(value)
     : fallback;
+}
+
+function robotGroupLabel(connection: Integration): string {
+  const groupId = safeText(connection.config.groupId, '未标注群聊');
+  const robotName = safeText(connection.config.robotName, connection.name);
+  return robotName === connection.name
+    ? `${connection.name} · 群标识 ${groupId}`
+    : `${connection.name} · ${robotName} · 群标识 ${groupId}`;
 }
 
 function warningText(warning: Record<string, unknown>): string {

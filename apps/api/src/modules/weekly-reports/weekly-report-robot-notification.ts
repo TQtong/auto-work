@@ -2,6 +2,7 @@ export type WeeklyReportRobotNotificationType =
   | 'generation_reminder'
   | 'confirmation_reminder'
   | 'deadline_reminder'
+  | 'test_report'
   | 'submission_success'
   | 'submission_failure'
   | 'risk_alert';
@@ -18,6 +19,17 @@ export const weeklyReportRobotNotificationFactsSchema = z.discriminatedUnion('ty
     periodStart: shortText,
     periodEnd: shortText,
     draftStatus: shortText,
+  }),
+  z.object({
+    type: z.literal('test_report'),
+    periodStart: shortText,
+    periodEnd: shortText,
+    reportDate: shortText,
+    recentGoals: z.string().max(50_000),
+    weeklyWork: z.string().max(50_000),
+    nextWeekPlans: z.string().max(50_000),
+    problems: z.string().max(50_000),
+    other: z.string().max(50_000),
   }),
   z.object({
     type: z.literal('submission_success'),
@@ -53,7 +65,8 @@ export type WeeklyReportRobotNotificationFacts = z.infer<
 >;
 
 /**
- * 机器人正文由固定模板生成，绝不接收六字段全文、附件内容、外部凭证或 localhost 链接。
+ * 机器人正文由固定模板生成。仅显式的测试周报允许发送经过本地脱敏和截断的六字段；
+ * 其他业务通知绝不接收六字段全文、附件内容、外部凭证或 localhost 链接。
  */
 export function buildWeeklyReportRobotNotification(
   input: WeeklyReportRobotNotificationFacts,
@@ -73,6 +86,31 @@ export function buildWeeklyReportRobotNotification(
       period,
       `当前草稿状态：${safeLine(input.draftStatus, 80)}`,
       '请在本机 Auto Work 核对来源、正文和接收范围后确认；本提醒不会自动确认或正式提交。',
+    ].join('\n');
+  }
+  if (input.type === 'test_report') {
+    return [
+      '【测试消息】Auto Work 周报流程验证',
+      '说明：本消息只验证“AI 填写 → 群机器人发送”链路，不会创建钉钉正式日志。',
+      period,
+      `报告日期：${safeLine(input.reportDate, 20)}`,
+      '',
+      '【近期目标】',
+      safeBlock(input.recentGoals),
+      '',
+      '【本周工作】',
+      safeBlock(input.weeklyWork),
+      '',
+      '【下周计划】',
+      safeBlock(input.nextWeekPlans),
+      '',
+      '【问题与风险】',
+      safeBlock(input.problems),
+      '',
+      '【其他事项】',
+      safeBlock(input.other),
+      '',
+      '注：疑似凭证和带查询参数的 URL 已在本地脱敏；过长字段会截断。',
     ].join('\n');
   }
   if (input.type === 'submission_success') {
@@ -145,5 +183,23 @@ function safeLine(value: string, maximumLength: number): string {
     .replace(/\s+/gu, ' ')
     .trim()
     .slice(0, maximumLength);
+}
+
+function safeBlock(value: string): string {
+  const normalized = value
+    .replace(/\0/gu, '')
+    .replace(/\r\n?/gu, '\n')
+    .replace(
+      /\b(?:authorization|api[_-]?key|token|secret|password|passwd|webhook)\s*[:=]\s*[^\s,;]+/giu,
+      '[敏感信息已脱敏]',
+    )
+    .replace(/\bBearer\s+[^\s,;]+/giu, 'Bearer [已脱敏]')
+    .replace(/https:\/\/[^\s?#]+\?[^\s]+/giu, (url) => `${url.split('?')[0]}?[查询参数已脱敏]`)
+    .trim();
+  if (!normalized) return '（无）';
+  const maximumLength = 800;
+  return normalized.length > maximumLength
+    ? `${normalized.slice(0, maximumLength)}\n…（字段内容过长，测试消息已截断）`
+    : normalized;
 }
 import { z } from 'zod';

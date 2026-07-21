@@ -152,6 +152,13 @@ export class RepositoryService {
   ) {
     const repository = await this.prisma.repository.findUnique({ where: { id } });
     if (!repository) throw new DomainError(errorCodes.notFound, '仓库不存在', { httpStatus: 404 });
+    if (repository.whitelistStatus === 'missing') {
+      throw new DomainError(
+        'REPOSITORY_PATH_UNAVAILABLE',
+        '仓库目录当前不存在，不能加入白名单；请检查扫描目录后重新扫描',
+        { httpStatus: 409, suggestedAction: 'refresh' },
+      );
+    }
     const identity = await this.inspector.inspect(repository.canonicalPath);
     if (identity.identityHash !== repository.identityHash) {
       throw new DomainError('REPOSITORY_IDENTITY_CHANGED', '仓库身份与发现快照不一致', {
@@ -382,11 +389,14 @@ export class RepositoryService {
         existing.remotePath !== remote?.path),
     );
     const needsReview = identityChanged || gitlabRemoteChanged;
+    const restoredFromMissing = existing.whitelistStatus === 'missing' && !needsReview;
     const statusReason = identityChanged
       ? '相同路径中的 Git 元数据身份已变化'
       : gitlabRemoteChanged
         ? '已确认的远端主机、端口或项目路径发生变化，GitLab 匹配必须重新确认'
-        : existing.statusReason;
+        : restoredFromMissing
+          ? null
+          : existing.statusReason;
     return this.prisma.repository.update({
       where: { id: existing.id },
       data: {
@@ -400,9 +410,13 @@ export class RepositoryService {
         remotePort: remote?.port ?? null,
         remotePath: remote?.path ?? null,
         lastSeenAt: new Date(),
-        whitelistStatus: needsReview ? 'needs_review' : existing.whitelistStatus,
+        whitelistStatus: needsReview
+          ? 'needs_review'
+          : restoredFromMissing
+            ? 'discovered'
+            : existing.whitelistStatus,
         statusReason,
-        ...(needsReview ? { version: { increment: 1 } } : {}),
+        ...(needsReview || restoredFromMissing ? { version: { increment: 1 } } : {}),
       },
     });
   }

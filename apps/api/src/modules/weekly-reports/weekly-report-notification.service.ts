@@ -15,6 +15,7 @@ import { SessionService } from '../session/session.service.js';
 import type {
   NotifyWeeklyReportFailureInput,
   NotifyWeeklyReportRiskInput,
+  NotifyWeeklyReportTestGroupInput,
 } from './weekly-report.schemas.js';
 import { WeeklyReportNotificationLedgerService } from './weekly-report-notification-ledger.service.js';
 import {
@@ -46,6 +47,56 @@ export class WeeklyReportNotificationService {
       orderBy: { createdAt: 'desc' },
     });
     return rows.map((row) => this.serialize(row));
+  }
+
+  public async notifyTestReport(
+    reportId: string,
+    input: NotifyWeeklyReportTestGroupInput,
+    context: NotificationContext,
+  ) {
+    const [report, version, robot] = await Promise.all([
+      this.prisma.weeklyReport.findFirst({
+        where: { id: reportId, ownerProfileId: this.sessions.currentProfileId, archivedAt: null },
+      }),
+      this.prisma.weeklyReportVersion.findFirst({ where: { id: input.versionId, reportId } }),
+      this.prisma.integrationConnection.findUnique({ where: { id: input.robotConnectionId } }),
+    ]);
+    if (!report || !version) {
+      throw new DomainError(errorCodes.notFound, '周报或当前版本不存在', { httpStatus: 404 });
+    }
+    if (report.version !== input.reportVersion || report.currentVersionId !== version.id) {
+      throw new DomainError(errorCodes.versionConflict, '周报当前版本已变化，请刷新后重新测试', {
+        httpStatus: 409,
+        suggestedAction: 'refresh',
+      });
+    }
+    this.assertRobot(robot);
+    const facts = {
+      type: 'test_report' as const,
+      periodStart: report.periodStart,
+      periodEnd: report.periodEnd,
+      reportDate: version.reportDateText,
+      recentGoals: version.recentGoalsText,
+      weeklyWork: version.weeklyWorkText,
+      nextWeekPlans: version.nextWeekPlansText,
+      problems: version.problemsText,
+      other: version.otherText,
+    };
+    return this.queueNotification(
+      {
+        reportId,
+        connectionId: robot.id,
+        notificationType: 'test_report',
+        // 每次用户显式点击都允许生成一次测试发送；同一个幂等请求仍只会创建一次外部调用。
+        businessObjectKey: `weekly-report-test:${reportId}:${version.id}:${robot.id}:${context.idempotencyRecordId}`,
+        stateVersion: version.versionNo,
+        facts,
+        quietWindowMinutes: 0,
+        auditAction: 'weekly_report.test_notification_requested',
+        auditFacts: { versionId: version.id, versionNo: version.versionNo, testOnly: true },
+      },
+      context,
+    );
   }
 
   public async notifyFailure(

@@ -90,6 +90,8 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
     await prisma.weeklyReport.updateMany({
       data: { currentVersionId: null, confirmedVersionId: null, currentConfirmationId: null },
     });
+    await prisma.deliveryIntent.deleteMany();
+    await prisma.job.deleteMany();
     await prisma.weeklyReportConfirmation.deleteMany();
     await prisma.weeklyReportAttachment.deleteMany();
     await prisma.workCalendar.updateMany({ data: { currentVersionId: null } });
@@ -654,6 +656,39 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
     expect(
       await prisma.auditEvent.count({ where: { targetId: generated.report.id } }),
     ).toBeGreaterThanOrEqual(5);
+  });
+
+  it('允许把五个周报正文栏位全部保存为空', async () => {
+    const generated = await reports.generate(baseInput(), context, now);
+    const editContext = await mutationContext('weekly-edit-empty-fields', {
+      action: 'edit-empty-fields',
+      reportId: generated.report.id,
+    });
+
+    const edited = await reports.edit(
+      generated.report.id,
+      {
+        baseVersionId: generated.version.id,
+        reportVersion: generated.report.version,
+        fields: {
+          recentGoals: '',
+          weeklyWork: '',
+          nextWeekPlans: '',
+          problems: '',
+          other: '',
+        },
+        changeReason: '验证正文栏位允许留空',
+      },
+      editContext,
+    );
+
+    expect(edited.version.fields).toMatchObject({
+      recentGoals: '',
+      weeklyWork: '',
+      nextWeekPlans: '',
+      problems: '',
+      other: '',
+    });
   });
 
   function baseInput(overrides: Partial<ReturnType<typeof generateWeeklyReportSchema.parse>> = {}) {

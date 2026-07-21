@@ -157,7 +157,13 @@ export class TasksController {
     const [items, total] = await this.prisma.$transaction([
       this.prisma.task.findMany({
         where,
-        orderBy: [{ externalUpdatedAt: 'desc' }, { issueKey: 'asc' }, { id: 'asc' }],
+        orderBy: [
+          { plannedStartDate: 'desc' },
+          { dueDate: 'desc' },
+          { externalUpdatedAt: 'desc' },
+          { issueKey: 'asc' },
+          { id: 'asc' },
+        ],
         skip: offset,
         take: query.limit,
         include: {

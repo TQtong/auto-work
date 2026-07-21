@@ -285,6 +285,41 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     });
   });
 
+  it('无需正式日志成功事实即可把当前周报作为测试消息发送到健康群机器人', async () => {
+    const fixture = await seedConfirmedReport();
+    const sendText = vi.fn().mockResolvedValue({
+      requestId: 'test-report-request',
+      timestamp: 1,
+      providerCallCount: 1,
+      retryDelaysMs: [],
+    });
+    const runtime = createRuntime(vi.fn(), sendText);
+    const notifyRecord = await seedIdempotency(fixture.suffix, 'test-report-notify');
+
+    const queued = await runtime.notifications.notifyTestReport(
+      fixture.reportId,
+      {
+        versionId: fixture.versionId,
+        robotConnectionId: fixture.robotConnectionId,
+        reportVersion: fixture.reportVersion,
+        confirmSendTestReport: true,
+      },
+      context(notifyRecord),
+    );
+
+    expect(queued).toMatchObject({ disposition: 'created' });
+    expect(await execute(runtime.notificationHandler, queued.notification.id)).toMatchObject({
+      status: 'succeeded',
+    });
+    const sent = sendText.mock.calls[0]![0] as Parameters<DingTalkRobotClient['sendText']>[0];
+    expect(sent.text).toContain('【测试消息】Auto Work 周报流程验证');
+    expect(sent.text).toContain('仅正式日志可见的完整工作正文');
+    expect(sent.text).toContain('不会创建钉钉正式日志');
+    expect(
+      await prisma.deliveryIntent.count({ where: { reportId: fixture.reportId } }),
+    ).toBe(0);
+  });
+
   it('明确的正式日志失败可生成去重失败提醒，独立通知作业只发送安全短摘要', async () => {
     const fixture = await seedConfirmedReport();
     const createReport = vi.fn().mockRejectedValue(

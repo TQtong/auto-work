@@ -40,6 +40,29 @@ describe('周报机器人安全通知模板', () => {
     expect(message).not.toContain('localhost');
   });
 
+  it('显式测试周报包含五项正文、测试标识，并脱敏凭证与 URL 查询参数', () => {
+    const message = buildWeeklyReportRobotNotification({
+      type: 'test_report',
+      periodStart: '2026-07-13',
+      periodEnd: '2026-07-17',
+      reportDate: '2026-07-17',
+      recentGoals: '验证完整测试链路',
+      weeklyWork: '完成 AI 填写\ntoken=super-secret-token',
+      nextWeekPlans: '测试群机器人发送',
+      problems: '接口 https://example.com/path?access_token=should-not-send',
+      other: '',
+    });
+
+    expect(message).toContain('【测试消息】');
+    expect(message).toContain('【本周工作】');
+    expect(message).toContain('完成 AI 填写');
+    expect(message).toContain('[敏感信息已脱敏]');
+    expect(message).toContain('https://example.com/path?[查询参数已脱敏]');
+    expect(message).toContain('【其他事项】\n（无）');
+    expect(message).not.toContain('super-secret-token');
+    expect(message).not.toContain('should-not-send');
+  });
+
   it('截止、失败和风险通知使用固定边界并清理换行注入', () => {
     const deadline = buildWeeklyReportRobotNotification({
       type: 'deadline_reminder',

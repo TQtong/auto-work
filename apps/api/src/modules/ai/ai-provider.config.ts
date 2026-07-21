@@ -9,6 +9,13 @@ export const aiPurposeSchema = z.enum([
 
 export const aiProviderConfigSchema = z
   .object({
+    provider: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .regex(/^[a-z0-9][a-z0-9_-]*$/u)
+      .default('custom'),
     protocol: z.enum(['openai_compatible', 'anthropic', 'gemini']),
     model: z
       .string()

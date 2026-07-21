@@ -481,15 +481,6 @@ export class WeeklyReportService {
         problems: input.fields.problems ?? current.problemsText,
         other: input.fields.other ?? current.otherText,
       };
-      if (!fields.problems.trim()) {
-        throw new DomainError(
-          'WEEKLY_REPORT_PROBLEMS_REQUIRED',
-          '问题栏不能为空；没有问题时请明确填写“无”',
-          {
-            httpStatus: 422,
-          },
-        );
-      }
       const changedFields = Object.entries(input.fields).flatMap(([field, value]) =>
         value !== undefined &&
         value !== fieldsFromVersion(current)[field as keyof ReturnType<typeof fieldsFromVersion>]

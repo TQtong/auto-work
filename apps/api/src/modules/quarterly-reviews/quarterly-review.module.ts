@@ -12,6 +12,7 @@ import { QuarterlyReviewAiService } from './quarterly-review-ai.service.js';
 import { QuarterlyExportDocxService } from './quarterly-export-docx.service.js';
 import { QuarterlyExportHandler } from './quarterly-export.handler.js';
 import { QuarterlyExportService } from './quarterly-export.service.js';
+import { QuarterlyAutomaticDraftService } from './quarterly-automatic-draft.service.js';
 import { QuarterlyExportXlsxService } from './quarterly-export-xlsx.service.js';
 
 @Module({
@@ -29,6 +30,7 @@ import { QuarterlyExportXlsxService } from './quarterly-export-xlsx.service.js';
     QuarterlyExportDocxService,
     QuarterlyExportService,
     QuarterlyExportHandler,
+    QuarterlyAutomaticDraftService,
   ],
   exports: [
     QuarterlyReviewService,

@@ -36,7 +36,7 @@ import type {
   WeeklyReportReminderPolicy,
 } from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
-import { JiraSettingsModal } from './JiraSettingsModal.js';
+import { AiProviderSettings } from './AiProviderSettings.js';
 
 interface IntegrationFormValues {
   type: Integration['type'];
@@ -96,6 +96,7 @@ export function SettingsPage() {
         items={[
           { key: 'profile', label: '个人身份与别名', children: <ProfileSettings /> },
           { key: 'reminders', label: '周报提醒', children: <ReminderPolicySettings /> },
+          { key: 'ai-providers', label: '模型供应商', children: <AiProviderSettings /> },
           { key: 'integrations', label: '外部集成', children: <IntegrationSettings /> },
         ]}
       />
@@ -495,7 +496,6 @@ function IntegrationSettings() {
   const selectedType = Form.useWatch('type', form);
   const [open, setOpen] = useState(false);
   const [cacheConnection, setCacheConnection] = useState<Integration | null>(null);
-  const [jiraConnection, setJiraConnection] = useState<Integration | null>(null);
   const [robotRiskConnection, setRobotRiskConnection] = useState<Integration | null>(null);
   const [messageApi, holder] = message.useMessage();
   useEffect(() => {
@@ -580,15 +580,10 @@ function IntegrationSettings() {
             })
           : apiRequest(`/api/v1/integrations/${row.id}/test`, { method: 'POST' });
       if (kind === 'sync')
-        return row.type === 'jira'
-          ? apiRequest(`/api/v1/integrations/${row.id}/jira/sync`, {
-              method: 'POST',
-              body: JSON.stringify({ scope: 'incremental' }),
-            })
-          : apiRequest(`/api/v1/integrations/${row.id}/gitlab/sync`, {
-              method: 'POST',
-              body: '{}',
-            });
+        return apiRequest(`/api/v1/integrations/${row.id}/gitlab/sync`, {
+          method: 'POST',
+          body: '{}',
+        });
       if (kind === 'disable')
         return apiRequest(`/api/v1/integrations/${row.id}/disable`, {
           method: 'POST',
@@ -627,7 +622,7 @@ function IntegrationSettings() {
       <Table
         rowKey="id"
         loading={integrations.isLoading}
-        dataSource={integrations.data?.data ?? []}
+        dataSource={(integrations.data?.data ?? []).filter((item) => item.type !== 'ai')}
         expandable={{
           expandedRowRender: (row: Integration) => (
             <Descriptions bordered size="small" column={2}>
@@ -712,7 +707,7 @@ function IntegrationSettings() {
                       {row.credentialReplacementPending ? '测试并启用新凭证' : '发送固定测试消息'}
                     </Button>
                   </Popconfirm>
-                ) : (
+                ) : row.type !== 'jira' ? (
                   <Button
                     size="small"
                     onClick={() => action.mutate({ row, kind: 'test' })}
@@ -720,6 +715,10 @@ function IntegrationSettings() {
                   >
                     测试
                   </Button>
+                ) : (
+                  <Typography.Text type="secondary">
+                    每天 06:00 自动只读同步；可在任务页手动刷新
+                  </Typography.Text>
                 )}
                 {row.type === 'gitlab' && (
                   <>
@@ -739,24 +738,6 @@ function IntegrationSettings() {
                     </Button>
                   </>
                 )}
-                {row.type === 'jira' && (
-                  <>
-                    <Button size="small" onClick={() => setJiraConnection(row)}>
-                      字段与状态映射
-                    </Button>
-                    <Button
-                      size="small"
-                      onClick={() => action.mutate({ row, kind: 'sync' })}
-                      disabled={
-                        !row.enabled ||
-                        !row.credentialMask ||
-                        !['healthy', 'degraded'].includes(row.status)
-                      }
-                    >
-                      同步个人任务
-                    </Button>
-                  </>
-                )}
                 {row.type === 'dingtalk_robot' && (
                   <Button
                     size="small"
@@ -771,26 +752,30 @@ function IntegrationSettings() {
                     严重风险规则
                   </Button>
                 )}
-                <Popconfirm
-                  title="禁用后定时同步和外部调用都会停止，历史记录仍保留。"
-                  onConfirm={() => action.mutate({ row, kind: 'disable' })}
-                >
-                  <Button size="small" disabled={!row.enabled}>
-                    禁用
-                  </Button>
-                </Popconfirm>
-                <Popconfirm
-                  title="确认删除本机保险箱中的凭证？外部平台 Token 仍需在平台侧另行吊销。"
-                  onConfirm={() => action.mutate({ row, kind: 'revoke' })}
-                >
-                  <Button
-                    size="small"
-                    danger
-                    disabled={!row.credentialMask && !row.credentialReplacementPending}
-                  >
-                    撤销凭证
-                  </Button>
-                </Popconfirm>
+                {row.type !== 'jira' && (
+                  <>
+                    <Popconfirm
+                      title="禁用后定时同步和外部调用都会停止，历史记录仍保留。"
+                      onConfirm={() => action.mutate({ row, kind: 'disable' })}
+                    >
+                      <Button size="small" disabled={!row.enabled}>
+                        禁用
+                      </Button>
+                    </Popconfirm>
+                    <Popconfirm
+                      title="确认删除本机保险箱中的凭证？外部平台 Token 仍需在平台侧另行吊销。"
+                      onConfirm={() => action.mutate({ row, kind: 'revoke' })}
+                    >
+                      <Button
+                        size="small"
+                        danger
+                        disabled={!row.credentialMask && !row.credentialReplacementPending}
+                      >
+                        撤销凭证
+                      </Button>
+                    </Popconfirm>
+                  </>
+                )}
               </Space>
             ),
           },
@@ -853,7 +838,6 @@ function IntegrationSettings() {
           ]}
         />
       </Modal>
-      <JiraSettingsModal connection={jiraConnection} onClose={() => setJiraConnection(null)} />
       <Modal
         title={`${robotRiskConnection?.name ?? '机器人'} · 严重风险规则`}
         width={720}
@@ -930,7 +914,6 @@ function IntegrationSettings() {
                   { value: 'jira', label: 'Jira' },
                   { value: 'dingtalk_log', label: '钉钉正式日志' },
                   { value: 'dingtalk_robot', label: '钉钉加签机器人' },
-                  { value: 'ai', label: '外部 AI' },
                 ]}
               />
             </Form.Item>

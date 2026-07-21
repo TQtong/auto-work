@@ -109,6 +109,13 @@ describe.runIf(process.platform === 'win32')('仓库发现与只读状态', () =
     });
   });
 
+  it('仓库目录已消失时返回稳定领域错误', async () => {
+    await expect(inspector.inspect(join(rootDirectory, '已被删除'))).rejects.toMatchObject({
+      code: 'REPOSITORY_PATH_UNAVAILABLE',
+      options: { httpStatus: 409, suggestedAction: 'refresh' },
+    });
+  });
+
   it('识别一级仓库、分支、身份，并在远端入库前丢弃凭证', async () => {
     const identity = await inspector.inspect(repositoryDirectory);
     expect(identity.gitDirKind).toBe('normal');

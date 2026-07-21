@@ -1,4 +1,4 @@
-import { FileExcelOutlined, ReloadOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { ReloadOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -9,13 +9,8 @@ import {
   Descriptions,
   Drawer,
   Empty,
-  Form,
-  Input,
-  InputNumber,
-  Modal,
   Pagination,
   Segmented,
-  Select,
   Space,
   Table,
   Tag,
@@ -25,31 +20,13 @@ import {
   message,
 } from 'antd';
 import type { TableColumnsType } from 'antd';
-import dayjs, { type Dayjs } from 'dayjs';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest } from '../api/client.js';
-import type {
-  Integration,
-  ProjectSummary,
-  TaskConflict,
-  TaskDetail,
-  TaskOverrideResult,
-  TaskSummary,
-} from '../api/types.js';
+import type { Integration, TaskConflict, TaskDetail, TaskSummary } from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
-import { ExcelImportModal } from './ExcelImportModal.js';
 import { TaskEvidencePanel } from './TaskEvidencePanel.js';
 import { evidenceStateLabel } from './evidence-view-model.js';
 import { buildTaskQuery, groupTasksByParent } from './task-view-model.js';
-
-const statusOptions = [
-  { value: 'planned', label: '计划中' },
-  { value: 'in_progress', label: '进行中' },
-  { value: 'done', label: '已完成' },
-  { value: 'blocked', label: '受阻' },
-  { value: 'cancelled', label: '已取消' },
-  { value: 'other', label: '其他' },
-];
 
 const editableTaskFields = [
   { fieldName: 'plannedStartDate', label: '计划开始日期' },
@@ -61,24 +38,12 @@ type EditableTaskField = (typeof editableTaskFields)[number]['fieldName'];
 export function TasksPage() {
   const queryClient = useQueryClient();
   const [messageApi, holder] = message.useMessage();
-  const [status, setStatus] = useState<string>();
-  const [rawStatus, setRawStatus] = useState<string>();
-  const [currentUser, setCurrentUser] = useState<string>('true');
-  const [connectionId, setConnectionId] = useState<string>();
-  const [projectId, setProjectId] = useState<string>();
-  const [parentIssueKey, setParentIssueKey] = useState<string>();
-  const [sprintId, setSprintId] = useState<string>();
-  const [source, setSource] = useState<string>();
-  const [evidenceState, setEvidenceState] = useState<string>();
-  const [conflict, setConflict] = useState<string>();
-  const [visibility, setVisibility] = useState('visible');
   const [dateRange, setDateRange] = useState<[string, string] | undefined>();
   const [viewMode, setViewMode] = useState<'list' | 'parent'>('list');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const pageCursors = useRef(new Map<number, string | undefined>([[1, undefined]]));
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-  const [excelImportOpen, setExcelImportOpen] = useState(false);
   const integrations = useQuery({
     queryKey: ['integrations'],
     queryFn: () => apiRequest<Integration[]>('/api/v1/integrations'),
@@ -87,23 +52,11 @@ export function TasksPage() {
     () => (integrations.data?.data ?? []).filter((item) => item.type === 'jira'),
     [integrations.data],
   );
-  const projects = useQuery({
-    queryKey: ['projects'],
-    queryFn: () => apiRequest<ProjectSummary[]>('/api/v1/projects'),
-  });
   const queryString = buildTaskQuery(
     {
-      status,
-      rawStatus,
-      currentUser,
-      connectionId,
-      projectId,
-      parentIssueKey,
-      sprintId,
-      source,
-      evidenceState,
-      conflict,
-      visibility,
+      currentUser: 'true',
+      source: 'jira',
+      visibility: 'visible',
       dateFrom: dateRange?.[0],
       dateTo: dateRange?.[1],
     },
@@ -115,12 +68,11 @@ export function TasksPage() {
     refetchInterval: 15_000,
   });
   const conflicts = useQuery({
-    queryKey: ['task-conflicts', projectId],
+    queryKey: ['task-conflicts'],
     queryFn: () =>
       apiRequest<TaskConflict[]>(
         `/api/v1/tasks/conflicts?${new URLSearchParams({
           limit: '100',
-          ...(projectId ? { projectId } : {}),
         }).toString()}`,
       ),
     refetchInterval: 15_000,
@@ -142,15 +94,30 @@ export function TasksPage() {
     },
     enabled: Boolean(selectedTaskId),
   });
-  const sync = useMutation({
-    mutationFn: (id: string) =>
-      apiRequest(`/api/v1/integrations/${id}/jira/sync`, {
-        method: 'POST',
-        body: JSON.stringify({ scope: 'incremental' }),
-      }),
+  const refreshJira = useMutation({
+    mutationFn: async () => {
+      const connections = jiraConnections.filter(
+        (connection) => connection.enabled && connection.credentialMask,
+      );
+      if (connections.length === 0) throw new Error('没有可用的 Jira 连接');
+      return Promise.all(
+        connections.map((connection) =>
+          ['healthy', 'degraded'].includes(connection.status)
+            ? apiRequest(`/api/v1/integrations/${connection.id}/jira/sync`, {
+                method: 'POST',
+                body: JSON.stringify({ scope: 'full' }),
+              })
+            : apiRequest(`/api/v1/integrations/${connection.id}/test`, { method: 'POST' }),
+        ),
+      );
+    },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['operations'] });
-      void messageApi.success('Jira 增量同步已进入持久化队列');
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['integrations'] }),
+        queryClient.invalidateQueries({ queryKey: ['operations'] }),
+        queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+      ]);
+      void messageApi.success('Jira 刷新已开始，完成后任务会自动显示');
     },
     onError: (error: Error) => void messageApi.error(error.message),
   });
@@ -273,19 +240,19 @@ export function TasksPage() {
       <div>
         <Typography.Title level={2}>任务与证据</Typography.Title>
         <Typography.Text type="secondary">
-          Jira 主事实、原始/统一状态、复合水位和逐次观测均来自本地只读缓存；页面不会修改 Jira。
+          Jira 会在后台自动拉取分配给你的全部任务；页面只展示任务，周报和绩效按任务日期自动整理。
         </Typography.Text>
       </div>
       <Alert
         type="info"
         showIcon
         icon={<SafetyCertificateOutlined />}
-        message="只读任务事实边界"
-        description="同步仅请求字段白名单，不保存 description；没有 changelog 时，状态变化只标注为两次观测之间发生，不伪造精确完成时刻。"
+        message="Jira 只读自动同步"
+        description="连接后自动全量拉取，之后每天早上 6 点增量更新；也可使用下方“刷新 Jira”立即全量拉取。页面不会写入 Jira。"
       />
       <div className="summary-grid">
         <Card size="small">
-          <Typography.Text type="secondary">筛选总数</Typography.Text>
+          <Typography.Text type="secondary">任务总数</Typography.Text>
           <Typography.Title level={3}>{tasks.data?.total ?? 0}</Typography.Title>
         </Card>
         <Card size="small">
@@ -297,7 +264,7 @@ export function TasksPage() {
           <Typography.Title level={3}>{counts.done ?? 0}</Typography.Title>
         </Card>
         <Card size="small">
-          <Typography.Text type="secondary">本页其他/待映射</Typography.Text>
+          <Typography.Text type="secondary">本页其他状态</Typography.Text>
           <Typography.Title level={3}>{counts.other ?? 0}</Typography.Title>
         </Card>
       </div>
@@ -347,140 +314,17 @@ export function TasksPage() {
         <Space wrap style={{ marginBottom: 16 }}>
           <Button
             type="primary"
-            icon={<FileExcelOutlined />}
-            onClick={() => setExcelImportOpen(true)}
+            icon={<ReloadOutlined />}
+            loading={refreshJira.isPending}
+            disabled={!jiraConnections.some((item) => item.enabled && item.credentialMask)}
+            onClick={() => refreshJira.mutate()}
           >
-            Excel 安全导入
+            刷新 Jira
           </Button>
-          <Select
-            allowClear
-            placeholder="统一状态"
-            value={status}
-            onChange={(value) => {
-              setStatus(value);
-              resetPagination();
-            }}
-            options={statusOptions}
-            style={{ width: 160 }}
-          />
-          <Select
-            allowClear
-            showSearch
-            optionFilterProp="label"
-            placeholder="项目"
-            value={projectId}
-            onChange={(value) => {
-              setProjectId(value);
-              resetPagination();
-            }}
-            options={(projects.data?.data ?? []).map((project) => ({
-              value: project.id,
-              label: `${project.name}${project.jiraProjectKey ? ` (${project.jiraProjectKey})` : ''}`,
-            }))}
-            style={{ width: 220 }}
-          />
-          <Input
-            allowClear
-            placeholder="Jira 原始状态（精确）"
-            value={rawStatus}
-            onChange={(event) => {
-              setRawStatus(event.target.value || undefined);
-              resetPagination();
-            }}
-            style={{ width: 200 }}
-          />
-          <Input
-            allowClear
-            placeholder="父任务 Key"
-            value={parentIssueKey}
-            onChange={(event) => {
-              setParentIssueKey(event.target.value || undefined);
-              resetPagination();
-            }}
-            style={{ width: 170 }}
-          />
-          <Input
-            allowClear
-            placeholder="Sprint ID / 名称"
-            value={sprintId}
-            onChange={(event) => {
-              setSprintId(event.target.value || undefined);
-              resetPagination();
-            }}
-            style={{ width: 180 }}
-          />
-          <Select
-            allowClear
-            placeholder="来源"
-            value={source}
-            onChange={(value) => {
-              setSource(value);
-              resetPagination();
-            }}
-            options={[
-              { value: 'jira', label: 'Jira' },
-              { value: 'excel', label: 'Excel' },
-              { value: 'manual', label: '人工' },
-            ]}
-            style={{ width: 130 }}
-          />
-          <Select
-            value={currentUser}
-            onChange={(value) => {
-              setCurrentUser(value);
-              resetPagination();
-            }}
-            options={[
-              { value: 'true', label: '仅当前用户' },
-              { value: '', label: '全部经办人' },
-              { value: 'false', label: '非当前用户' },
-            ]}
-            style={{ width: 160 }}
-          />
-          <Select
-            allowClear
-            placeholder="Jira 连接"
-            value={connectionId}
-            onChange={(value) => {
-              setConnectionId(value);
-              resetPagination();
-            }}
-            options={jiraConnections.map((item) => ({ value: item.id, label: item.name }))}
-            style={{ width: 220 }}
-          />
-          <Select
-            allowClear
-            placeholder="证据状态"
-            value={evidenceState}
-            onChange={(value) => {
-              setEvidenceState(value);
-              resetPagination();
-            }}
-            style={{ width: 170 }}
-            options={[
-              { value: 'none', label: '无证据' },
-              { value: 'suggested', label: '待确认' },
-              { value: 'confirmed', label: '已有确认' },
-              { value: 'rejected', label: '已拒绝' },
-              { value: 'expired', label: '已失效' },
-              { value: 'needs_revalidation', label: '需要复核' },
-            ]}
-          />
-          <Select
-            allowClear
-            placeholder="字段冲突"
-            value={conflict}
-            onChange={(value) => {
-              setConflict(value);
-              resetPagination();
-            }}
-            options={[
-              { value: 'true', label: '仅有冲突' },
-              { value: 'false', label: '排除冲突' },
-            ]}
-            style={{ width: 140 }}
-          />
           <DatePicker.RangePicker
+            allowClear
+            format="YYYY-MM-DD"
+            placeholder={['到期日期开始', '到期日期结束']}
             onChange={(dates) => {
               setDateRange(
                 dates?.[0] && dates[1]
@@ -489,43 +333,14 @@ export function TasksPage() {
               );
               resetPagination();
             }}
-            placeholder={['到期日起', '到期日止']}
           />
-          <Select
-            value={visibility}
-            onChange={(value) => {
-              setVisibility(value);
-              resetPagination();
-            }}
-            options={[
-              { value: 'visible', label: '当前可见' },
-              { value: 'out_of_scope', label: '超出范围' },
-              { value: 'unavailable', label: '来源不可用' },
-            ]}
-            style={{ width: 150 }}
-          />
-          {jiraConnections.map((connection) => (
-            <Button
-              key={connection.id}
-              icon={<ReloadOutlined />}
-              loading={sync.isPending}
-              disabled={
-                !connection.enabled ||
-                !connection.credentialMask ||
-                !['healthy', 'degraded'].includes(connection.status)
-              }
-              onClick={() => sync.mutate(connection.id)}
-            >
-              同步 {connection.name}
-            </Button>
-          ))}
         </Space>
         {jiraConnections.length === 0 && (
           <Alert
             type="warning"
             showIcon
             message="尚未配置 Jira 连接"
-            description="请先到“设置与集成”创建连接、执行能力测试并确认字段/状态映射。"
+            description="请先到“设置与集成”添加 Jira 地址和访问凭证；保存后系统会自动连接并拉取全部个人任务。"
             style={{ marginBottom: 16 }}
           />
         )}
@@ -543,7 +358,7 @@ export function TasksPage() {
               rowKey="id"
               loading={tasks.isLoading}
               dataSource={taskItems}
-              locale={{ emptyText: <Empty description="当前筛选没有缓存任务" /> }}
+              locale={{ emptyText: <Empty description="尚未拉取到 Jira 任务" /> }}
               scroll={{ x: 1230 }}
               pagination={{
                 current: page,
@@ -552,7 +367,7 @@ export function TasksPage() {
                 simple: true,
                 showSizeChanger: true,
                 pageSizeOptions: [20, 50, 100],
-                showTotal: (total) => `共 ${total} 条本地事实`,
+                showTotal: (total) => `共 ${total} 条任务`,
                 onChange: (nextPage, nextPageSize) => {
                   if (nextPageSize !== pageSize) {
                     setPageSize(nextPageSize);
@@ -566,7 +381,7 @@ export function TasksPage() {
               columns={taskColumns}
             />
           ) : parentGroups.length === 0 ? (
-            <Empty description="当前筛选没有缓存任务" />
+            <Empty description="尚未拉取到 Jira 任务" />
           ) : (
             <>
               <Collapse
@@ -598,7 +413,7 @@ export function TasksPage() {
                 simple
                 showSizeChanger
                 pageSizeOptions={[20, 50, 100]}
-                showTotal={(total) => `共 ${total} 条本地事实`}
+                showTotal={(total) => `共 ${total} 条任务`}
                 onChange={(nextPage, nextPageSize) => {
                   if (nextPageSize !== pageSize) {
                     setPageSize(nextPageSize);
@@ -619,113 +434,15 @@ export function TasksPage() {
         onClose={() => setSelectedTaskId(null)}
         destroyOnHidden
       >
-        {detail.data?.data && (
-          <TaskDetailView
-            task={detail.data.data}
-            onUpdated={async () => {
-              await Promise.all([
-                queryClient.invalidateQueries({ queryKey: ['tasks'] }),
-                queryClient.invalidateQueries({ queryKey: ['task-detail', selectedTaskId] }),
-                queryClient.invalidateQueries({ queryKey: ['task-conflicts'] }),
-              ]);
-            }}
-          />
-        )}
+        {detail.data?.data && <TaskDetailView task={detail.data.data} />}
       </Drawer>
-      <ExcelImportModal open={excelImportOpen} onClose={() => setExcelImportOpen(false)} />
     </Space>
   );
 }
 
-function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () => Promise<void> }) {
-  const [messageApi, holder] = message.useMessage();
-  const [overrideField, setOverrideField] = useState<EditableTaskField>();
-  const [revokeField, setRevokeField] = useState<EditableTaskField>();
-  const [overrideForm] = Form.useForm<{
-    dateValue?: Dayjs;
-    estimateHours?: number;
-    reason: string;
-    expiresAt: Dayjs;
-  }>();
-  const [revokeForm] = Form.useForm<{ reason: string }>();
-  const setOverride = useMutation({
-    mutationFn: async (values: {
-      dateValue?: Dayjs;
-      estimateHours?: number;
-      reason: string;
-      expiresAt: Dayjs;
-    }) => {
-      if (!overrideField) throw new Error('未选择覆盖字段');
-      // 页面使用“小时”方便人工填写，接口和任务事实仍统一保存为整数秒。
-      const value =
-        overrideField === 'originalEstimateSeconds'
-          ? Math.round((values.estimateHours ?? 0) * 3_600)
-          : values.dateValue?.format('YYYY-MM-DD');
-      if (value === undefined) throw new Error('覆盖值不能为空');
-      return apiRequest<TaskOverrideResult>(`/api/v1/tasks/${task.id}/overrides`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          fieldName: overrideField,
-          value,
-          reason: values.reason,
-          expiresAt: values.expiresAt.toISOString(),
-          version: task.version,
-        }),
-      });
-    },
-    onSuccess: async () => {
-      setOverrideField(undefined);
-      overrideForm.resetFields();
-      // 覆盖会同时改变任务摘要、详情来源和冲突清单，三个缓存必须原子失效。
-      await onUpdated();
-      void messageApi.success('本地覆盖已保存；Jira 主事实仍会同步并显式提示冲突');
-    },
-    onError: (error: Error) => void messageApi.error(error.message),
-  });
-  const revokeOverride = useMutation({
-    mutationFn: async (values: { reason: string }) => {
-      if (!revokeField) throw new Error('未选择撤销字段');
-      return apiRequest(`/api/v1/tasks/${task.id}/overrides/${revokeField}`, {
-        method: 'DELETE',
-        body: JSON.stringify({ version: task.version, reason: values.reason }),
-      });
-    },
-    onSuccess: async () => {
-      setRevokeField(undefined);
-      revokeForm.resetFields();
-      await onUpdated();
-      void messageApi.success('人工覆盖已撤销，已恢复最新可用来源事实');
-    },
-    onError: (error: Error) => void messageApi.error(error.message),
-  });
-
-  const openOverride = (fieldName: EditableTaskField) => {
-    const currentValue = taskFieldValue(task, fieldName);
-    setOverrideField(fieldName);
-    overrideForm.setFieldsValue({
-      ...(fieldName === 'originalEstimateSeconds'
-        ? typeof currentValue === 'number'
-          ? { estimateHours: currentValue / 3_600 }
-          : {}
-        : {
-            ...(typeof currentValue === 'string' && currentValue
-              ? { dateValue: dayjs(currentValue) }
-              : {}),
-          }),
-      expiresAt: dayjs().add(30, 'day').endOf('day'),
-      reason: '',
-    });
-  };
-
+function TaskDetailView({ task }: { task: TaskDetail }) {
   return (
     <Space direction="vertical" size={20} style={{ width: '100%' }}>
-      {holder}
-      <Alert
-        type="warning"
-        showIcon
-        message="本地覆盖不会修改 Jira"
-        description="覆盖必须填写原因和有效期。Jira 新值与人工值不同时会进入冲突清单；到期或撤销后恢复最新 Jira/Excel 来源事实。"
-      />
       <Tabs
         destroyOnHidden
         items={[
@@ -734,7 +451,7 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
             label: '概览',
             children: (
               <Space direction="vertical" size={16} style={{ width: '100%' }}>
-                <Card title="本地字段覆盖与来源">
+                <Card title="字段值与来源">
                   <Table
                     rowKey="fieldName"
                     size="small"
@@ -771,28 +488,6 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
                                 ? `至 ${new Date(row.provenance.expiresAt).toLocaleString('zh-CN')}`
                                 : '无人工有效期'}
                             </Typography.Text>
-                          </Space>
-                        ),
-                      },
-                      {
-                        title: '操作',
-                        render: (_, row) => (
-                          <Space>
-                            <Button size="small" onClick={() => openOverride(row.fieldName)}>
-                              {row.provenance?.sourceType === 'manual' ? '调整覆盖' : '人工覆盖'}
-                            </Button>
-                            {row.provenance?.sourceType === 'manual' && row.provenance.active && (
-                              <Button
-                                size="small"
-                                danger
-                                onClick={() => {
-                                  revokeForm.resetFields();
-                                  setRevokeField(row.fieldName);
-                                }}
-                              >
-                                撤销
-                              </Button>
-                            )}
                           </Space>
                         ),
                       },
@@ -998,84 +693,6 @@ function TaskDetailView({ task, onUpdated }: { task: TaskDetail; onUpdated: () =
           },
         ]}
       />
-      <Modal
-        title={`人工覆盖：${taskFieldLabel(overrideField ?? '')}`}
-        open={Boolean(overrideField)}
-        confirmLoading={setOverride.isPending}
-        onCancel={() => setOverrideField(undefined)}
-        onOk={() => overrideForm.submit()}
-        destroyOnHidden
-      >
-        <Form
-          form={overrideForm}
-          layout="vertical"
-          onFinish={(values) => setOverride.mutate(values)}
-        >
-          {overrideField === 'originalEstimateSeconds' ? (
-            <Form.Item
-              name="estimateHours"
-              label="原始预估（小时）"
-              rules={[{ required: true, message: '请输入非负工时' }]}
-            >
-              <InputNumber min={0} max={87_660} precision={2} style={{ width: '100%' }} />
-            </Form.Item>
-          ) : (
-            <Form.Item
-              name="dateValue"
-              label="业务日期"
-              rules={[{ required: true, message: '请选择日期' }]}
-            >
-              <DatePicker style={{ width: '100%' }} />
-            </Form.Item>
-          )}
-          <Form.Item
-            name="reason"
-            label="覆盖原因"
-            rules={[{ required: true, min: 3, message: '请填写至少 3 个字符的原因' }]}
-          >
-            <Input.TextArea rows={3} maxLength={1_000} showCount />
-          </Form.Item>
-          <Form.Item
-            name="expiresAt"
-            label="有效期截止"
-            rules={[{ required: true, message: '请选择有效期' }]}
-          >
-            <DatePicker
-              showTime
-              // 服务端要求有效期处于未来且不超过 366 天，页面先行阻止明显无效日期。
-              disabledDate={(value) =>
-                value.endOf('day').isBefore(dayjs()) ||
-                value.startOf('day').isAfter(dayjs().add(366, 'day'))
-              }
-              style={{ width: '100%' }}
-            />
-          </Form.Item>
-        </Form>
-      </Modal>
-      <Modal
-        title={`撤销人工覆盖：${taskFieldLabel(revokeField ?? '')}`}
-        open={Boolean(revokeField)}
-        confirmLoading={revokeOverride.isPending}
-        okButtonProps={{ danger: true }}
-        okText="确认撤销并恢复来源事实"
-        onCancel={() => setRevokeField(undefined)}
-        onOk={() => revokeForm.submit()}
-        destroyOnHidden
-      >
-        <Form
-          form={revokeForm}
-          layout="vertical"
-          onFinish={(values) => revokeOverride.mutate(values)}
-        >
-          <Form.Item
-            name="reason"
-            label="撤销原因"
-            rules={[{ required: true, min: 3, message: '请填写至少 3 个字符的原因' }]}
-          >
-            <Input.TextArea rows={3} maxLength={1_000} showCount />
-          </Form.Item>
-        </Form>
-      </Modal>
     </Space>
   );
 }
