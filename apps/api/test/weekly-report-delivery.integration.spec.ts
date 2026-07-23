@@ -11,6 +11,7 @@ import type { CredentialVault } from '../src/infrastructure/vault/credential-vau
 import { AuditService } from '../src/modules/audit/audit.service.js';
 import type { DingTalkLogClient } from '../src/modules/dingtalk/dingtalk-log.client.js';
 import type { DingTalkRobotClient } from '../src/modules/dingtalk/dingtalk-robot.client.js';
+import type { DingTalkDesktopClient } from '../src/modules/dingtalk/dingtalk-desktop.client.js';
 import { JobRegistryService } from '../src/modules/jobs/job-registry.service.js';
 import type { JobHandler } from '../src/modules/jobs/job-registry.service.js';
 import type { SessionService } from '../src/modules/session/session.service.js';
@@ -68,6 +69,122 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
   afterAll(async () => {
     await prisma.$disconnect();
     await rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  });
+
+  it('submits all six fields through the signed-in DingTalk desktop client without API credentials', async () => {
+    const fixture = await seedConfirmedReport({ desktop: true });
+    const desktopSubmit = vi.fn().mockResolvedValue({
+      success: true,
+      status: 'succeeded',
+      runId: 'desktop-run-1001',
+      receipt: 'desktop:desktop-run-1001',
+      observedFields: [...weeklyFields],
+    });
+    const createReport = vi.fn();
+    const runtime = createRuntime(createReport, vi.fn(), undefined, desktopSubmit);
+    const idempotency = await seedIdempotency(fixture.suffix, 'desktop-submit');
+
+    const requested = await runtime.service.submitLog(
+      fixture.reportId,
+      {
+        confirmationId: fixture.confirmationId,
+        confirmedVersionId: fixture.versionId,
+        recipientScopeHash: recipientHash,
+        reportVersion: fixture.reportVersion,
+      },
+      context(idempotency),
+    );
+    const result = await execute(runtime.handler, requested.intent.id);
+
+    expect(result).toMatchObject({
+      status: 'succeeded',
+      externalId: 'desktop:desktop-run-1001',
+    });
+    expect(createReport).not.toHaveBeenCalled();
+    expect(desktopSubmit).toHaveBeenCalledOnce();
+    const desktopCall = desktopSubmit.mock.calls[0] as unknown as Parameters<
+      DingTalkDesktopClient['submit']
+    >;
+    expect(desktopCall[0]).toMatchObject({
+      organizationName: 'Example Technology Co., Ltd.',
+      templateName: 'R&D Weekly Report',
+      recipientGroupName: 'R&D Center',
+      timeoutSeconds: 45,
+    });
+    expect(desktopCall[1].reportDate).toBe('2026-07-18');
+    expect(Object.keys(desktopCall[1])).toEqual([...weeklyFields]);
+    expect(
+      [
+        desktopCall[1].reportDate,
+        desktopCall[1].recentGoals,
+        desktopCall[1].weeklyWork,
+        desktopCall[1].nextWeekPlans,
+        desktopCall[1].problems,
+        desktopCall[1].other,
+      ].every((value) => value.length > 0),
+    ).toBe(true);
+    expect(
+      await prisma.deliveryIntent.findUniqueOrThrow({ where: { id: requested.intent.id } }),
+    ).toMatchObject({
+      status: 'succeeded',
+      externalId: 'desktop:desktop-run-1001',
+      providerRequestId: 'desktop-run-1001',
+      attemptCount: 1,
+    });
+    expect(
+      await prisma.weeklyReport.findUniqueOrThrow({ where: { id: fixture.reportId } }),
+    ).toMatchObject({ logDeliveryState: 'submitted' });
+  });
+
+  it('rejects a desktop delivery when the frozen recipient differs from the configured default group', async () => {
+    const fixture = await seedConfirmedReport({
+      desktop: true,
+      desktopRecipientGroupName: 'Another R&D Group',
+    });
+    const desktopSubmit = vi.fn();
+    const runtime = createRuntime(vi.fn(), vi.fn(), undefined, desktopSubmit);
+    const idempotency = await seedIdempotency(fixture.suffix, 'desktop-recipient-mismatch');
+
+    await expect(
+      runtime.service.submitLog(
+        fixture.reportId,
+        {
+          confirmationId: fixture.confirmationId,
+          confirmedVersionId: fixture.versionId,
+          recipientScopeHash: recipientHash,
+          reportVersion: fixture.reportVersion,
+        },
+        context(idempotency),
+      ),
+    ).rejects.toMatchObject({ code: 'DINGTALK_DESKTOP_RECIPIENT_SCOPE_MISMATCH' });
+    expect(desktopSubmit).not.toHaveBeenCalled();
+  });
+
+  it('revalidates the desktop capability snapshot immediately before the scheduled external call', async () => {
+    const fixture = await seedConfirmedReport({ desktop: true });
+    const desktopSubmit = vi.fn();
+    const runtime = createRuntime(vi.fn(), vi.fn(), undefined, desktopSubmit);
+    const idempotency = await seedIdempotency(fixture.suffix, 'desktop-capability-changed');
+    const requested = await runtime.service.submitLog(
+      fixture.reportId,
+      {
+        confirmationId: fixture.confirmationId,
+        confirmedVersionId: fixture.versionId,
+        recipientScopeHash: recipientHash,
+        reportVersion: fixture.reportVersion,
+      },
+      context(idempotency),
+    );
+    await prisma.integrationConnection.update({
+      where: { id: fixture.logConnectionId },
+      data: { status: 'unknown', capabilitiesJson: '{}' },
+    });
+
+    await expect(execute(runtime.handler, requested.intent.id)).resolves.toMatchObject({
+      status: 'failed',
+      errorCode: 'DINGTALK_LOG_CAPABILITY_CHANGED',
+    });
+    expect(desktopSubmit).not.toHaveBeenCalled();
   });
 
   it('正式日志只创建一次，明确成功后才发送不含全文的群摘要', async () => {
@@ -315,9 +432,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     expect(sent.text).toContain('【测试消息】Auto Work 周报流程验证');
     expect(sent.text).toContain('仅正式日志可见的完整工作正文');
     expect(sent.text).toContain('不会创建钉钉正式日志');
-    expect(
-      await prisma.deliveryIntent.count({ where: { reportId: fixture.reportId } }),
-    ).toBe(0);
+    expect(await prisma.deliveryIntent.count({ where: { reportId: fixture.reportId } })).toBe(0);
   });
 
   it('明确的正式日志失败可生成去重失败提醒，独立通知作业只发送安全短摘要', async () => {
@@ -616,9 +731,9 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
   it('超时结果进入 unknown 且重复请求不会盲目创建第二次外部调用', async () => {
     const fixture = await seedConfirmedReport();
     const createReport = vi.fn().mockRejectedValue(
-      new DomainError('EXTERNAL_REQUEST_TIMEOUT', '钉钉响应超时，结果未知', {
+      new DomainError('DINGTALK_DESKTOP_SUBMISSION_RESULT_UNKNOWN', '桌面提交结果未知', {
         httpStatus: 503,
-        retryable: true,
+        retryable: false,
       }),
     );
     const runtime = createRuntime(createReport, vi.fn());
@@ -639,7 +754,10 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     });
     expect(
       await prisma.deliveryIntent.findUniqueOrThrow({ where: { id: requested.intent.id } }),
-    ).toMatchObject({ status: 'unknown', lastErrorCode: 'EXTERNAL_REQUEST_TIMEOUT' });
+    ).toMatchObject({
+      status: 'unknown',
+      lastErrorCode: 'DINGTALK_DESKTOP_SUBMISSION_RESULT_UNKNOWN',
+    });
 
     const duplicateIdempotency = await seedIdempotency(fixture.suffix, 'unknown-replay');
     const replay = await runtime.service.submitLog(
@@ -1026,6 +1144,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       hasMore: false,
       requestId: null,
     }),
+    desktopSubmit: ReturnType<typeof vi.fn> = vi.fn(),
   ) {
     const prismaService = prisma as unknown as PrismaService;
     const sessions = { currentProfileId: 'local-user' } as SessionService;
@@ -1057,6 +1176,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       listReports,
     } as unknown as DingTalkLogClient;
     const robotClient = { sendText } as unknown as DingTalkRobotClient;
+    const desktopClient = { submit: desktopSubmit } as unknown as DingTalkDesktopClient;
     const vault = {
       get: vi.fn((reference: string) =>
         Promise.resolve(
@@ -1073,6 +1193,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       registry,
       prismaService,
       logClient,
+      desktopClient,
       robotClient,
       vault,
     );
@@ -1129,6 +1250,8 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
   async function seedConfirmedReport(options?: {
     hasAttachment?: boolean;
     expiredMapping?: boolean;
+    desktop?: boolean;
+    desktopRecipientGroupName?: string;
     warnings?: Array<Record<string, unknown>>;
     severeRiskCodes?: string[];
     quietWindowMinutes?: number;
@@ -1149,19 +1272,29 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     const periodEnd = `2026-${suffix.padStart(2, '0')}-05`;
     const reportDate = `2026-${suffix.padStart(2, '0')}-06`;
     const now = new Date();
+    const desktopRecipientGroupName = options?.desktopRecipientGroupName ?? 'R&D Center';
 
     await prisma.integrationConnection.createMany({
       data: [
         {
           id: logConnectionId,
-          type: 'dingtalk_log',
+          type: options?.desktop ? 'dingtalk_desktop' : 'dingtalk_log',
           name: `正式日志 ${suffix}`,
-          baseUrl: 'https://oapi.dingtalk.com/',
-          credentialRef: `vault:log:${suffix}`,
+          baseUrl: options?.desktop ? null : 'https://oapi.dingtalk.com/',
+          credentialRef: options?.desktop ? null : `vault:log:${suffix}`,
           enabled: true,
           status: 'healthy',
           capabilitiesJson: JSON.stringify({ templateDiscovery: { snapshotHash: capabilityHash } }),
-          configJson: JSON.stringify({ appKey: 'app-key', operatorUserId: 'operator-user' }),
+          configJson: JSON.stringify(
+            options?.desktop
+              ? {
+                  organizationName: 'Example Technology Co., Ltd.',
+                  templateName: 'R&D Weekly Report',
+                  recipientGroupName: 'R&D Center',
+                  timeoutSeconds: 45,
+                }
+              : { appKey: 'app-key', operatorUserId: 'operator-user' },
+          ),
         },
         {
           id: robotConnectionId,
@@ -1219,9 +1352,11 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       data: {
         id: recipientValidationId,
         connectionId: logConnectionId,
-        subjectType: 'user',
-        externalId: 'recipient-user',
-        displayName: '接收人',
+        subjectType: options?.desktop ? 'group' : 'user',
+        externalId: options?.desktop
+          ? `desktop-group:${requestHash(desktopRecipientGroupName).slice(0, 24)}`
+          : 'recipient-user',
+        displayName: options?.desktop ? desktopRecipientGroupName : '接收人',
         available: true,
         capabilitySnapshotHash: capabilityHash,
         observedAt: new Date(now.getTime() - 60_000),
@@ -1264,9 +1399,11 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     const recipients = [
       {
         validationId: recipientValidationId,
-        subjectType: 'user',
-        externalId: 'recipient-user',
-        displayName: '接收人',
+        subjectType: options?.desktop ? 'group' : 'user',
+        externalId: options?.desktop
+          ? `desktop-group:${requestHash(desktopRecipientGroupName).slice(0, 24)}`
+          : 'recipient-user',
+        displayName: options?.desktop ? desktopRecipientGroupName : '接收人',
         contentHash,
       },
     ];
@@ -1327,6 +1464,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       versionId,
       confirmationId,
       templateId,
+      logConnectionId,
       robotConnectionId,
       reportVersion: report.version,
     };

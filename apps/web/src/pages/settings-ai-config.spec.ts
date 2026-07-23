@@ -63,6 +63,31 @@ describe('AI 连接配置视图模型', () => {
     });
   });
 
+  it('桌面正式日志只提交公司、模板和接收群配置，不要求任何接口凭证', () => {
+    expect(
+      toIntegrationPayload({
+        type: 'dingtalk_desktop',
+        name: '公司桌面周报',
+        organizationName: '示例科技有限公司',
+        templateName: '研发周报',
+        recipientGroupName: '研发中心',
+        desktopTimeoutSeconds: 60,
+        desktopExecutablePath: 'C:\\Apps\\DingTalk.exe',
+      }),
+    ).toEqual({
+      type: 'dingtalk_desktop',
+      name: '公司桌面周报',
+      baseUrl: undefined,
+      config: {
+        organizationName: '示例科技有限公司',
+        templateName: '研发周报',
+        recipientGroupName: '研发中心',
+        timeoutSeconds: 60,
+        executablePath: 'C:\\Apps\\DingTalk.exe',
+      },
+    });
+  });
+
   it('机器人 Webhook 与加签只进入一次性凭证载荷，不混入普通配置', () => {
     expect(
       toIntegrationPayload({

@@ -5,10 +5,22 @@ import {
   deliveryRecoveryOutcomeLabel,
   deliveryRecoveryStatusLabel,
   canNotifyFormalLogFailure,
+  currentLogDeliveryIntent,
   eligibleSevereRiskWarnings,
 } from './weekly-report-delivery-view-model.js';
 
 describe('周报交付恢复视图模型', () => {
+  it('只用当前提交快照的交付记录控制按钮，旧版本失败不会阻塞新版本', () => {
+    const oldFailure = intent({
+      id: 'old-failure',
+      confirmationId: 'confirmation-old',
+      status: 'failed',
+    });
+    const current = intent({ id: 'current', confirmationId: 'confirmation-current' });
+    expect(currentLogDeliveryIntent([oldFailure, current], 'confirmation-current')).toBe(current);
+    expect(currentLogDeliveryIntent([oldFailure], 'confirmation-current')).toBeNull();
+  });
+
   it('unknown 正式日志只允许查询或人工裁决，绝不出现直接重试', () => {
     expect(
       deliveryRecoveryActions(intent({ status: 'unknown', recoveryStatus: 'pending' })),
@@ -18,6 +30,14 @@ describe('周报交付恢复视图模型', () => {
       canRetry: false,
       retryBlockedReason: '结果尚未证明失败，必须先查询或人工核对，禁止重放创建请求',
     });
+  });
+
+  it('桌面正式日志没有外部查询权限时只允许人工裁决', () => {
+    expect(
+      deliveryRecoveryActions(intent({ status: 'unknown', recoveryStatus: 'pending' }), {
+        resultQuerySupported: false,
+      }),
+    ).toMatchObject({ canReconcile: false, canResolve: true, canRetry: false });
   });
 
   it('明确失败在三次上限内开放受控重试，达到上限后关闭', () => {

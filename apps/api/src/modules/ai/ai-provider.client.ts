@@ -97,18 +97,27 @@ export class AiProviderClient {
         model: config.model,
         messages: [
           { role: 'system', content: request.systemPrompt },
-          { role: 'user', content: request.userPrompt },
+          {
+            role: 'user',
+            content:
+              config.provider === 'siliconflow'
+                ? `${request.userPrompt}\n\n必须严格返回符合以下 JSON Schema 的 JSON 对象，不得省略必填字段：\n${JSON.stringify(request.outputSchema)}`
+                : request.userPrompt,
+          },
         ],
         max_tokens: maxOutputTokens,
         ...(temperature === null ? {} : { temperature }),
-        response_format: {
-          type: 'json_schema',
-          json_schema: {
-            name: 'auto_work_output',
-            strict: true,
-            schema: request.outputSchema,
-          },
-        },
+        response_format:
+          config.provider === 'siliconflow'
+            ? { type: 'json_object' }
+            : {
+                type: 'json_schema',
+                json_schema: {
+                  name: 'auto_work_output',
+                  strict: true,
+                  schema: request.outputSchema,
+                },
+              },
       };
     }
     if (config.protocol === 'anthropic') {

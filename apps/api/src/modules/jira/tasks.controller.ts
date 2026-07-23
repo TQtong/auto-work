@@ -147,10 +147,30 @@ export class TasksController {
         : {}),
       ...(query.dateFrom || query.dateTo
         ? {
-            dueDate: {
-              ...(query.dateFrom ? { gte: query.dateFrom } : {}),
-              ...(query.dateTo ? { lte: query.dateTo } : {}),
-            },
+            OR: [
+              {
+                plannedStartDate: {
+                  ...(query.dateFrom ? { gte: query.dateFrom } : {}),
+                  ...(query.dateTo ? { lte: query.dateTo } : {}),
+                },
+              },
+              {
+                dueDate: {
+                  ...(query.dateFrom ? { gte: query.dateFrom } : {}),
+                  ...(query.dateTo ? { lte: query.dateTo } : {}),
+                },
+              },
+              ...(query.dateFrom && query.dateTo
+                ? [
+                    {
+                      AND: [
+                        { plannedStartDate: { lte: query.dateTo } },
+                        { dueDate: { gte: query.dateFrom } },
+                      ],
+                    },
+                  ]
+                : []),
+            ],
           }
         : {}),
     };

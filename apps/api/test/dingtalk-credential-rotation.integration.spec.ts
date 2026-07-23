@@ -241,6 +241,56 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
     probeSpy.mockRestore();
   });
 
+  it('修改钉钉桌面模板或接收群后清除旧健康能力，强制重新探测', async () => {
+    const context = { correlationId: 'desktop-config-update', sessionId: 'desktop-session' };
+    const created = await integrations.create(
+      {
+        type: 'dingtalk_desktop',
+        name: '桌面正式日志',
+        config: {
+          organizationName: '八维通科技有限公司',
+          templateName: 'uTwin产研创新部周报',
+          recipientGroupName: 'uTwin产研创新部',
+          timeoutSeconds: 45,
+        },
+      },
+      context,
+    );
+    await prisma.integrationConnection.update({
+      where: { id: created.id },
+      data: {
+        status: 'healthy',
+        capabilitiesJson: JSON.stringify({ templateDiscovery: { snapshotHash: 'old' } }),
+        lastTestedAt: new Date(),
+        lastSuccessAt: new Date(),
+      },
+    });
+    const before = await prisma.integrationConnection.findUniqueOrThrow({
+      where: { id: created.id },
+    });
+
+    const updated = await integrations.update(
+      created.id,
+      {
+        version: before.version,
+        config: {
+          organizationName: '八维通科技有限公司',
+          templateName: 'uTwin产研创新部周报',
+          recipientGroupName: '新的默认接收群',
+          timeoutSeconds: 45,
+        },
+      },
+      context,
+    );
+
+    expect(updated).toMatchObject({ status: 'unknown', capabilities: {} });
+    const row = await prisma.integrationConnection.findUniqueOrThrow({
+      where: { id: created.id },
+    });
+    expect(row.lastTestedAt).toBeNull();
+    expect(row.lastSuccessAt).toBeNull();
+  });
+
   it('严重风险规则只接受共享目录代码，拒绝客户端自造规则', async () => {
     await expect(
       integrations.create(

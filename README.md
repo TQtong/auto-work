@@ -38,6 +38,21 @@ Docker 的宿主机 bind mount 必须在容器启动前确定，因此修改路�
 - 容器内部监听 `0.0.0.0`，但 Compose 只把端口发布到宿主机 `127.0.0.1`，不开放局域网访问；
 - Linux/Docker 使用 AES-256-GCM 认证加密凭据，Windows 源码运行继续默认使用当前用户 DPAPI。
 
+### 无接口权限提交钉钉正式日志
+
+如果公司普通员工无法申请任何钉钉应用或日志权限，可使用“钉钉桌面正式日志”连接。它复用当前 Windows 用户已经登录的钉钉客户端，校验公司、模板、六字段和接收群后提交，不需要 AppKey、CorpID、UserID、Secret 或 Token。
+
+Docker 部署需要同时在宿主机登录会话中运行本地桌面桥接。推荐一次性安装当前用户的登录任务（不需要钉钉或公司管理员权限）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Install-DingTalkDesktopBridgeTask.ps1 `
+  -BridgeRoot .\data\desktop-bridge
+```
+
+安装后会立即启动，并在当前 Windows 用户每次登录时自动运行。临时手动运行仍可使用 `Start-DingTalkDesktopBridge.ps1`。
+
+完整配置、失败恢复、安全边界和真实提交 UAT 见[钉钉桌面正式日志](./docs/operations/dingtalk-desktop-automation.md)。
+
 完整的安装、配置、升级、备份、恢复、密钥托管、Windows DPAPI 迁移和故障处理见
 [Docker 部署与运维](./docs/operations/docker-deployment.md)。停止容器不会删除数据：
 

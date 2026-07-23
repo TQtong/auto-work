@@ -20,6 +20,7 @@ import {
   message,
 } from 'antd';
 import type { TableColumnsType } from 'antd';
+import dayjs from 'dayjs';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest } from '../api/client.js';
 import type { Integration, TaskConflict, TaskDetail, TaskSummary } from '../api/types.js';
@@ -38,7 +39,9 @@ type EditableTaskField = (typeof editableTaskFields)[number]['fieldName'];
 export function TasksPage() {
   const queryClient = useQueryClient();
   const [messageApi, holder] = message.useMessage();
-  const [dateRange, setDateRange] = useState<[string, string] | undefined>();
+  const [dateRange, setDateRange] = useState<[string, string] | undefined>(() =>
+    currentWorkWeekRange(),
+  );
   const [viewMode, setViewMode] = useState<'list' | 'parent'>('list');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -323,6 +326,7 @@ export function TasksPage() {
           </Button>
           <DatePicker.RangePicker
             allowClear
+            value={dateRange ? [dayjs(dateRange[0]), dayjs(dateRange[1])] : null}
             format="YYYY-MM-DD"
             placeholder={['到期日期开始', '到期日期结束']}
             onChange={(dates) => {
@@ -438,6 +442,11 @@ export function TasksPage() {
       </Drawer>
     </Space>
   );
+}
+
+function currentWorkWeekRange(now = dayjs()): [string, string] {
+  const monday = now.subtract((now.day() + 6) % 7, 'day');
+  return [monday.format('YYYY-MM-DD'), monday.add(4, 'day').format('YYYY-MM-DD')];
 }
 
 function TaskDetailView({ task }: { task: TaskDetail }) {

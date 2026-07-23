@@ -61,6 +61,13 @@ export class WeeklyReportDeliveryRecoveryService {
         httpStatus: 409,
       });
     }
+    if (intent.connection.type === 'dingtalk_desktop') {
+      throw new DomainError(
+        'DINGTALK_DESKTOP_RESULT_QUERY_UNAVAILABLE',
+        '无接口权限时不能自动读取公司日志列表；请在钉钉客户端人工核对并使用人工裁决',
+        { httpStatus: 422, suggestedAction: 'manual_review' },
+      );
+    }
     const configuration = this.parseObject(intent.connection.configJson);
     const credential = await this.readCredential(intent.connection.credentialRef);
     if (
@@ -337,7 +344,7 @@ export class WeeklyReportDeliveryRecoveryService {
     if (
       !intent.connection.enabled ||
       intent.connection.status !== 'healthy' ||
-      !intent.connection.credentialRef
+      (intent.connection.type !== 'dingtalk_desktop' && !intent.connection.credentialRef)
     ) {
       throw new DomainError(
         'DELIVERY_CONNECTION_NOT_HEALTHY',

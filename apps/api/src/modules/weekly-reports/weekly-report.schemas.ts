@@ -85,6 +85,17 @@ export const generateWeeklyReportSchema = z
     }
   });
 
+export const updateWeeklyReportContentTemplateSchema = z
+  .object({
+    version: z.number().int().min(0),
+    recentGoals: z.string().max(50_000),
+    weeklyWork: z.string().max(50_000),
+    nextWeekPlans: z.string().max(50_000),
+    problems: z.string().max(50_000),
+    other: z.string().max(50_000),
+  })
+  .strict();
+
 export const listWeeklyReportsQuerySchema = z
   .object({
     periodFrom: businessDateSchema.optional(),
@@ -354,6 +365,9 @@ export const resolveWeeklyReportDeliverySchema = z
   });
 
 export type GenerateWeeklyReportInput = z.infer<typeof generateWeeklyReportSchema>;
+export type UpdateWeeklyReportContentTemplateInput = z.infer<
+  typeof updateWeeklyReportContentTemplateSchema
+>;
 export type ListWeeklyReportsQuery = z.infer<typeof listWeeklyReportsQuerySchema>;
 export type EditWeeklyReportInput = z.infer<typeof editWeeklyReportSchema>;
 export type RestoreWeeklyReportVersionInput = z.infer<typeof restoreWeeklyReportVersionSchema>;
@@ -363,9 +377,7 @@ export type AdoptWeeklyAiSuggestionInput = z.infer<typeof adoptWeeklyAiSuggestio
 export type RejectWeeklyAiSuggestionInput = z.infer<typeof rejectWeeklyAiSuggestionSchema>;
 export type SubmitWeeklyReportLogInput = z.infer<typeof submitWeeklyReportLogSchema>;
 export type NotifyWeeklyReportGroupInput = z.infer<typeof notifyWeeklyReportGroupSchema>;
-export type NotifyWeeklyReportTestGroupInput = z.infer<
-  typeof notifyWeeklyReportTestGroupSchema
->;
+export type NotifyWeeklyReportTestGroupInput = z.infer<typeof notifyWeeklyReportTestGroupSchema>;
 export type NotifyWeeklyReportFailureInput = z.infer<typeof notifyWeeklyReportFailureSchema>;
 export type NotifyWeeklyReportRiskInput = z.infer<typeof notifyWeeklyReportRiskSchema>;
 export type UpdateWeeklyReminderPolicyInput = z.infer<typeof updateWeeklyReminderPolicySchema>;

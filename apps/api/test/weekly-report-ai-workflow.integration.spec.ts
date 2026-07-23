@@ -105,7 +105,12 @@ describe('周报 AI 建议、确定性回退与人工决定完整工作流', () 
       where: { id: result.suggestionVersion.id },
       include: { sourceLinks: true },
     });
-    expect(suggestion.recentGoalsText).toContain('AW-12');
+    expect(suggestion.recentGoalsText).toContain('完整实现 AI 建议');
+    expect(suggestion.recentGoalsText).not.toContain('AW-12');
+    expect(suggestion.weeklyWorkText).toBe('本周推进 Alpha 项目 AW-12，投入 2 小时。');
+    expect(suggestion.nextWeekPlansText).toBe('下周继续推进 Alpha 项目 AW-12。');
+    expect(suggestion.problemsText).toBe('暂无');
+    expect(suggestion.otherText).toBe('无');
     expect(
       suggestion.sourceLinks.some(
         (link) =>
@@ -573,7 +578,7 @@ describe('周报 AI 建议、确定性回退与人工决定完整工作流', () 
           paragraphs: [
             {
               projectName: 'Alpha',
-              text: '推进 Alpha 项目 AW-12，投入 2 小时，截止 2026-07-18。',
+              text: '推进 Alpha 项目 AW-12，完成完整实现 AI 建议，投入 2 小时，截止 2026-07-18。',
               citations: [taskRef],
             },
           ],

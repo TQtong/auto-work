@@ -131,6 +131,30 @@ describe('AI 三协议适配器', () => {
     },
   );
 
+  it('硅基流动使用其支持的 JSON Object 结构化输出格式', async () => {
+    const postJson = vi.fn<SecureHttpService['postJson']>().mockResolvedValue({
+      status: 200,
+      headers: {},
+      body: {
+        choices: [{ finish_reason: 'stop', message: { content: '{"ok":true}' } }],
+      },
+    });
+    const client = new AiProviderClient({ postJson } as unknown as SecureHttpService);
+
+    await client.generate({
+      baseUrl: 'https://api.siliconflow.cn/v1',
+      apiKey: 'provider-secret-value',
+      config: { ...config('openai_compatible'), provider: 'siliconflow' },
+      request: request(),
+    });
+
+    expect(postJson.mock.calls[0]![0].body).toMatchObject({
+      response_format: { type: 'json_object' },
+    });
+    expect(postJson.mock.calls[0]![0].body).not.toHaveProperty('response_format.json_schema');
+    expect(JSON.stringify(postJson.mock.calls[0]![0].body)).toContain('\\"required\\":[\\"ok\\"]');
+  });
+
   it.each([
     [301, 'AI_REDIRECT_REJECTED'],
     [401, 'AI_CREDENTIAL_INVALID'],

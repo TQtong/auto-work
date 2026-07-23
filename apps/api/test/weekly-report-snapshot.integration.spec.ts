@@ -99,6 +99,7 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
     await prisma.weeklyReportVersion.deleteMany();
     await prisma.reportSourceSnapshot.deleteMany();
     await prisma.weeklyReport.deleteMany();
+    await prisma.weeklyReportContentTemplate.deleteMany();
     await prisma.workCalendarVersion.deleteMany();
     await prisma.workCalendar.deleteMany();
     await prisma.auditEvent.deleteMany();
@@ -201,6 +202,32 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
     ).rejects.toThrow();
   });
 
+  it('保存六字段正文默认模板，并在新建周报时优先套用非空默认值', async () => {
+    expect(await reports.getContentTemplate()).toMatchObject({ id: null, version: 0 });
+    const saved = await reports.updateContentTemplate(
+      {
+        version: 0,
+        recentGoals: '默认近期目标',
+        weeklyWork: '1、打包回归修复',
+        nextWeekPlans: '',
+        problems: '',
+        other: '默认补充说明',
+      },
+      context,
+    );
+    expect(saved).toMatchObject({
+      version: 1,
+      fields: { recentGoals: '默认近期目标', weeklyWork: '1、打包回归修复' },
+    });
+
+    const generated = await reports.generate(baseInput(), context, now);
+    expect(generated.version.fields).toMatchObject({
+      recentGoals: '1、默认近期目标',
+      weeklyWork: '1、打包回归修复',
+      other: '1、默认补充说明',
+    });
+  });
+
   it('在一个事务内冻结来源、生成六字段版本和段落级链接，并可从历史复现', async () => {
     const result = await reports.generate(
       baseInput({ includeUnconfirmedEvidence: true }),
@@ -219,10 +246,16 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
       version: {
         versionNo: 1,
         origin: 'rule',
-        fields: { reportDate: '2026-07-17', problems: '暂无' },
+        fields: { reportDate: '2026-07-17', problems: '' },
       },
     });
-    expect(result.version.fields.weeklyWork).toContain('PROJ-1 完成周报快照');
+    expect(result.version.fields.weeklyWork).toContain('1、完成周报快照');
+    expect(result.version.fields.weeklyWork).not.toContain('PROJ-1');
+    expect(result.version.fields.weeklyWork).not.toContain('PROJ-OLD 往期任务');
+    const snapshotSources = result.sourceSnapshot.sources as {
+      tasks: Array<{ id: string }>;
+    };
+    expect(snapshotSources.tasks.map((task) => task.id)).toEqual(['task-1']);
     expect(result.version.fields.weeklyWork).toContain('1 项Commit');
     expect(result.version.fields.weeklyWork).not.toContain('内部实现细节');
     expect(result.version.sourceLinks).toEqual(
@@ -814,6 +847,21 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
         plannedStartDate: '2026-07-13',
         dueDate: '2026-07-20',
         sprintIdsJson: JSON.stringify([{ id: 'sprint-1', state: 'active' }]),
+        lastObservedAt: new Date('2026-07-17T01:00:00.000Z'),
+      },
+    });
+    await prisma.task.create({
+      data: {
+        id: 'task-old',
+        projectId: 'project-1',
+        primarySource: 'jira',
+        issueKey: 'PROJ-OLD',
+        projectKey: 'PROJ',
+        title: '往期任务',
+        normalizedStatus: 'done',
+        isCurrentUser: true,
+        plannedStartDate: '2026-07-01',
+        dueDate: '2026-07-02',
         lastObservedAt: new Date('2026-07-17T01:00:00.000Z'),
       },
     });

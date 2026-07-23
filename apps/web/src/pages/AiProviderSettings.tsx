@@ -45,6 +45,17 @@ const purposeOptions = [
   { value: 'score_suggestion', label: '分数建议' },
 ];
 
+interface OperationReference {
+  operationId: string;
+  status: string;
+  statusUrl: string;
+}
+
+interface OperationDetail {
+  status: string;
+  error?: { message: string };
+}
+
 export function AiProviderSettings() {
   const queryClient = useQueryClient();
   const [form] = Form.useForm<AiProviderFormValues>();
@@ -55,6 +66,7 @@ export function AiProviderSettings() {
   const integrations = useQuery({
     queryKey: ['integrations'],
     queryFn: () => apiRequest<Integration[]>('/api/v1/integrations'),
+    refetchInterval: 5_000,
   });
   const configuredProviders = useMemo(
     () => (integrations.data?.data ?? []).filter((item) => item.type === 'ai'),
@@ -77,9 +89,31 @@ export function AiProviderSettings() {
   });
 
   const action = useMutation({
-    mutationFn: ({ row, kind }: { row: Integration; kind: 'test' | 'disable' | 'revoke' }) => {
+    mutationFn: async ({
+      row,
+      kind,
+    }: {
+      row: Integration;
+      kind: 'test' | 'disable' | 'revoke';
+    }) => {
       if (kind === 'test') {
-        return apiRequest(`/api/v1/integrations/${row.id}/test`, { method: 'POST' });
+        const operation = await apiRequest<OperationReference>(
+          `/api/v1/integrations/${row.id}/test`,
+          { method: 'POST' },
+        );
+        for (let attempt = 0; attempt < 240; attempt += 1) {
+          const current = await apiRequest<OperationDetail>(operation.data.statusUrl);
+          if (!['queued', 'running'].includes(current.data.status)) {
+            if (current.data.status !== 'succeeded') {
+              throw new Error(
+                current.data.error?.message ?? `连接测试失败：${current.data.status}`,
+              );
+            }
+            return current;
+          }
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+        }
+        throw new Error('连接测试仍在后台运行，请稍后刷新状态');
       }
       if (kind === 'disable') {
         return apiRequest(`/api/v1/integrations/${row.id}/disable`, {
@@ -92,9 +126,9 @@ export function AiProviderSettings() {
         body: JSON.stringify({ version: row.version }),
       });
     },
-    onSuccess: async () => {
+    onSuccess: async (_, input) => {
       await queryClient.invalidateQueries({ queryKey: ['integrations'] });
-      void messageApi.success('操作已受理');
+      void messageApi.success(input.kind === 'test' ? '连接测试成功' : '操作已受理');
     },
     onError: (error: Error) => void messageApi.error(error.message),
   });

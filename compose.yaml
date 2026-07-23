@@ -21,6 +21,8 @@ services:
       AUTO_WORK_VAULT_BACKEND: sealed
       AUTO_WORK_VAULT_KEY_FILE: /app/data/vault-master.key
       AUTO_WORK_LOG_LEVEL: ${AUTO_WORK_LOG_LEVEL:-info}
+      # Docker 容器不能直接操作宿主机桌面；通过只含一次性请求/响应的本地桥接目录协作。
+      AUTO_WORK_DINGTALK_DESKTOP_BRIDGE_DIR: /app/desktop-bridge
     ports:
       - '127.0.0.1:${AUTO_WORK_PORT:-3760}:${AUTO_WORK_PORT:-3760}'
     volumes:
@@ -30,6 +32,11 @@ services:
       - type: bind
         source: ${AUTO_WORK_REPOSITORY_PATH:-./repositories}
         target: /repositories
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${AUTO_WORK_DINGTALK_DESKTOP_BRIDGE_HOST_PATH:-./data/desktop-bridge}
+        target: /app/desktop-bridge
         bind:
           create_host_path: true
     read_only: true

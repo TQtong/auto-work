@@ -24,7 +24,7 @@ export const aiProviderConfigSchema = z
       .max(200)
       .refine((value) => !/[\0\r\n]/u.test(value)),
     metadataOnly: z.literal(true).default(true),
-    timeoutMs: z.number().int().min(1_000).max(300_000).default(60_000),
+    timeoutMs: z.number().int().min(1_000).max(300_000).default(180_000),
     maxInputTokens: z.number().int().min(256).max(1_000_000).default(32_000),
     maxOutputTokens: z.number().int().min(128).max(100_000).default(4_096),
     temperaturePolicy: z.enum(['deterministic', 'provider_default']).default('deterministic'),

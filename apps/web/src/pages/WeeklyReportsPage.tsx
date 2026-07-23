@@ -7,7 +7,6 @@ import {
   ExperimentOutlined,
   FileAddOutlined,
   HistoryOutlined,
-  PaperClipOutlined,
   CopyOutlined,
   RedoOutlined,
   ReloadOutlined,
@@ -43,16 +42,13 @@ import {
   Timeline,
   Tooltip,
   Typography,
-  Upload,
   message,
 } from 'antd';
-import type { UploadProps } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ApiClientError, apiRequest, type ApiEnvelope } from '../api/client.js';
 import type {
-  DingTalkRecipientValidation,
   DingTalkTemplateMappingHistory,
   Integration,
   WeeklyReport,
@@ -62,24 +58,21 @@ import type {
   WeeklyAiGeneration,
   WeeklyAiGenerationList,
   WeeklyAiSuggestionResult,
-  WeeklyReportAttachment,
   WeeklyReportList,
   WeeklyReportVersion,
   WeeklyReportVersionSummary,
 } from '../api/types.js';
-import { StatusTag } from '../components/StatusTag.js';
 import {
   deliveryRecoveryActions,
   canNotifyFormalLogFailure,
+  currentLogDeliveryIntent,
   deliveryRecoveryOutcomeLabel,
   deliveryRecoveryStatusLabel,
   eligibleSevereRiskWarnings,
 } from './weekly-report-delivery-view-model.js';
 import {
   compareWeeklyFields,
-  confirmationGate,
   previousVersionId,
-  reportWorkflowStep,
   weeklyReportFields,
 } from './weekly-report-view-model.js';
 
@@ -179,14 +172,31 @@ interface DeliveryRetryValues {
   reason: string;
 }
 
-const workflowItems = [
-  { title: '采集数据' },
-  { title: '生成周报' },
-  { title: '编辑完善' },
-  { title: '确认锁定' },
-  { title: '正式提交' },
-  { title: '通知完成' },
-];
+interface SubmissionOperationLog {
+  key: string;
+  timestamp: string;
+  status: 'waiting' | 'running' | 'success' | 'error';
+  title: string;
+  detail?: string;
+}
+
+interface WeeklyReportContentTemplate {
+  id: string | null;
+  version: number;
+  fields: Pick<
+    WeeklyReportVersion['fields'],
+    'recentGoals' | 'weeklyWork' | 'nextWeekPlans' | 'problems' | 'other'
+  >;
+  updatedAt: string | null;
+}
+
+const workflowItems = [{ title: '准备内容' }, { title: '钉钉自动填写' }, { title: '提交完成' }];
+
+type DirectSubmitStage = 'idle' | 'saving_content' | 'saving_settings' | 'preparing' | 'queuing';
+
+// 旧的群机器人测试、双通道恢复账本和来源审计仅保留在代码中供历史数据兼容，
+// 不再进入日常周报工作流。
+const SHOW_INTERNAL_WEEKLY_TOOLS = false;
 
 const originLabels: Record<string, string> = {
   rule: '规则生成',
@@ -211,18 +221,19 @@ export function WeeklyReportsPage() {
   const [aiForm] = Form.useForm<AiSuggestionFormValues>();
   const [manualResolutionForm] = Form.useForm<ManualResolutionValues>();
   const [deliveryRetryForm] = Form.useForm<DeliveryRetryValues>();
+  const [contentTemplateForm] = Form.useForm<WeeklyReportContentTemplate['fields']>();
   const [selectedReportId, setSelectedReportId] = useState<string | null>(requestedReportId);
   const [generateOpen, setGenerateOpen] = useState(false);
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [contentTemplateOpen, setContentTemplateOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [selectedAiGenerationId, setSelectedAiGenerationId] = useState<string | null>(null);
   const [compareVersionId, setCompareVersionId] = useState<string | null>(null);
-  const [acknowledgedWarningIds, setAcknowledgedWarningIds] = useState<string[]>([]);
   const [selectedMappingId, setSelectedMappingId] = useState<string | null>(null);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [selectedRecipientIds, setSelectedRecipientIds] = useState<string[]>([]);
   const [selectedSchedule, setSelectedSchedule] = useState<Dayjs | null>(null);
+  const [submissionSettingsDirty, setSubmissionSettingsDirty] = useState(false);
   const [selectedRobotConnectionId, setSelectedRobotConnectionId] = useState<string | null>(null);
   const [riskNotificationOpen, setRiskNotificationOpen] = useState(false);
   const [exportCopyPreview, setExportCopyPreview] = useState<WeeklyReportExportCopy | null>(null);
@@ -236,15 +247,41 @@ export function WeeklyReportsPage() {
   const [autosaveState, setAutosaveState] = useState<
     'idle' | 'dirty' | 'saving' | 'saved' | 'error' | 'conflict'
   >('idle');
-  const [confirmedEditingUnlocked, setConfirmedEditingUnlocked] = useState(false);
+  const [directSubmitStage, setDirectSubmitStage] = useState<DirectSubmitStage>('idle');
+  const [submissionOperationLogs, setSubmissionOperationLogs] = useState<SubmissionOperationLog[]>(
+    [],
+  );
   const [redoStack, setRedoStack] = useState<string[]>([]);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locallySavedVersionId = useRef<string | null>(null);
+
+  const recordSubmissionOperation = useCallback(
+    (key: string, status: SubmissionOperationLog['status'], title: string, detail?: string) => {
+      setSubmissionOperationLogs((current) => {
+        const next: SubmissionOperationLog = {
+          key,
+          timestamp: new Date().toISOString(),
+          status,
+          title,
+          ...(detail ? { detail } : {}),
+        };
+        const existing = current.findIndex((item) => item.key === key);
+        if (existing < 0) return [...current, next];
+        return current.map((item, index) => (index === existing ? { ...item, ...next } : item));
+      });
+    },
+    [],
+  );
 
   const reports = useQuery({
     queryKey: ['weekly-reports'],
     queryFn: () => apiRequest<WeeklyReportList>('/api/v1/weekly-reports?limit=100'),
     refetchInterval: 30_000,
+  });
+  const contentTemplate = useQuery({
+    queryKey: ['weekly-report-content-template'],
+    queryFn: () =>
+      apiRequest<WeeklyReportContentTemplate>('/api/v1/weekly-reports/content-template'),
   });
   const reportItems = reports.data?.data.items ?? [];
 
@@ -294,16 +331,6 @@ export function WeeklyReportsPage() {
       if (!selectedReportId) throw new Error('尚未选择周报');
       return apiRequest<WeeklyReportVersionSummary[]>(
         `/api/v1/weekly-reports/${selectedReportId}/versions`,
-      );
-    },
-    enabled: Boolean(selectedReportId),
-  });
-  const attachments = useQuery({
-    queryKey: ['weekly-report-attachments', selectedReportId],
-    queryFn: () => {
-      if (!selectedReportId) throw new Error('尚未选择周报');
-      return apiRequest<WeeklyReportAttachment[]>(
-        `/api/v1/weekly-reports/${selectedReportId}/attachments`,
       );
     },
     enabled: Boolean(selectedReportId),
@@ -374,7 +401,9 @@ export function WeeklyReportsPage() {
   });
   const dingtalkConnections = useMemo(
     () =>
-      (integrations.data?.data ?? []).filter((connection) => connection.type === 'dingtalk_log'),
+      (integrations.data?.data ?? []).filter((connection) =>
+        ['dingtalk_log', 'dingtalk_desktop'].includes(connection.type),
+      ),
     [integrations.data],
   );
   const mappingQueries = useQueries({
@@ -387,19 +416,11 @@ export function WeeklyReportsPage() {
       staleTime: 30_000,
     })),
   });
-  const mappingHistories = mappingQueries.flatMap((query) => (query.data ? [query.data.data] : []));
-  const currentMappings = mappingHistories.flatMap((history) =>
-    history.versions.filter((mapping) => mapping.id === history.currentVersionId),
-  );
-  const recipients = useQuery({
-    queryKey: ['dingtalk-recipients', selectedConnectionId],
-    queryFn: () => {
-      if (!selectedConnectionId) throw new Error('尚未选择钉钉连接');
-      return apiRequest<DingTalkRecipientValidation[]>(
-        `/api/v1/integrations/${selectedConnectionId}/dingtalk/recipients`,
-      );
-    },
-    enabled: Boolean(selectedConnectionId),
+  const currentMappings = mappingQueries.flatMap((query) => {
+    const history = query.data?.data;
+    return history
+      ? history.versions.filter((mapping) => mapping.id === history.currentVersionId)
+      : [];
   });
   const comparedVersion = useQuery({
     queryKey: ['weekly-report-version', selectedReportId, compareVersionId],
@@ -506,6 +527,15 @@ export function WeeklyReportsPage() {
         }
         return;
       }
+      if (action.source === 'metadata') {
+        applyLocalEditResult(response);
+        setSubmissionSettingsDirty(false);
+        await invalidateReport(action.reportId);
+        if (!response.data.replayed) {
+          void messageApi.success(`钉钉提交设置已保存到 v${response.data.version.versionNo}`);
+        }
+        return;
+      }
       setDirty(false);
       setAutosaveState('saved');
       await invalidateReport(action.reportId);
@@ -513,10 +543,14 @@ export function WeeklyReportsPage() {
         void messageApi.success(`已创建 v${response.data.version.versionNo}`);
       }
     },
-    onError: (error: Error) => {
-      setAutosaveState(
-        error instanceof ApiClientError && error.status === 409 ? 'conflict' : 'error',
-      );
+    onError: (error: Error, action) => {
+      if (action.source === 'metadata') {
+        setSubmissionSettingsDirty(true);
+      } else {
+        setAutosaveState(
+          error instanceof ApiClientError && error.status === 409 ? 'conflict' : 'error',
+        );
+      }
       void messageApi.error(error.message);
     },
   });
@@ -544,7 +578,6 @@ export function WeeklyReportsPage() {
     onSuccess: async (response) => {
       setDirty(false);
       setAutosaveState('saved');
-      setAcknowledgedWarningIds([]);
       setHistoryOpen(false);
       setCompareVersionId(null);
       await invalidateReport(response.data.report.id);
@@ -571,12 +604,6 @@ export function WeeklyReportsPage() {
           acknowledgedWarningIds: input.acknowledgedWarningIds,
         }),
       }),
-    onSuccess: async (response) => {
-      setConfirmOpen(false);
-      setConfirmedEditingUnlocked(false);
-      await invalidateReport(response.data.report.id);
-      void messageApi.success('当前版本已锁定确认；后续编辑会生成新版本并使本次确认失效');
-    },
     onError: (error: Error) => void messageApi.error(error.message),
   });
 
@@ -862,6 +889,20 @@ export function WeeklyReportsPage() {
     onError: (error: Error) => void messageApi.error(error.message),
   });
 
+  const contentTemplateMutation = useMutation({
+    mutationFn: (fields: WeeklyReportContentTemplate['fields']) =>
+      apiRequest<WeeklyReportContentTemplate>('/api/v1/weekly-reports/content-template', {
+        method: 'PUT',
+        body: JSON.stringify({ version: contentTemplate.data?.data.version ?? 0, ...fields }),
+      }),
+    onSuccess: (response) => {
+      queryClient.setQueryData(['weekly-report-content-template'], response);
+      setContentTemplateOpen(false);
+      void messageApi.success('周报正文默认模板已保存');
+    },
+    onError: (error: Error) => void messageApi.error(error.message),
+  });
+
   const aiSuggestionMutation = useMutation({
     mutationFn: (input: {
       reportId: string;
@@ -987,36 +1028,11 @@ export function WeeklyReportsPage() {
         suggestionVersionId: suggestionVersion.id,
         baseVersionId: suggestionReport.currentVersionId,
         reportVersion: suggestionReport.version,
-        decisionReason: '测试操作：AI 自动填写当前周报',
+        decisionReason: 'AI 自动生成并填入当前周报',
         uiSource: 'auto_fill',
       });
     } catch {
       // Form validation renders inline errors; request mutations surface their own API messages.
-    }
-  };
-
-  const loadWeeklyAiTestData = async () => {
-    if (!report || !version) return;
-    const fields = {
-      reportDate: version.fields.reportDate,
-      ...weeklyAiTestFields,
-    };
-    form.setFieldsValue({
-      reportDate: dayjs(version.fields.reportDate),
-      ...weeklyAiTestFields,
-    });
-    try {
-      await editMutation.mutateAsync({
-        reportId: report.id,
-        baseVersionId: version.id,
-        reportVersion: report.version,
-        fields,
-        changeReason: '测试数据：周报 AI 全流程基线',
-        source: 'manual',
-      });
-      void messageApi.success('已填入明确标识的 AI 全流程测试数据，现在可以真实生成并填入');
-    } catch {
-      // editMutation 已显示具体错误，并保留表单中的测试数据供人工重试。
     }
   };
 
@@ -1042,13 +1058,19 @@ export function WeeklyReportsPage() {
     );
     if (!hasActiveDelivery || !selectedReportId) return;
     const timer = setInterval(() => {
-      void queryClient.invalidateQueries({ queryKey: ['weekly-report', selectedReportId] });
-    }, 3_000);
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['weekly-report', selectedReportId] }),
+        queryClient.invalidateQueries({
+          queryKey: ['weekly-report-deliveries', selectedReportId],
+        }),
+      ]);
+    }, 1_500);
     return () => clearInterval(timer);
   }, [deliveries.data, queryClient, selectedReportId]);
 
   useEffect(() => {
     setSelectedAiGenerationId(null);
+    setSubmissionOperationLogs([]);
   }, [selectedReportId]);
 
   useEffect(() => {
@@ -1071,24 +1093,26 @@ export function WeeklyReportsPage() {
       other: version.fields.other,
     });
     setSelectedMappingId(version.templateMappingVersionId);
-    const mappingConnection = currentMappings.find(
-      (mapping) => mapping.id === version.templateMappingVersionId,
-    )?.connectionId;
-    setSelectedConnectionId(version.recipientScope.connectionId ?? mappingConnection ?? null);
+    setSelectedConnectionId(version.recipientScope.connectionId ?? null);
     setSelectedRecipientIds(
       (version.recipientScope.recipients ?? []).map((recipient) => recipient.validationId),
     );
     setSelectedSchedule(version.scheduleAt ? dayjs(version.scheduleAt) : null);
-    setAcknowledgedWarningIds([]);
+    setSubmissionSettingsDirty(false);
     setDirty(false);
     setAutosaveState('idle');
   }, [form, version?.id]);
 
   useEffect(() => {
+    if (!selectedMappingId || selectedConnectionId) return;
+    const mapping = currentMappings.find((item) => item.id === selectedMappingId);
+    if (mapping) setSelectedConnectionId(mapping.connectionId);
+  }, [currentMappings, selectedConnectionId, selectedMappingId]);
+
+  useEffect(() => {
     if (!dirty || !report || !version || editMutation.isPending) return;
     // 保存失败/冲突后保留未保存内容，但不循环重试；用户再次编辑会把状态改回 dirty。
     if (autosaveState === 'error' || autosaveState === 'conflict') return;
-    if (report.status === 'confirmed' && !confirmedEditingUnlocked) return;
     if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
     // 自动保存也创建不可变版本；基准版本和聚合版本共同防止覆盖其他窗口的修改。
     autosaveTimer.current = setTimeout(() => {
@@ -1105,31 +1129,8 @@ export function WeeklyReportsPage() {
     return () => {
       if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
     };
-  }, [
-    dirty,
-    report,
-    version,
-    editMutation.isPending,
-    autosaveState,
-    confirmedEditingUnlocked,
-    form,
-  ]);
+  }, [dirty, report, version, editMutation.isPending, autosaveState, form]);
 
-  const gate =
-    report && version
-      ? confirmationGate({
-          report,
-          version,
-          mapping:
-            currentMappings.find((mapping) => mapping.id === version.templateMappingVersionId) ??
-            null,
-          acknowledgedWarningIds,
-          availableAttachmentIds: (attachments.data?.data ?? [])
-            .filter((attachment) => attachment.status === 'available')
-            .map((attachment) => attachment.id),
-        })
-      : { ready: false, items: [] };
-  const readOnly = Boolean(report?.status === 'confirmed' && !confirmedEditingUnlocked);
   const previousId = version
     ? previousVersionId(versions.data?.data ?? [], version.versionNo)
     : null;
@@ -1156,7 +1157,64 @@ export function WeeklyReportsPage() {
     version?.warnings ?? [],
     selectedRobotConnection?.config ?? null,
   );
-  const logIntent = deliveryItems.find((intent) => intent.channel === 'dingtalk_log') ?? null;
+  const logIntent = currentLogDeliveryIntent(deliveryItems, report?.currentConfirmation?.id);
+  const directSubmitPending = directSubmitStage !== 'idle';
+  const logDeliveryActive = Boolean(logIntent && ['pending', 'running'].includes(logIntent.status));
+  const logDeliveryCanRetry = Boolean(logIntent && deliveryRecoveryActions(logIntent).canRetry);
+  const workflowCurrent =
+    logIntent?.status === 'succeeded' ? 2 : logIntent || directSubmitStage === 'queuing' ? 1 : 0;
+  const workflowStatus =
+    logIntent && ['failed', 'unknown', 'needs_review'].includes(logIntent.status)
+      ? 'error'
+      : 'process';
+
+  useEffect(() => {
+    if (!logIntent) return;
+    if (logIntent.status === 'pending') {
+      recordSubmissionOperation(
+        'delivery-pending',
+        'waiting',
+        '等待 Windows 钉钉桌面执行',
+        '桌面桥接已收到任务。',
+      );
+      return;
+    }
+    if (logIntent.status === 'running') {
+      recordSubmissionOperation(
+        'desktop-running',
+        'running',
+        '正在识别并操作钉钉界面',
+        '同时使用 English (en-US) 与简体中文 (zh-Hans-CN) OCR。',
+      );
+      return;
+    }
+    if (logIntent.status === 'succeeded') {
+      recordSubmissionOperation(
+        'delivery-result',
+        'success',
+        '钉钉周报提交成功',
+        logIntent.externalId ?? '本地提交回执已记录。',
+      );
+      return;
+    }
+    if (logIntent.status === 'failed') {
+      recordSubmissionOperation(
+        'delivery-result',
+        'error',
+        `提交失败：${desktopAutomationFailureStage(logIntent.lastErrorCode)}`,
+        logIntent.lastErrorSummary ?? logIntent.lastErrorCode ?? '未返回详细错误。',
+      );
+      return;
+    }
+    if (logIntent.status === 'unknown' || logIntent.status === 'needs_review') {
+      recordSubmissionOperation(
+        'delivery-result',
+        'error',
+        '提交结果需要人工核对',
+        '脚本已点击 Submit，但没有可靠识别成功提示；系统不会自动重复提交。',
+      );
+    }
+  }, [logIntent, recordSubmissionOperation]);
   const selectedRobotIntent =
     deliveryItems.find(
       (intent) =>
@@ -1166,11 +1224,12 @@ export function WeeklyReportsPage() {
   const logSubmissionBlocked =
     !report ||
     !version ||
-    report.status !== 'confirmed' ||
-    !report.currentConfirmation ||
-    !report.confirmedVersionId ||
     version.attachments.length > 0 ||
-    Boolean(logIntent);
+    Boolean(logIntent && !logDeliveryCanRetry) ||
+    directSubmitPending ||
+    editMutation.isPending ||
+    confirmMutation.isPending ||
+    submitLogMutation.isPending;
   const robotNotificationBlocked =
     !report ||
     !report.currentConfirmation ||
@@ -1202,85 +1261,51 @@ export function WeeklyReportsPage() {
     });
   };
 
-  const saveMetadata = () => {
+  const applyContentTemplateToCurrentReport = () => {
     if (!report || !version) return;
+    const templateFields = contentTemplate.data?.data.fields;
+    if (!templateFields) {
+      void messageApi.warning('周报模板尚未加载完成，请稍后重试');
+      return;
+    }
+    const applicableFields = Object.fromEntries(
+      Object.entries(templateFields).filter(([, value]) => value.trim().length > 0),
+    ) as Partial<WeeklyReportContentTemplate['fields']>;
+    if (Object.keys(applicableFields).length === 0) {
+      void messageApi.warning('模板中没有可应用的默认内容');
+      return;
+    }
+    const nextValues: EditorValues = {
+      ...form.getFieldsValue(),
+      ...applicableFields,
+    };
+    form.setFieldsValue(nextValues);
+    setDirty(true);
     editMutation.mutate({
       reportId: report.id,
       baseVersionId: version.id,
       reportVersion: report.version,
-      attachmentIds: version.attachments.map((attachment) => attachment.id),
-      recipientValidationIds: selectedRecipientIds,
-      templateMappingVersionId: selectedMappingId,
-      scheduleAt: selectedSchedule?.toISOString() ?? null,
-      changeReason: '保存：模板映射、接收范围和计划提交时间',
-      source: 'metadata',
+      fields: editorFields(nextValues),
+      changeReason: '应用周报正文默认模板',
+      source: 'manual',
     });
   };
 
-  const uploadProps: UploadProps = {
-    showUploadList: false,
-    accept: '.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.txt',
-    disabled: !report || !version || readOnly || editMutation.isPending,
-    customRequest: (options) => {
-      void (async () => {
-        if (!report || !version || !(options.file instanceof File)) return;
-        const formData = new FormData();
-        formData.append('file', options.file);
-        let uploadedAttachmentId: string | null = null;
-        try {
-          const uploaded = await apiRequest<WeeklyReportAttachment>(
-            `/api/v1/weekly-reports/${report.id}/attachments`,
-            { method: 'POST', body: formData },
-          );
-          uploadedAttachmentId = uploaded.data.id;
-          await editMutation.mutateAsync({
-            reportId: report.id,
-            baseVersionId: version.id,
-            reportVersion: report.version,
-            attachmentIds: [
-              ...version.attachments.map((attachment) => attachment.id),
-              uploaded.data.id,
-            ],
-            changeReason: `添加附件：${uploaded.data.originalName}`,
-            source: 'attachment',
-          });
-          options.onSuccess?.(uploaded.data);
-        } catch (error) {
-          // 文件事实已创建但版本保存失败时主动回收，避免产生无人引用的可用附件。
-          if (uploadedAttachmentId) {
-            await apiRequest(
-              `/api/v1/weekly-reports/${report.id}/attachments/${uploadedAttachmentId}`,
-              { method: 'DELETE' },
-            ).catch(() => undefined);
-          }
-          options.onError?.(error instanceof Error ? error : new Error('附件上传失败'));
-        }
-      })();
-    },
-  };
-
-  const removeAttachment = async (attachmentId: string) => {
-    if (!report || !version) return;
-    try {
-      const saved = await editMutation.mutateAsync({
-        reportId: report.id,
-        baseVersionId: version.id,
-        reportVersion: report.version,
-        attachmentIds: version.attachments
-          .filter((attachment) => attachment.id !== attachmentId)
-          .map((attachment) => attachment.id),
-        changeReason: '从当前版本移除附件',
-        source: 'attachment',
-      });
-      await apiRequest(`/api/v1/weekly-reports/${report.id}/attachments/${attachmentId}`, {
-        method: 'DELETE',
-      });
-      await invalidateReport(saved.data.report.id);
-      void messageApi.success('附件已从新版本解除引用并标记删除');
-    } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : '移除附件失败');
-    }
-  };
+  const persistSubmissionSettings = (
+    currentReport: WeeklyReport,
+    currentVersion: WeeklyReportVersion,
+  ) =>
+    editMutation.mutateAsync({
+      reportId: currentReport.id,
+      baseVersionId: currentVersion.id,
+      reportVersion: currentReport.version,
+      attachmentIds: currentVersion.attachments.map((attachment) => attachment.id),
+      recipientValidationIds: selectedRecipientIds,
+      templateMappingVersionId: selectedMappingId,
+      scheduleAt: selectedSchedule?.toISOString() ?? null,
+      changeReason: '保存钉钉模板、接收范围和提交时间',
+      source: 'metadata',
+    });
 
   const restoreVersion = (
     targetVersionId: string,
@@ -1363,66 +1388,145 @@ export function WeeklyReportsPage() {
     });
   };
 
-  const confirmSubmitLog = () => {
-    if (!report?.currentConfirmation || !report.confirmedVersionId || !version) return;
-    const futureSchedule = version.scheduleAt && dayjs(version.scheduleAt).isAfter(dayjs());
-    Modal.confirm({
-      title: futureSchedule ? '批准预约提交钉钉正式日志？' : '提交钉钉正式日志？',
-      icon: <ExclamationCircleOutlined />,
-      width: 660,
-      content: (
-        <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 12 }}>
-          <Alert
-            type="warning"
-            showIcon
-            message={
-              futureSchedule
-                ? `这是预约在 ${formatDateTime(version.scheduleAt)} 执行的外部写操作`
-                : '这是会在钉钉创建正式日志的外部写操作'
-            }
-            description={
-              futureSchedule
-                ? '只有本次明确批准才会创建预约作业；执行前确认或版本变化会自动取消，绝不提交旧/新混合内容。未知结果不会自动重发。'
-                : '系统只使用当前确认冻结的六字段、模板和收件范围；未知结果不会自动重发。机器人通知不会替代正式日志。'
-            }
-          />
-          <Descriptions size="small" bordered column={1}>
-            <Descriptions.Item label="冻结版本">v{version.versionNo}</Descriptions.Item>
-            <Descriptions.Item label="模板">{report.templateName}</Descriptions.Item>
-            <Descriptions.Item label="接收对象">
-              {version.recipientScope.recipients?.length ?? 0} 个已验证事实
-            </Descriptions.Item>
-            <Descriptions.Item label="附件">
-              {version.attachments.length === 0
-                ? '无（当前正式日志适配器不支持可靠附件上传）'
-                : `${version.attachments.length} 个，当前提交将被阻断`}
-            </Descriptions.Item>
-            <Descriptions.Item label="执行时间">
-              {futureSchedule ? formatDateTime(version.scheduleAt) : '立即进入受控队列'}
-            </Descriptions.Item>
-          </Descriptions>
-        </Space>
-      ),
-      okText: futureSchedule ? '批准预约正式提交' : '确认创建正式日志',
-      okButtonProps: { danger: true },
-      cancelText: '取消',
-      onOk: () =>
-        submitLogMutation.mutateAsync({
+  const submitCurrentReport = async () => {
+    if (!report || !version || logSubmissionBlocked) return;
+    setSubmissionOperationLogs([]);
+    recordSubmissionOperation(
+      'start',
+      'running',
+      logIntent && logDeliveryCanRetry ? '重新启动自动提交' : '开始一键自动提交',
+      '将自动保存页面内容并调用 Windows 钉钉桌面。',
+    );
+    if (logIntent && logDeliveryCanRetry) {
+      setDirectSubmitStage('queuing');
+      try {
+        await retryDeliveryMutation.mutateAsync({
           reportId: report.id,
-          confirmationId: report.currentConfirmation!.id,
-          confirmedVersionId: report.confirmedVersionId!,
-          recipientScopeHash: report.currentConfirmation!.recipientScopeHash,
+          intentId: logIntent.id,
+          intentVersion: logIntent.version,
+          reason: '用户在周报页面点击重新自动提交',
+        });
+        recordSubmissionOperation('queued', 'success', '重试任务已进入桌面执行队列');
+      } catch (error) {
+        recordSubmissionOperation(
+          'queue-error',
+          'error',
+          '无法启动重试任务',
+          error instanceof Error ? error.message : '未知错误',
+        );
+      } finally {
+        setDirectSubmitStage('idle');
+      }
+      return;
+    }
+    if (!selectedMappingId) {
+      recordSubmissionOperation('validation', 'error', '未选择钉钉周报模板');
+      void messageApi.error('请先选择钉钉周报模板');
+      return;
+    }
+    if (selectedRecipientIds.length === 0) {
+      recordSubmissionOperation('validation', 'error', '未选择接收范围');
+      void messageApi.error('请先选择接收范围');
+      return;
+    }
+    setDirectSubmitStage(dirty ? 'saving_content' : 'preparing');
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    try {
+      let currentReport = report;
+      let currentVersion = version;
+      if (dirty) {
+        recordSubmissionOperation('content', 'running', '正在保存六字段正文');
+        const values = await form.validateFields();
+        const saved = await editMutation.mutateAsync({
+          reportId: report.id,
+          baseVersionId: version.id,
           reportVersion: report.version,
-          ...(futureSchedule
-            ? {
-                scheduledApproval: {
-                  scheduledAt: version.scheduleAt!,
-                  confirmationPhrase: '我确认在计划时间自动提交钉钉正式日志' as const,
-                },
-              }
-            : {}),
-        }),
-    });
+          fields: editorFields(values),
+          changeReason: '提交前自动保存当前正文',
+          source: 'autosave',
+        });
+        currentReport = saved.data.report;
+        currentVersion = saved.data.version;
+        recordSubmissionOperation('content', 'success', '六字段正文已保存');
+      } else {
+        recordSubmissionOperation('content', 'success', '六字段正文无需保存');
+      }
+      if (submissionSettingsDirty) {
+        setDirectSubmitStage('saving_settings');
+        recordSubmissionOperation('settings', 'running', '正在保存模板、接收范围和提交时间');
+        const saved = await persistSubmissionSettings(currentReport, currentVersion);
+        currentReport = saved.data.report;
+        currentVersion = saved.data.version;
+        recordSubmissionOperation('settings', 'success', '钉钉提交设置已保存');
+      } else {
+        recordSubmissionOperation('settings', 'success', '钉钉提交设置无需保存');
+      }
+      if (!currentVersion.templateMappingVersionId) {
+        void messageApi.error('当前周报没有可用的钉钉模板');
+        return;
+      }
+      if (currentVersion.attachments.length > 0) {
+        void messageApi.error('当前钉钉提交不支持附件，请移除附件后再提交');
+        return;
+      }
+
+      let confirmation = currentReport.currentConfirmation;
+      if (!confirmation || confirmation.versionId !== currentVersion.id) {
+        setDirectSubmitStage('preparing');
+        recordSubmissionOperation('prepare', 'running', '正在生成本次提交快照');
+        const confirmed = await confirmMutation.mutateAsync({
+          reportId: currentReport.id,
+          versionId: currentVersion.id,
+          reportVersion: currentReport.version,
+          templateMappingVersionId: currentVersion.templateMappingVersionId,
+          acknowledgedWarningIds: currentVersion.warnings
+            .filter((warning) => !warning.blocking)
+            .map((warning) => warning.id),
+        });
+        currentReport = confirmed.data.report;
+        confirmation = confirmed.data.confirmation;
+      }
+      recordSubmissionOperation('prepare', 'success', '本次提交内容已准备完成');
+
+      const futureSchedule =
+        currentVersion.scheduleAt && dayjs(currentVersion.scheduleAt).isAfter(dayjs());
+      setDirectSubmitStage('queuing');
+      recordSubmissionOperation(
+        'queued',
+        'running',
+        futureSchedule ? '正在创建预约任务' : '正在启动 Windows 钉钉桌面任务',
+      );
+      await submitLogMutation.mutateAsync({
+        reportId: currentReport.id,
+        confirmationId: confirmation.id,
+        confirmedVersionId: currentVersion.id,
+        recipientScopeHash: confirmation.recipientScopeHash,
+        reportVersion: currentReport.version,
+        ...(futureSchedule
+          ? {
+              scheduledApproval: {
+                scheduledAt: currentVersion.scheduleAt!,
+                confirmationPhrase: '我确认在计划时间自动提交钉钉正式日志' as const,
+              },
+            }
+          : {}),
+      });
+      recordSubmissionOperation(
+        'queued',
+        'success',
+        futureSchedule ? '预约任务已创建' : 'Windows 钉钉桌面任务已进入队列',
+      );
+    } catch (error) {
+      recordSubmissionOperation(
+        'request-error',
+        'error',
+        '自动提交流程中止',
+        error instanceof Error ? error.message : '未知错误',
+      );
+      // 表单和各 mutation 已显示具体错误；保留当前输入供用户继续修改。
+    } finally {
+      setDirectSubmitStage('idle');
+    }
   };
 
   const confirmNotifyGroup = () => {
@@ -1595,28 +1699,49 @@ export function WeeklyReportsPage() {
       {holder}
       <div className="page-heading">
         <div>
-          <Typography.Title level={2}>六字段周报工作台</Typography.Title>
+          <Typography.Title level={2}>周报</Typography.Title>
           <Typography.Text type="secondary">
-            规则先生成、来源可追溯、每次编辑留版本；确认只锁定当前版本，不代表已经提交到钉钉。
+            AI 生成内容，可随时编辑，点击后自动填写并提交到钉钉。
           </Typography.Text>
         </div>
         <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={() => void reports.refetch()}>
             刷新
           </Button>
-          <Button type="primary" icon={<FileAddOutlined />} onClick={() => setGenerateOpen(true)}>
-            生成本周周报
+          <Button
+            icon={<DiffOutlined />}
+            loading={contentTemplate.isLoading}
+            onClick={() => {
+              contentTemplateForm.setFieldsValue(
+                contentTemplate.data?.data.fields ?? {
+                  recentGoals: '',
+                  weeklyWork: '',
+                  nextWeekPlans: '',
+                  problems: '',
+                  other: '',
+                },
+              );
+              setContentTemplateOpen(true);
+            }}
+          >
+            新建周报模板
+          </Button>
+          <Button
+            type="primary"
+            icon={<FileAddOutlined />}
+            onClick={() => {
+              generateForm.setFieldsValue({
+                customPeriod: false,
+                freshnessMode: 'allow_stale',
+                includeUnconfirmedEvidence: false,
+              });
+              setGenerateOpen(true);
+            }}
+          >
+            新建周报
           </Button>
         </Space>
       </div>
-
-      <Alert
-        type="info"
-        showIcon
-        icon={<SafetyCertificateOutlined />}
-        message="确认与正式提交严格分离"
-        description="先完成可追溯编辑与确认锁定，再由独立交付意图创建正式日志；只有正式日志明确成功后才能发送群摘要。"
-      />
 
       <Card size="small">
         <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
@@ -1630,36 +1755,55 @@ export function WeeklyReportsPage() {
               onChange={(value) => {
                 setSelectedReportId(value ?? null);
                 setRedoStack([]);
-                setConfirmedEditingUnlocked(false);
               }}
               options={reportItems.map((item) => ({
                 value: item.id,
                 label: `${item.periodStart} 至 ${item.periodEnd} · ${statusLabel(item.status)} · ${item.versionCount ?? 0} 版`,
               }))}
             />
-            {report && <StatusTag status={report.status} />}
             {version && (
               <Tag color="blue">
                 v{version.versionNo} · {originLabels[version.origin] ?? version.origin}
               </Tag>
             )}
           </Space>
-          {report && (
-            <Typography.Text type="secondary">
-              聚合版本 {report.version} · 更新 {formatDateTime(report.updatedAt)}
-            </Typography.Text>
+          {report && version && (
+            <Space wrap>
+              <Typography.Text strong>提交时间</Typography.Text>
+              <DatePicker
+                showTime
+                allowClear
+                value={selectedSchedule}
+                onChange={(schedule) => {
+                  setSelectedSchedule(schedule);
+                  setSubmissionSettingsDirty(true);
+                }}
+                placeholder="留空表示点击提交后立即发送"
+                style={{ width: 280 }}
+              />
+              <Typography.Text type="secondary">
+                聚合版本 {report.version} · 更新 {formatDateTime(report.updatedAt)}
+              </Typography.Text>
+            </Space>
           )}
         </Space>
       </Card>
 
       {!selectedReportId && !reports.isLoading ? (
         <Card>
-          <Empty
-            description="尚无周报。先生成确定性规则版本，再进入编辑与确认。"
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-          >
-            <Button type="primary" onClick={() => setGenerateOpen(true)}>
-              生成本周周报
+          <Empty description="暂无周报" image={Empty.PRESENTED_IMAGE_SIMPLE}>
+            <Button
+              type="primary"
+              onClick={() => {
+                generateForm.setFieldsValue({
+                  customPeriod: false,
+                  freshnessMode: 'allow_stale',
+                  includeUnconfirmedEvidence: false,
+                });
+                setGenerateOpen(true);
+              }}
+            >
+              新建周报
             </Button>
           </Empty>
         </Card>
@@ -1675,516 +1819,567 @@ export function WeeklyReportsPage() {
           <Card size="small">
             <Steps
               size="small"
-              current={reportWorkflowStep(report)}
+              current={workflowCurrent}
               items={workflowItems}
-              status={report.logDeliveryState === 'failed' ? 'error' : 'process'}
+              status={workflowStatus}
             />
           </Card>
 
-          <Card title="群聊测试（无需钉钉正式日志权限）">
-            <Space direction="vertical" size={14} style={{ width: '100%' }}>
-              <Alert
-                type="info"
-                showIcon
-                icon={<ExperimentOutlined />}
-                message="测试链路：生成测试数据 → AI 填写周报 → 选择群机器人 → 测试发送到群聊"
-                description="这里直接发送当前保存版本，不要求模板映射、接收范围、正式确认或钉钉日志应用权限。发送成功只代表群机器人链路可用。"
+          <div className="weekly-primary-actions">
+            <Typography.Text strong>修改正文后可直接提交到钉钉</Typography.Text>
+            <Space wrap>
+              {logIntent && (
+                <Tag color={deliveryStatusColor(logIntent.status)}>
+                  钉钉：{deliveryStatusLabel(logIntent.status)}
+                </Tag>
+              )}
+              {dirty && (
+                <Button
+                  icon={<SaveOutlined />}
+                  loading={editMutation.isPending}
+                  onClick={saveFieldsNow}
+                >
+                  保存修改
+                </Button>
+              )}
+              <Button
+                type="primary"
+                icon={<SendOutlined />}
+                disabled={logSubmissionBlocked}
+                loading={directSubmitPending || logDeliveryActive}
+                onClick={() => void submitCurrentReport()}
+              >
+                {logIntent?.status === 'failed'
+                  ? '重新自动提交到钉钉'
+                  : logDeliveryActive
+                    ? '钉钉正在自动填写…'
+                    : directSubmitStageLabel(directSubmitStage)}
+              </Button>
+            </Space>
+          </div>
+
+          {logIntent && (
+            <Alert
+              type={
+                logIntent.status === 'succeeded'
+                  ? 'success'
+                  : ['failed', 'unknown', 'needs_review'].includes(logIntent.status)
+                    ? 'error'
+                    : 'info'
+              }
+              showIcon
+              message={deliveryAutomationTitle(logIntent)}
+              description={deliveryAutomationDescription(logIntent)}
+            />
+          )}
+
+          {submissionOperationLogs.length > 0 && (
+            <Card size="small" title="自动提交操作日志">
+              <Timeline
+                items={submissionOperationLogs.map((item) => ({
+                  color: submissionLogColor(item.status),
+                  children: (
+                    <Space direction="vertical" size={2}>
+                      <Space wrap>
+                        <Typography.Text strong>{item.title}</Typography.Text>
+                        <Typography.Text type="secondary">
+                          {dayjs(item.timestamp).format('HH:mm:ss')}
+                        </Typography.Text>
+                      </Space>
+                      {item.detail && (
+                        <Typography.Text type="secondary">{item.detail}</Typography.Text>
+                      )}
+                    </Space>
+                  ),
+                }))}
               />
-              {healthyRobotConnections.length === 0 ? (
+            </Card>
+          )}
+
+          {SHOW_INTERNAL_WEEKLY_TOOLS && (
+            <Card title="群聊测试（无需钉钉正式日志权限）">
+              <Space direction="vertical" size={14} style={{ width: '100%' }}>
                 <Alert
-                  type="warning"
+                  type="info"
                   showIcon
-                  message="还没有可用的群机器人"
-                  description="请先在设置中完成机器人 Webhook/加签配置并通过真实连接测试。"
+                  icon={<ExperimentOutlined />}
+                  message="测试链路：生成测试数据 → AI 填写周报 → 选择群机器人 → 测试发送到群聊"
+                  description="这里直接发送当前保存版本，不要求模板映射、接收范围、正式确认或钉钉日志应用权限。发送成功只代表群机器人链路可用。"
                 />
-              ) : (
+                {healthyRobotConnections.length === 0 ? (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message="还没有可用的群机器人"
+                    description="请先在设置中完成机器人 Webhook/加签配置并通过真实连接测试。"
+                  />
+                ) : (
+                  <Space wrap align="end">
+                    <div>
+                      <Typography.Text strong>测试目标群聊</Typography.Text>
+                      <Select
+                        value={selectedRobotConnectionId}
+                        placeholder="选择要测试发送到的群聊"
+                        style={{ width: 360, display: 'block', marginTop: 6 }}
+                        onChange={(value: string) => setSelectedRobotConnectionId(value)}
+                        options={healthyRobotConnections.map((connection) => ({
+                          value: connection.id,
+                          label: robotGroupLabel(connection),
+                        }))}
+                      />
+                    </div>
+                    <Tooltip
+                      title={
+                        dirty || autosaveState === 'saving' || editMutation.isPending
+                          ? '正在保存编辑，请等待当前版本保存完成后再发送'
+                          : undefined
+                      }
+                    >
+                      <Button
+                        type="primary"
+                        icon={<SendOutlined />}
+                        disabled={testRobotNotificationBlocked}
+                        loading={testNotifyGroupMutation.isPending}
+                        onClick={confirmTestNotifyGroup}
+                      >
+                        测试发送当前周报
+                      </Button>
+                    </Tooltip>
+                    <Typography.Text type="secondary">
+                      当前将发送 v{version.versionNo}；不会创建正式日志
+                    </Typography.Text>
+                  </Space>
+                )}
+              </Space>
+            </Card>
+          )}
+
+          {SHOW_INTERNAL_WEEKLY_TOOLS && (
+            <Card
+              title="钉钉双通道交付"
+              extra={
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  loading={deliveries.isFetching}
+                  onClick={() => void deliveries.refetch()}
+                >
+                  刷新交付事实
+                </Button>
+              }
+            >
+              <Space direction="vertical" size={14} style={{ width: '100%' }}>
+                {version.attachments.length > 0 && report.status === 'confirmed' && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message="当前确认包含附件，正式日志提交已阻断"
+                    description="当前已批准的钉钉正式日志适配器不能可靠上传附件。请开始新版本、移除附件并重新确认，或使用下方复制/附件导出人工兜底。"
+                  />
+                )}
+                {logResultUnknown && (
+                  <Alert
+                    type="error"
+                    showIcon
+                    message="正式日志结果未知，禁止再次提交"
+                    description="外部请求可能已经成功。请先执行只读查询或在钉钉人工核对；系统不会盲目重放。"
+                    action={
+                      logIntent ? (
+                        <Button
+                          size="small"
+                          loading={reconcileDeliveryMutation.isPending}
+                          onClick={() => confirmReconcileDelivery(logIntent)}
+                        >
+                          查询实际结果
+                        </Button>
+                      ) : undefined
+                    }
+                  />
+                )}
+                {report.delivery?.partial && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message="部分交付：正式日志已成功，但群摘要尚未成功"
+                    description="正式日志成功事实保持不变；可选择尚无交付意图的其他健康机器人。当前失败意图需等待受控恢复/重试，重复点击不会伪装成重试。"
+                  />
+                )}
+
+                <Descriptions size="small" bordered column={{ xs: 1, sm: 2, lg: 3 }}>
+                  <Descriptions.Item label="正式日志">
+                    <Tag color={deliveryStatusColor(report.logDeliveryState)}>
+                      {deliveryStatusLabel(report.logDeliveryState)}
+                    </Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="群摘要">
+                    <Tag color={deliveryStatusColor(report.robotDeliveryState)}>
+                      {deliveryStatusLabel(report.robotDeliveryState)}
+                    </Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="外部日志 ID">
+                    <Typography.Text copyable={Boolean(logIntent?.externalId)}>
+                      {logIntent?.externalId ?? '—'}
+                    </Typography.Text>
+                  </Descriptions.Item>
+                </Descriptions>
+
                 <Space wrap align="end">
+                  <Button
+                    type="primary"
+                    danger
+                    icon={<SendOutlined />}
+                    disabled={logSubmissionBlocked}
+                    loading={directSubmitPending || logDeliveryActive}
+                    onClick={() => void submitCurrentReport()}
+                  >
+                    {logIntent?.status === 'failed'
+                      ? '重新自动提交到钉钉'
+                      : directSubmitStageLabel(directSubmitStage)}
+                  </Button>
                   <div>
-                    <Typography.Text strong>测试目标群聊</Typography.Text>
+                    <Typography.Text type="secondary">目标群聊</Typography.Text>
                     <Select
                       value={selectedRobotConnectionId}
-                      placeholder="选择要测试发送到的群聊"
-                      style={{ width: 360, display: 'block', marginTop: 6 }}
+                      placeholder="选择要发送到的群聊"
+                      style={{ width: 340, display: 'block', marginTop: 4 }}
                       onChange={(value: string) => setSelectedRobotConnectionId(value)}
                       options={healthyRobotConnections.map((connection) => ({
                         value: connection.id,
                         label: robotGroupLabel(connection),
                       }))}
                     />
+                    <Typography.Text type="secondary" style={{ display: 'block', marginTop: 3 }}>
+                      每个加签机器人对应一个固定群聊
+                    </Typography.Text>
                   </div>
+                  <Button
+                    icon={<RobotOutlined />}
+                    disabled={robotNotificationBlocked}
+                    loading={notifyGroupMutation.isPending}
+                    onClick={confirmNotifyGroup}
+                  >
+                    发送群交付摘要
+                  </Button>
+                  <Button
+                    danger
+                    icon={<ExclamationCircleOutlined />}
+                    disabled={failureNotificationBlocked}
+                    loading={notifyFailureMutation.isPending}
+                    onClick={confirmNotifyFailure}
+                  >
+                    发送失败提醒
+                  </Button>
+                  <Button
+                    icon={<ExclamationCircleOutlined />}
+                    disabled={riskNotificationBlocked}
+                    loading={notifyRiskMutation.isPending}
+                    onClick={() => {
+                      setSelectedRiskWarningIds([]);
+                      setRiskNotificationOpen(true);
+                    }}
+                  >
+                    发送严重风险提醒
+                  </Button>
                   <Tooltip
                     title={
-                      dirty || autosaveState === 'saving' || editMutation.isPending
-                        ? '正在保存编辑，请等待当前版本保存完成后再发送'
+                      dirty || autosaveState === 'saving'
+                        ? '请先保存当前编辑，导出只读取服务端不可变版本'
                         : undefined
                     }
                   >
                     <Button
-                      type="primary"
-                      icon={<SendOutlined />}
-                      disabled={testRobotNotificationBlocked}
-                      loading={testNotifyGroupMutation.isPending}
-                      onClick={confirmTestNotifyGroup}
+                      icon={<CopyOutlined />}
+                      disabled={dirty || autosaveState === 'saving'}
+                      loading={exportCopyMutation.isPending}
+                      onClick={() => {
+                        if (!report || !version) return;
+                        exportCopyMutation.mutate({
+                          reportId: report.id,
+                          versionId: version.id,
+                          reportVersion: report.version,
+                        });
+                      }}
                     >
-                      测试发送当前周报
+                      复制/导出人工兜底
                     </Button>
                   </Tooltip>
-                  <Typography.Text type="secondary">
-                    当前将发送 v{version.versionNo}；不会创建正式日志
-                  </Typography.Text>
                 </Space>
-              )}
-            </Space>
-          </Card>
 
-          {report.status === 'confirmed' && (
-            <Alert
-              type="success"
-              showIcon
-              message={`v${version.versionNo} 已确认锁定`}
-              description={
-                confirmedEditingUnlocked
-                  ? '已进入“开始新版本编辑”模式；首次保存会使旧确认失效并保留完整历史。'
-                  : `确认时间 ${formatDateTime(report.currentConfirmation?.confirmedAt)}。正文保持只读；如需修改，必须明确开始新版本。`
-              }
-              action={
-                !confirmedEditingUnlocked ? (
-                  <Button
-                    onClick={() =>
-                      Modal.confirm({
-                        title: '开始新版本编辑？',
-                        icon: <ExclamationCircleOutlined />,
-                        content:
-                          '旧确认不会删除，但首次保存新版本后会标记为失效，正式提交必须重新确认。',
-                        okText: '开始新版本',
-                        cancelText: '保持锁定',
-                        onOk: () => setConfirmedEditingUnlocked(true),
-                      })
-                    }
-                  >
-                    开始新版本编辑
-                  </Button>
-                ) : undefined
-              }
-            />
-          )}
-
-          <Card
-            title="钉钉双通道交付"
-            extra={
-              <Button
-                size="small"
-                icon={<ReloadOutlined />}
-                loading={deliveries.isFetching}
-                onClick={() => void deliveries.refetch()}
-              >
-                刷新交付事实
-              </Button>
-            }
-          >
-            <Space direction="vertical" size={14} style={{ width: '100%' }}>
-              {version.attachments.length > 0 && report.status === 'confirmed' && (
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="当前确认包含附件，正式日志提交已阻断"
-                  description="当前已批准的钉钉正式日志适配器不能可靠上传附件。请开始新版本、移除附件并重新确认，或使用下方复制/附件导出人工兜底。"
-                />
-              )}
-              {logResultUnknown && (
-                <Alert
-                  type="error"
-                  showIcon
-                  message="正式日志结果未知，禁止再次提交"
-                  description="外部请求可能已经成功。请先执行只读查询或在钉钉人工核对；系统不会盲目重放。"
-                  action={
-                    logIntent ? (
-                      <Button
-                        size="small"
-                        loading={reconcileDeliveryMutation.isPending}
-                        onClick={() => confirmReconcileDelivery(logIntent)}
-                      >
-                        查询实际结果
-                      </Button>
-                    ) : undefined
-                  }
-                />
-              )}
-              {report.delivery?.partial && (
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="部分交付：正式日志已成功，但群摘要尚未成功"
-                  description="正式日志成功事实保持不变；可选择尚无交付意图的其他健康机器人。当前失败意图需等待受控恢复/重试，重复点击不会伪装成重试。"
-                />
-              )}
-
-              <Descriptions size="small" bordered column={{ xs: 1, sm: 2, lg: 3 }}>
-                <Descriptions.Item label="正式日志">
-                  <Tag color={deliveryStatusColor(report.logDeliveryState)}>
-                    {deliveryStatusLabel(report.logDeliveryState)}
-                  </Tag>
-                </Descriptions.Item>
-                <Descriptions.Item label="群摘要">
-                  <Tag color={deliveryStatusColor(report.robotDeliveryState)}>
-                    {deliveryStatusLabel(report.robotDeliveryState)}
-                  </Tag>
-                </Descriptions.Item>
-                <Descriptions.Item label="外部日志 ID">
-                  <Typography.Text copyable={Boolean(logIntent?.externalId)}>
-                    {logIntent?.externalId ?? '—'}
-                  </Typography.Text>
-                </Descriptions.Item>
-              </Descriptions>
-
-              <Space wrap align="end">
-                <Button
-                  type="primary"
-                  danger
-                  icon={<SendOutlined />}
-                  disabled={logSubmissionBlocked}
-                  loading={submitLogMutation.isPending}
-                  onClick={confirmSubmitLog}
-                >
-                  提交钉钉正式日志
-                </Button>
-                <div>
-                  <Typography.Text type="secondary">目标群聊</Typography.Text>
-                  <Select
-                    value={selectedRobotConnectionId}
-                    placeholder="选择要发送到的群聊"
-                    style={{ width: 340, display: 'block', marginTop: 4 }}
-                    onChange={(value: string) => setSelectedRobotConnectionId(value)}
-                    options={healthyRobotConnections.map((connection) => ({
-                      value: connection.id,
-                      label: robotGroupLabel(connection),
-                    }))}
-                  />
-                  <Typography.Text type="secondary" style={{ display: 'block', marginTop: 3 }}>
-                    每个加签机器人对应一个固定群聊
-                  </Typography.Text>
-                </div>
-                <Button
-                  icon={<RobotOutlined />}
-                  disabled={robotNotificationBlocked}
-                  loading={notifyGroupMutation.isPending}
-                  onClick={confirmNotifyGroup}
-                >
-                  发送群交付摘要
-                </Button>
-                <Button
-                  danger
-                  icon={<ExclamationCircleOutlined />}
-                  disabled={failureNotificationBlocked}
-                  loading={notifyFailureMutation.isPending}
-                  onClick={confirmNotifyFailure}
-                >
-                  发送失败提醒
-                </Button>
-                <Button
-                  icon={<ExclamationCircleOutlined />}
-                  disabled={riskNotificationBlocked}
-                  loading={notifyRiskMutation.isPending}
-                  onClick={() => {
-                    setSelectedRiskWarningIds([]);
-                    setRiskNotificationOpen(true);
-                  }}
-                >
-                  发送严重风险提醒
-                </Button>
-                <Tooltip
-                  title={
-                    dirty || autosaveState === 'saving'
-                      ? '请先保存当前编辑，导出只读取服务端不可变版本'
-                      : undefined
-                  }
-                >
-                  <Button
-                    icon={<CopyOutlined />}
-                    disabled={dirty || autosaveState === 'saving'}
-                    loading={exportCopyMutation.isPending}
-                    onClick={() => {
-                      if (!report || !version) return;
-                      exportCopyMutation.mutate({
-                        reportId: report.id,
-                        versionId: version.id,
-                        reportVersion: report.version,
-                      });
-                    }}
-                  >
-                    复制/导出人工兜底
-                  </Button>
-                </Tooltip>
-              </Space>
-
-              {deliveryItems.length === 0 ? (
-                <Empty description="尚无交付意图" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-              ) : (
-                <Table
-                  size="small"
-                  rowKey="id"
-                  pagination={false}
-                  scroll={{ x: 1_180 }}
-                  dataSource={deliveryItems}
-                  expandable={{
-                    expandedRowRender: (item) => (
-                      <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                        <Descriptions size="small" bordered column={{ xs: 1, md: 2, lg: 3 }}>
-                          <Descriptions.Item label="恢复状态">
-                            {deliveryRecoveryStatusLabel(item.recoveryStatus)}
-                          </Descriptions.Item>
-                          <Descriptions.Item label="最后核对">
-                            {formatDateTime(item.lastRecoveryAt)}
-                          </Descriptions.Item>
-                          <Descriptions.Item label="人工裁决">
-                            {item.resolvedAt
-                              ? `${formatDateTime(item.resolvedAt)} · ${item.resolvedBy ?? '本机用户'}`
-                              : '—'}
-                          </Descriptions.Item>
-                          <Descriptions.Item label="裁决原因" span={3}>
-                            {item.resolutionReason ?? '—'}
-                          </Descriptions.Item>
-                        </Descriptions>
-                        {item.recoveryChecks.length === 0 ? (
-                          <Typography.Text type="secondary">
-                            尚无恢复查询或人工裁决证据
-                          </Typography.Text>
-                        ) : (
-                          <Timeline
-                            items={item.recoveryChecks.map((check) => ({
-                              color:
-                                check.outcome === 'matched' || check.outcome === 'manual_succeeded'
-                                  ? 'green'
-                                  : check.outcome === 'absence_confirmed' ||
-                                      check.outcome === 'manual_absence_confirmed'
-                                    ? 'blue'
-                                    : check.outcome === 'ambiguous' ||
-                                        check.outcome === 'query_failed'
-                                      ? 'red'
-                                      : 'gray',
-                              children: (
-                                <Space direction="vertical" size={2}>
-                                  <Space wrap>
-                                    <Typography.Text strong>
-                                      第 {check.sequenceNo} 次 ·{' '}
-                                      {deliveryRecoveryOutcomeLabel(check.outcome)}
+                {deliveryItems.length === 0 ? (
+                  <Empty description="尚无交付意图" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                ) : (
+                  <Table
+                    size="small"
+                    rowKey="id"
+                    pagination={false}
+                    scroll={{ x: 1_180 }}
+                    dataSource={deliveryItems}
+                    expandable={{
+                      expandedRowRender: (item) => (
+                        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                          <Descriptions size="small" bordered column={{ xs: 1, md: 2, lg: 3 }}>
+                            <Descriptions.Item label="恢复状态">
+                              {deliveryRecoveryStatusLabel(item.recoveryStatus)}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="最后核对">
+                              {formatDateTime(item.lastRecoveryAt)}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="人工裁决">
+                              {item.resolvedAt
+                                ? `${formatDateTime(item.resolvedAt)} · ${item.resolvedBy ?? '本机用户'}`
+                                : '—'}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="裁决原因" span={3}>
+                              {item.resolutionReason ?? '—'}
+                            </Descriptions.Item>
+                          </Descriptions>
+                          {item.recoveryChecks.length === 0 ? (
+                            <Typography.Text type="secondary">
+                              尚无恢复查询或人工裁决证据
+                            </Typography.Text>
+                          ) : (
+                            <Timeline
+                              items={item.recoveryChecks.map((check) => ({
+                                color:
+                                  check.outcome === 'matched' ||
+                                  check.outcome === 'manual_succeeded'
+                                    ? 'green'
+                                    : check.outcome === 'absence_confirmed' ||
+                                        check.outcome === 'manual_absence_confirmed'
+                                      ? 'blue'
+                                      : check.outcome === 'ambiguous' ||
+                                          check.outcome === 'query_failed'
+                                        ? 'red'
+                                        : 'gray',
+                                children: (
+                                  <Space direction="vertical" size={2}>
+                                    <Space wrap>
+                                      <Typography.Text strong>
+                                        第 {check.sequenceNo} 次 ·{' '}
+                                        {deliveryRecoveryOutcomeLabel(check.outcome)}
+                                      </Typography.Text>
+                                      <Tag>
+                                        {check.mode === 'provider_query'
+                                          ? '外部只读查询'
+                                          : '人工裁决'}
+                                      </Tag>
+                                    </Space>
+                                    <Typography.Text type="secondary">
+                                      {formatDateTime(check.createdAt)} · 候选{' '}
+                                      {check.candidateCount} · 精确命中 {check.exactMatchCount}
+                                      {check.matchedExternalId
+                                        ? ` · 外部 ID ${check.matchedExternalId}`
+                                        : ''}
                                     </Typography.Text>
-                                    <Tag>
-                                      {check.mode === 'provider_query'
-                                        ? '外部只读查询'
-                                        : '人工裁决'}
-                                    </Tag>
+                                    <Typography.Text type="secondary" copyable>
+                                      证据哈希 {check.evidenceHash}
+                                    </Typography.Text>
                                   </Space>
-                                  <Typography.Text type="secondary">
-                                    {formatDateTime(check.createdAt)} · 候选 {check.candidateCount}{' '}
-                                    · 精确命中 {check.exactMatchCount}
-                                    {check.matchedExternalId
-                                      ? ` · 外部 ID ${check.matchedExternalId}`
-                                      : ''}
-                                  </Typography.Text>
-                                  <Typography.Text type="secondary" copyable>
-                                    证据哈希 {check.evidenceHash}
-                                  </Typography.Text>
-                                </Space>
-                              ),
-                            }))}
-                          />
-                        )}
-                      </Space>
-                    ),
-                  }}
-                  columns={[
-                    {
-                      title: '通道',
-                      dataIndex: 'channel',
-                      width: 130,
-                      render: (value: WeeklyReportDeliveryIntent['channel']) =>
-                        value === 'dingtalk_log' ? '正式日志' : '群摘要',
-                    },
-                    {
-                      title: '状态',
-                      dataIndex: 'status',
-                      width: 120,
-                      render: (value: string) => (
-                        <Tag color={deliveryStatusColor(value)}>{deliveryStatusLabel(value)}</Tag>
-                      ),
-                    },
-                    { title: '尝试次数', dataIndex: 'attemptCount', width: 100 },
-                    {
-                      title: '计划/批准',
-                      key: 'schedule',
-                      width: 210,
-                      render: (_value: unknown, item: WeeklyReportDeliveryIntent) => (
-                        <Space direction="vertical" size={0}>
-                          <Typography.Text>{formatDateTime(item.scheduledFor)}</Typography.Text>
-                          <Typography.Text type="secondary">
-                            {item.scheduleApprovedAt
-                              ? `批准于 ${formatDateTime(item.scheduleApprovedAt)}`
-                              : '立即提交'}
-                          </Typography.Text>
+                                ),
+                              }))}
+                            />
+                          )}
                         </Space>
                       ),
-                    },
-                    {
-                      title: '恢复状态',
-                      dataIndex: 'recoveryStatus',
-                      width: 170,
-                      render: (value: string) => deliveryRecoveryStatusLabel(value),
-                    },
-                    {
-                      title: '外部标识',
-                      dataIndex: 'externalId',
-                      width: 210,
-                      ellipsis: true,
-                      render: (value: string | null) => value ?? '—',
-                    },
-                    {
-                      title: '最近错误',
-                      key: 'error',
-                      width: 220,
-                      render: (_value: unknown, item: WeeklyReportDeliveryIntent) =>
-                        item.lastErrorCode ? (
-                          <Tooltip title={item.lastErrorSummary ?? item.lastErrorCode}>
-                            <Typography.Text type="danger">{item.lastErrorCode}</Typography.Text>
-                          </Tooltip>
-                        ) : item.status === 'unknown' || item.status === 'needs_review' ? (
-                          '必须人工复核'
-                        ) : (
-                          '—'
+                    }}
+                    columns={[
+                      {
+                        title: '通道',
+                        dataIndex: 'channel',
+                        width: 130,
+                        render: (value: WeeklyReportDeliveryIntent['channel']) =>
+                          value === 'dingtalk_log' ? '正式日志' : '群摘要',
+                      },
+                      {
+                        title: '状态',
+                        dataIndex: 'status',
+                        width: 120,
+                        render: (value: string) => (
+                          <Tag color={deliveryStatusColor(value)}>{deliveryStatusLabel(value)}</Tag>
                         ),
-                    },
-                    {
-                      title: '更新时间',
-                      dataIndex: 'updatedAt',
-                      width: 170,
-                      render: (value: string) => formatDateTime(value),
-                    },
-                    {
-                      title: '恢复动作',
-                      key: 'actions',
-                      width: 300,
-                      fixed: 'right',
-                      render: (_value: unknown, item: WeeklyReportDeliveryIntent) => {
-                        const actions = deliveryRecoveryActions(item);
-                        return (
-                          <Space wrap>
-                            {actions.canReconcile && (
-                              <Button
-                                size="small"
-                                loading={
-                                  reconcileDeliveryMutation.isPending &&
-                                  reconcileDeliveryMutation.variables?.intentId === item.id
-                                }
-                                onClick={() => confirmReconcileDelivery(item)}
-                              >
-                                查询钉钉结果
-                              </Button>
-                            )}
-                            {actions.canResolve && (
-                              <Button size="small" onClick={() => openManualResolution(item)}>
-                                人工裁决
-                              </Button>
-                            )}
-                            {actions.canRetry && (
-                              <Button size="small" danger onClick={() => openDeliveryRetry(item)}>
-                                受控重试
-                              </Button>
-                            )}
-                            {!actions.canReconcile &&
-                              !actions.canResolve &&
-                              !actions.canRetry &&
-                              (actions.retryBlockedReason ? (
-                                <Tooltip title={actions.retryBlockedReason}>
-                                  <Typography.Text type="secondary">不可重试</Typography.Text>
-                                </Tooltip>
-                              ) : (
-                                '—'
-                              ))}
-                          </Space>
-                        );
                       },
-                    },
-                  ]}
-                />
-              )}
-
-              <Typography.Title level={5} style={{ margin: '8px 0 0' }}>
-                机器人通知账本
-              </Typography.Title>
-              {notificationItems.length === 0 ? (
-                <Empty description="尚无业务通知事实" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-              ) : (
-                <Table
-                  size="small"
-                  rowKey="id"
-                  pagination={false}
-                  scroll={{ x: 1_100 }}
-                  dataSource={notificationItems}
-                  columns={[
-                    {
-                      title: '通知类型',
-                      dataIndex: 'notificationType',
-                      width: 150,
-                      render: (value: WeeklyReportRobotNotification['notificationType']) =>
-                        notificationTypeLabel(value),
-                    },
-                    {
-                      title: '状态',
-                      dataIndex: 'status',
-                      width: 120,
-                      render: (value: WeeklyReportRobotNotification['status']) => (
-                        <Tag color={deliveryStatusColor(value)}>{deliveryStatusLabel(value)}</Tag>
-                      ),
-                    },
-                    {
-                      title: '状态版本',
-                      dataIndex: 'stateVersion',
-                      width: 100,
-                      render: (value: number) => `v${value}`,
-                    },
-                    {
-                      title: '静默合并',
-                      dataIndex: 'coalescedCount',
-                      width: 100,
-                      render: (value: number) => `${value} 次`,
-                    },
-                    {
-                      title: '供应商调用',
-                      key: 'providerCalls',
-                      width: 170,
-                      render: (_value: unknown, item: WeeklyReportRobotNotification) =>
-                        `${item.providerCallCount} 次${item.retryDelaysMs.length ? ` · 等待 ${item.retryDelaysMs.join('/')}ms` : ''}`,
-                    },
-                    {
-                      title: '最近错误/跳过原因',
-                      key: 'error',
-                      width: 260,
-                      ellipsis: true,
-                      render: (_value: unknown, item: WeeklyReportRobotNotification) => {
-                        const detail = item.lastErrorSummary ?? item.skipReason;
-                        return detail ? (
-                          <Tooltip title={detail}>
-                            <Typography.Text type="danger">
-                              {item.lastErrorCode ?? detail}
+                      { title: '尝试次数', dataIndex: 'attemptCount', width: 100 },
+                      {
+                        title: '计划/批准',
+                        key: 'schedule',
+                        width: 210,
+                        render: (_value: unknown, item: WeeklyReportDeliveryIntent) => (
+                          <Space direction="vertical" size={0}>
+                            <Typography.Text>{formatDateTime(item.scheduledFor)}</Typography.Text>
+                            <Typography.Text type="secondary">
+                              {item.scheduleApprovedAt
+                                ? `批准于 ${formatDateTime(item.scheduleApprovedAt)}`
+                                : '立即提交'}
                             </Typography.Text>
-                          </Tooltip>
-                        ) : (
-                          '—'
-                        );
+                          </Space>
+                        ),
                       },
-                    },
-                    {
-                      title: '发送/更新时间',
-                      key: 'time',
-                      width: 180,
-                      render: (_value: unknown, item: WeeklyReportRobotNotification) =>
-                        formatDateTime(item.sentAt ?? item.updatedAt),
-                    },
-                  ]}
-                />
-              )}
-            </Space>
-          </Card>
+                      {
+                        title: '恢复状态',
+                        dataIndex: 'recoveryStatus',
+                        width: 170,
+                        render: (value: string) => deliveryRecoveryStatusLabel(value),
+                      },
+                      {
+                        title: '外部标识',
+                        dataIndex: 'externalId',
+                        width: 210,
+                        ellipsis: true,
+                        render: (value: string | null) => value ?? '—',
+                      },
+                      {
+                        title: '最近错误',
+                        key: 'error',
+                        width: 220,
+                        render: (_value: unknown, item: WeeklyReportDeliveryIntent) =>
+                          item.lastErrorCode ? (
+                            <Tooltip title={item.lastErrorSummary ?? item.lastErrorCode}>
+                              <Typography.Text type="danger">{item.lastErrorCode}</Typography.Text>
+                            </Tooltip>
+                          ) : item.status === 'unknown' || item.status === 'needs_review' ? (
+                            '必须人工复核'
+                          ) : (
+                            '—'
+                          ),
+                      },
+                      {
+                        title: '更新时间',
+                        dataIndex: 'updatedAt',
+                        width: 170,
+                        render: (value: string) => formatDateTime(value),
+                      },
+                      {
+                        title: '恢复动作',
+                        key: 'actions',
+                        width: 300,
+                        fixed: 'right',
+                        render: (_value: unknown, item: WeeklyReportDeliveryIntent) => {
+                          const connection = (integrations.data?.data ?? []).find(
+                            (candidate) => candidate.id === item.connectionId,
+                          );
+                          const actions = deliveryRecoveryActions(item, {
+                            resultQuerySupported: connection?.type !== 'dingtalk_desktop',
+                          });
+                          return (
+                            <Space wrap>
+                              {actions.canReconcile && (
+                                <Button
+                                  size="small"
+                                  loading={
+                                    reconcileDeliveryMutation.isPending &&
+                                    reconcileDeliveryMutation.variables?.intentId === item.id
+                                  }
+                                  onClick={() => confirmReconcileDelivery(item)}
+                                >
+                                  查询钉钉结果
+                                </Button>
+                              )}
+                              {actions.canResolve && (
+                                <Button size="small" onClick={() => openManualResolution(item)}>
+                                  人工裁决
+                                </Button>
+                              )}
+                              {actions.canRetry && (
+                                <Button size="small" danger onClick={() => openDeliveryRetry(item)}>
+                                  受控重试
+                                </Button>
+                              )}
+                              {!actions.canReconcile &&
+                                !actions.canResolve &&
+                                !actions.canRetry &&
+                                (actions.retryBlockedReason ? (
+                                  <Tooltip title={actions.retryBlockedReason}>
+                                    <Typography.Text type="secondary">不可重试</Typography.Text>
+                                  </Tooltip>
+                                ) : (
+                                  '—'
+                                ))}
+                            </Space>
+                          );
+                        },
+                      },
+                    ]}
+                  />
+                )}
+
+                <Typography.Title level={5} style={{ margin: '8px 0 0' }}>
+                  机器人通知账本
+                </Typography.Title>
+                {notificationItems.length === 0 ? (
+                  <Empty description="尚无业务通知事实" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                ) : (
+                  <Table
+                    size="small"
+                    rowKey="id"
+                    pagination={false}
+                    scroll={{ x: 1_100 }}
+                    dataSource={notificationItems}
+                    columns={[
+                      {
+                        title: '通知类型',
+                        dataIndex: 'notificationType',
+                        width: 150,
+                        render: (value: WeeklyReportRobotNotification['notificationType']) =>
+                          notificationTypeLabel(value),
+                      },
+                      {
+                        title: '状态',
+                        dataIndex: 'status',
+                        width: 120,
+                        render: (value: WeeklyReportRobotNotification['status']) => (
+                          <Tag color={deliveryStatusColor(value)}>{deliveryStatusLabel(value)}</Tag>
+                        ),
+                      },
+                      {
+                        title: '状态版本',
+                        dataIndex: 'stateVersion',
+                        width: 100,
+                        render: (value: number) => `v${value}`,
+                      },
+                      {
+                        title: '静默合并',
+                        dataIndex: 'coalescedCount',
+                        width: 100,
+                        render: (value: number) => `${value} 次`,
+                      },
+                      {
+                        title: '供应商调用',
+                        key: 'providerCalls',
+                        width: 170,
+                        render: (_value: unknown, item: WeeklyReportRobotNotification) =>
+                          `${item.providerCallCount} 次${item.retryDelaysMs.length ? ` · 等待 ${item.retryDelaysMs.join('/')}ms` : ''}`,
+                      },
+                      {
+                        title: '最近错误/跳过原因',
+                        key: 'error',
+                        width: 260,
+                        ellipsis: true,
+                        render: (_value: unknown, item: WeeklyReportRobotNotification) => {
+                          const detail = item.lastErrorSummary ?? item.skipReason;
+                          return detail ? (
+                            <Tooltip title={detail}>
+                              <Typography.Text type="danger">
+                                {item.lastErrorCode ?? detail}
+                              </Typography.Text>
+                            </Tooltip>
+                          ) : (
+                            '—'
+                          );
+                        },
+                      },
+                      {
+                        title: '发送/更新时间',
+                        key: 'time',
+                        width: 180,
+                        render: (_value: unknown, item: WeeklyReportRobotNotification) =>
+                          formatDateTime(item.sentAt ?? item.updatedAt),
+                      },
+                    ]}
+                  />
+                )}
+              </Space>
+            </Card>
+          )}
 
           {autosaveState === 'conflict' && (
             <Alert
@@ -2196,7 +2391,7 @@ export function WeeklyReportsPage() {
             />
           )}
 
-          <div className="weekly-workbench-grid">
+          <div>
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
               <Card
                 title="六字段正文"
@@ -2206,7 +2401,7 @@ export function WeeklyReportsPage() {
                     <Tooltip title={previousId ? '恢复上一历史版本并创建新版本' : '没有更早版本'}>
                       <Button
                         icon={<UndoOutlined />}
-                        disabled={!previousId || restoreMutation.isPending || readOnly}
+                        disabled={!previousId || restoreMutation.isPending}
                         onClick={() =>
                           previousId && restoreVersion(previousId, '撤销：恢复上一历史版本', 'undo')
                         }
@@ -2216,7 +2411,7 @@ export function WeeklyReportsPage() {
                     </Tooltip>
                     <Button
                       icon={<RedoOutlined />}
-                      disabled={redoStack.length === 0 || restoreMutation.isPending || readOnly}
+                      disabled={redoStack.length === 0 || restoreMutation.isPending}
                       onClick={() => {
                         const target = redoStack.at(-1);
                         if (target) restoreVersion(target, '重做：恢复撤销前版本', 'redo');
@@ -2227,13 +2422,21 @@ export function WeeklyReportsPage() {
                     <Button icon={<RobotOutlined />} onClick={() => setAiOpen(true)}>
                       AI 填写 / 建议
                     </Button>
+                    <Button
+                      icon={<DiffOutlined />}
+                      loading={contentTemplate.isLoading}
+                      disabled={editMutation.isPending}
+                      onClick={applyContentTemplateToCurrentReport}
+                    >
+                      应用周报模板
+                    </Button>
                     <Button icon={<HistoryOutlined />} onClick={() => setHistoryOpen(true)}>
                       历史
                     </Button>
                     <Button
                       type="primary"
                       icon={<SaveOutlined />}
-                      disabled={!dirty || readOnly}
+                      disabled={!dirty}
                       loading={editMutation.isPending}
                       onClick={saveFieldsNow}
                     >
@@ -2245,7 +2448,6 @@ export function WeeklyReportsPage() {
                 <Form<EditorValues>
                   form={form}
                   layout="vertical"
-                  disabled={readOnly}
                   onValuesChange={() => {
                     setDirty(true);
                     setAutosaveState('dirty');
@@ -2278,272 +2480,145 @@ export function WeeklyReportsPage() {
                   ))}
                 </Form>
               </Card>
-
-              <Card
-                title="提交元数据"
-                extra={
-                  <Button
-                    icon={<SaveOutlined />}
-                    disabled={readOnly}
-                    loading={editMutation.isPending}
-                    onClick={saveMetadata}
-                  >
-                    保存为新版本
-                  </Button>
-                }
-              >
-                <div className="weekly-metadata-grid">
-                  <div>
-                    <Typography.Text strong>钉钉模板映射</Typography.Text>
-                    <Select
-                      allowClear
-                      value={selectedMappingId ?? undefined}
-                      disabled={readOnly}
-                      placeholder="选择当前有效映射"
-                      style={{ width: '100%', marginTop: 8 }}
-                      onChange={(mappingId: string | undefined) => {
-                        const mapping = currentMappings.find((item) => item.id === mappingId);
-                        setSelectedMappingId(mappingId ?? null);
-                        setSelectedConnectionId(mapping?.connectionId ?? null);
-                        setSelectedRecipientIds([]);
-                      }}
-                      options={currentMappings.map((mapping) => ({
-                        value: mapping.id,
-                        disabled: mapping.expired,
-                        label: `${mapping.templateName} · v${mapping.versionNo}${mapping.expired ? '（已过期）' : ''}`,
-                      }))}
-                    />
-                    {currentMappings.length === 0 && (
-                      <Typography.Paragraph type="warning" style={{ marginTop: 8 }}>
-                        没有真实探测并保存的模板映射；确认会保持阻断。
-                      </Typography.Paragraph>
-                    )}
-                  </div>
-                  <div>
-                    <Typography.Text strong>已验证接收范围</Typography.Text>
-                    <Select
-                      mode="multiple"
-                      value={selectedRecipientIds}
-                      disabled={readOnly || !selectedConnectionId}
-                      loading={recipients.isLoading}
-                      placeholder="选择用户、部门或群组"
-                      style={{ width: '100%', marginTop: 8 }}
-                      onChange={setSelectedRecipientIds}
-                      options={(recipients.data?.data ?? []).map((recipient) => ({
-                        value: recipient.id,
-                        disabled: !recipient.available || recipient.expired,
-                        label: `${recipient.displayName} · ${recipient.subjectType}${recipient.expired ? '（已过期）' : ''}`,
-                      }))}
-                    />
-                  </div>
-                  <div>
-                    <Typography.Text strong>计划提交时间</Typography.Text>
-                    <DatePicker
-                      showTime
-                      allowClear
-                      value={selectedSchedule}
-                      disabled={readOnly}
-                      onChange={setSelectedSchedule}
-                      placeholder="留空表示确认后立即提交"
-                      style={{ width: '100%', marginTop: 8 }}
-                    />
-                  </div>
-                  <div>
-                    <Typography.Text strong>附件</Typography.Text>
-                    <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 8 }}>
-                      {version.attachments.map((attachment) => (
-                        <div className="weekly-attachment-row" key={attachment.id}>
-                          <Space>
-                            <PaperClipOutlined />
-                            <Typography.Text>{attachment.originalName}</Typography.Text>
-                            <Typography.Text type="secondary">
-                              {formatBytes(attachment.sizeBytes)}
-                            </Typography.Text>
-                          </Space>
-                          <Button
-                            danger
-                            size="small"
-                            disabled={readOnly || editMutation.isPending}
-                            onClick={() => void removeAttachment(attachment.id)}
-                          >
-                            移除
-                          </Button>
-                        </div>
-                      ))}
-                      <Upload {...uploadProps}>
-                        <Button
-                          icon={<PaperClipOutlined />}
-                          disabled={Boolean(uploadProps.disabled)}
-                        >
-                          上传并加入新版本
-                        </Button>
-                      </Upload>
-                      <Typography.Text type="secondary">
-                        PDF/DOCX/XLSX/PNG/JPEG/TXT，最大 8 MiB；确认时会重新校验磁盘哈希。
-                      </Typography.Text>
-                    </Space>
-                  </div>
-                </div>
-              </Card>
-
-              <Card
-                title="确认预检"
-                extra={
-                  <Button
-                    type="primary"
-                    icon={<CheckCircleOutlined />}
-                    onClick={() => setConfirmOpen(true)}
-                  >
-                    打开只读确认预览
-                  </Button>
-                }
-              >
-                <div className="weekly-gate-grid">
-                  {gate.items.map((item) => (
-                    <div
-                      className={item.passed ? 'weekly-gate passed' : 'weekly-gate blocked'}
-                      key={item.key}
-                    >
-                      <Typography.Text strong>{item.label}</Typography.Text>
-                      <StatusTag status={item.passed ? 'ready' : 'blocked'} />
-                      <Typography.Text type="secondary">{item.detail}</Typography.Text>
-                    </div>
-                  ))}
-                </div>
-              </Card>
             </Space>
 
-            <Card className="weekly-context-card" title="来源与版本上下文">
-              <Tabs
-                items={[
-                  {
-                    key: 'sources',
-                    label: `正文来源 ${version.sourceLinks.length}`,
-                    children:
-                      sourceGroups.size === 0 ? (
-                        <Empty
-                          description="当前版本没有来源链接"
-                          image={Empty.PRESENTED_IMAGE_SIMPLE}
-                        />
-                      ) : (
-                        <Collapse
-                          size="small"
-                          defaultActiveKey={[...sourceGroups.keys()]}
-                          items={[...sourceGroups.entries()].map(([field, links]) => ({
-                            key: field,
-                            label: `${fieldLabel(field)} · ${links.length}`,
-                            children: (
-                              <List
-                                size="small"
-                                dataSource={links}
-                                renderItem={(link) => (
-                                  <List.Item>
-                                    <Space direction="vertical" size={2} style={{ width: '100%' }}>
-                                      <Space wrap>
-                                        <Tag color={sourceColor(link.sourceType)}>
-                                          {link.sourceType}
-                                        </Tag>
-                                        <Typography.Text code>{link.sourceId}</Typography.Text>
+            {SHOW_INTERNAL_WEEKLY_TOOLS && (
+              <Card className="weekly-context-card" title="来源与版本上下文">
+                <Tabs
+                  items={[
+                    {
+                      key: 'sources',
+                      label: `正文来源 ${version.sourceLinks.length}`,
+                      children:
+                        sourceGroups.size === 0 ? (
+                          <Empty
+                            description="当前版本没有来源链接"
+                            image={Empty.PRESENTED_IMAGE_SIMPLE}
+                          />
+                        ) : (
+                          <Collapse
+                            size="small"
+                            defaultActiveKey={[...sourceGroups.keys()]}
+                            items={[...sourceGroups.entries()].map(([field, links]) => ({
+                              key: field,
+                              label: `${fieldLabel(field)} · ${links.length}`,
+                              children: (
+                                <List
+                                  size="small"
+                                  dataSource={links}
+                                  renderItem={(link) => (
+                                    <List.Item>
+                                      <Space
+                                        direction="vertical"
+                                        size={2}
+                                        style={{ width: '100%' }}
+                                      >
+                                        <Space wrap>
+                                          <Tag color={sourceColor(link.sourceType)}>
+                                            {link.sourceType}
+                                          </Tag>
+                                          <Typography.Text code>{link.sourceId}</Typography.Text>
+                                        </Space>
+                                        <Typography.Text>
+                                          {sourceTitle(link.sourceSummary)}
+                                        </Typography.Text>
+                                        <Typography.Text type="secondary" ellipsis>
+                                          哈希 {link.sourceContentHash.slice(0, 16)}…
+                                        </Typography.Text>
                                       </Space>
-                                      <Typography.Text>
-                                        {sourceTitle(link.sourceSummary)}
-                                      </Typography.Text>
-                                      <Typography.Text type="secondary" ellipsis>
-                                        哈希 {link.sourceContentHash.slice(0, 16)}…
-                                      </Typography.Text>
-                                    </Space>
-                                  </List.Item>
-                                )}
+                                    </List.Item>
+                                  )}
+                                />
+                              ),
+                            }))}
+                          />
+                        ),
+                    },
+                    {
+                      key: 'warnings',
+                      label: `Warning ${version.warnings.length}`,
+                      children:
+                        version.warnings.length === 0 ? (
+                          <Empty description="没有 warning" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                        ) : (
+                          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                            {version.warnings.map((warning) => (
+                              <Alert
+                                key={warning.id}
+                                type={warning.blocking ? 'error' : 'warning'}
+                                showIcon
+                                message={warning.code}
+                                description={warning.message ?? warningText(warning)}
                               />
-                            ),
-                          }))}
-                        />
-                      ),
-                  },
-                  {
-                    key: 'warnings',
-                    label: `Warning ${version.warnings.length}`,
-                    children:
-                      version.warnings.length === 0 ? (
-                        <Empty description="没有 warning" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-                      ) : (
-                        <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                          {version.warnings.map((warning) => (
-                            <Alert
-                              key={warning.id}
-                              type={warning.blocking ? 'error' : 'warning'}
-                              showIcon
-                              message={warning.code}
-                              description={warning.message ?? warningText(warning)}
-                            />
-                          ))}
-                        </Space>
-                      ),
-                  },
-                  {
-                    key: 'candidates',
-                    label: `候选 ${candidates.length}`,
-                    children:
-                      candidates.length === 0 ? (
-                        <Empty
-                          description="没有未确认证据候选"
-                          image={Empty.PRESENTED_IMAGE_SIMPLE}
-                        />
-                      ) : (
-                        <List
-                          size="small"
-                          dataSource={candidates}
-                          renderItem={(candidate) => (
-                            <List.Item>
-                              <Space direction="vertical" size={2}>
-                                <Space>
-                                  <Tag color="gold">待确认</Tag>
-                                  <Typography.Text>
-                                    {String(candidate.title ?? candidate.id)}
+                            ))}
+                          </Space>
+                        ),
+                    },
+                    {
+                      key: 'candidates',
+                      label: `候选 ${candidates.length}`,
+                      children:
+                        candidates.length === 0 ? (
+                          <Empty
+                            description="没有未确认证据候选"
+                            image={Empty.PRESENTED_IMAGE_SIMPLE}
+                          />
+                        ) : (
+                          <List
+                            size="small"
+                            dataSource={candidates}
+                            renderItem={(candidate) => (
+                              <List.Item>
+                                <Space direction="vertical" size={2}>
+                                  <Space>
+                                    <Tag color="gold">待确认</Tag>
+                                    <Typography.Text>
+                                      {String(candidate.title ?? candidate.id)}
+                                    </Typography.Text>
+                                  </Space>
+                                  <Typography.Text type="secondary">
+                                    只进入快照候选，不会擅自写入正文或绑定任务。
                                   </Typography.Text>
                                 </Space>
-                                <Typography.Text type="secondary">
-                                  只进入快照候选，不会擅自写入正文或绑定任务。
-                                </Typography.Text>
-                              </Space>
-                            </List.Item>
-                          )}
-                        />
+                              </List.Item>
+                            )}
+                          />
+                        ),
+                    },
+                    {
+                      key: 'snapshot',
+                      label: '快照',
+                      children: (
+                        <Descriptions column={1} size="small" bordered>
+                          <Descriptions.Item label="来源哈希">
+                            <Typography.Text code copyable>
+                              {version.sourceSnapshot.sourceContentHash}
+                            </Typography.Text>
+                          </Descriptions.Item>
+                          <Descriptions.Item label="规则版本">
+                            {version.sourceSnapshot.ruleVersion}
+                          </Descriptions.Item>
+                          <Descriptions.Item label="净化策略">
+                            {version.sourceSnapshot.sanitizationPolicyVersion}
+                          </Descriptions.Item>
+                          <Descriptions.Item label="Jira 成功运行">
+                            {version.sourceSnapshot.jiraSyncRunIds.length
+                              ? version.sourceSnapshot.jiraSyncRunIds.join('、')
+                              : '无'}
+                          </Descriptions.Item>
+                          <Descriptions.Item label="新鲜度策略">
+                            {safeText(version.sourceSnapshot.freshnessPolicy.mode, '未知')}
+                          </Descriptions.Item>
+                          <Descriptions.Item label="冻结时间">
+                            {formatDateTime(version.sourceSnapshot.createdAt)}
+                          </Descriptions.Item>
+                        </Descriptions>
                       ),
-                  },
-                  {
-                    key: 'snapshot',
-                    label: '快照',
-                    children: (
-                      <Descriptions column={1} size="small" bordered>
-                        <Descriptions.Item label="来源哈希">
-                          <Typography.Text code copyable>
-                            {version.sourceSnapshot.sourceContentHash}
-                          </Typography.Text>
-                        </Descriptions.Item>
-                        <Descriptions.Item label="规则版本">
-                          {version.sourceSnapshot.ruleVersion}
-                        </Descriptions.Item>
-                        <Descriptions.Item label="净化策略">
-                          {version.sourceSnapshot.sanitizationPolicyVersion}
-                        </Descriptions.Item>
-                        <Descriptions.Item label="Jira 成功运行">
-                          {version.sourceSnapshot.jiraSyncRunIds.length
-                            ? version.sourceSnapshot.jiraSyncRunIds.join('、')
-                            : '无'}
-                        </Descriptions.Item>
-                        <Descriptions.Item label="新鲜度策略">
-                          {safeText(version.sourceSnapshot.freshnessPolicy.mode, '未知')}
-                        </Descriptions.Item>
-                        <Descriptions.Item label="冻结时间">
-                          {formatDateTime(version.sourceSnapshot.createdAt)}
-                        </Descriptions.Item>
-                      </Descriptions>
-                    ),
-                  },
-                ]}
-              />
-            </Card>
+                    },
+                  ]}
+                />
+              </Card>
+            )}
           </div>
         </>
       ) : (
@@ -2813,10 +2888,47 @@ export function WeeklyReportsPage() {
       </Modal>
 
       <Modal
-        title="生成确定性周报版本"
+        title="新建周报模板"
+        open={contentTemplateOpen}
+        confirmLoading={contentTemplateMutation.isPending}
+        okText="保存默认内容"
+        cancelText="取消"
+        width={820}
+        onCancel={() => setContentTemplateOpen(false)}
+        onOk={() => {
+          void contentTemplateForm.validateFields().then((values) => {
+            contentTemplateMutation.mutate(values);
+          });
+        }}
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="这里维护六字段正文模块的默认内容"
+          description="保存后，新建周报会优先使用非空默认值；已有周报可在六字段正文右上角点击“应用周报模板”。模板中留空的字段不会覆盖已有内容，填写日期也不会被模板修改。"
+          style={{ marginBottom: 16 }}
+        />
+        <Form form={contentTemplateForm} layout="vertical">
+          {weeklyReportFields
+            .filter((definition) => definition.key !== 'reportDate')
+            .map((definition) => (
+              <Form.Item key={definition.key} name={definition.key} label={definition.label}>
+                <Input.TextArea
+                  autoSize={{ minRows: definition.key === 'weeklyWork' ? 5 : 3, maxRows: 12 }}
+                  showCount
+                  maxLength={50_000}
+                  placeholder={`输入${definition.label}的默认内容；留空则自动生成`}
+                />
+              </Form.Item>
+            ))}
+        </Form>
+      </Modal>
+
+      <Modal
+        title="新建周报"
         open={generateOpen}
         confirmLoading={generateMutation.isPending}
-        okText="采集快照并生成"
+        okText="生成周报"
         cancelText="取消"
         width={720}
         onCancel={() => setGenerateOpen(false)}
@@ -2848,7 +2960,7 @@ export function WeeklyReportsPage() {
           layout="vertical"
           initialValues={{
             customPeriod: false,
-            freshnessMode: 'require_fresh',
+            freshnessMode: 'allow_stale',
             includeUnconfirmedEvidence: false,
           }}
         >
@@ -2895,117 +3007,10 @@ export function WeeklyReportsPage() {
               )
             }
           </Form.Item>
-          <Form.Item name="freshnessMode" label="来源新鲜度策略">
-            <Select
-              options={[
-                { value: 'require_fresh', label: '严格：过期或不可用即阻断生成' },
-                { value: 'allow_stale', label: '显式允许旧来源，并写入 warning' },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item
-            noStyle
-            shouldUpdate={(
-              before: Partial<{ freshnessMode: string }>,
-              after: Partial<{ freshnessMode: string }>,
-            ) => before.freshnessMode !== after.freshnessMode}
-          >
-            {({ getFieldValue }) =>
-              getFieldValue('freshnessMode') === 'allow_stale' ? (
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="旧来源会固定到本次不可变快照，确认前必须逐项知悉 warning。"
-                  style={{ marginBottom: 16 }}
-                />
-              ) : null
-            }
-          </Form.Item>
-          <Form.Item name="includeUnconfirmedEvidence" valuePropName="checked">
-            <Checkbox>
-              把待确认证据纳入快照候选（不会自动绑定任务，也不会直接写入确定性正文）
-            </Checkbox>
-          </Form.Item>
+          <Typography.Text type="secondary">
+            将使用最近一次已同步的工作数据生成草稿，生成后可继续编辑。
+          </Typography.Text>
         </Form>
-      </Modal>
-
-      <Modal
-        title="只读确认预览"
-        open={confirmOpen}
-        width={1080}
-        okText="锁定当前版本"
-        cancelText="返回编辑"
-        okButtonProps={{ disabled: !gate.ready }}
-        confirmLoading={confirmMutation.isPending}
-        onCancel={() => setConfirmOpen(false)}
-        onOk={() => {
-          if (!report || !version || !version.templateMappingVersionId || !gate.ready) return;
-          confirmMutation.mutate({
-            reportId: report.id,
-            versionId: version.id,
-            reportVersion: report.version,
-            templateMappingVersionId: version.templateMappingVersionId,
-            acknowledgedWarningIds,
-          });
-        }}
-      >
-        {report && version && (
-          <Space direction="vertical" size={16} style={{ width: '100%' }}>
-            <Alert
-              type="info"
-              showIcon
-              message={`将锁定 v${version.versionNo} · ${version.contentHash.slice(0, 16)}…`}
-              description="确认仅表示内容、附件、模板和收件范围已经人工核对；不会在此步骤调用钉钉。"
-            />
-            <div className="weekly-gate-grid">
-              {gate.items.map((item) => (
-                <div
-                  className={item.passed ? 'weekly-gate passed' : 'weekly-gate blocked'}
-                  key={item.key}
-                >
-                  <Typography.Text strong>{item.label}</Typography.Text>
-                  <StatusTag status={item.passed ? 'ready' : 'blocked'} />
-                  <Typography.Text type="secondary">{item.detail}</Typography.Text>
-                </div>
-              ))}
-            </div>
-            <Divider titlePlacement="start">六字段正文</Divider>
-            <Descriptions bordered column={1} size="small">
-              {weeklyReportFields.map((field) => (
-                <Descriptions.Item key={field.key} label={field.label}>
-                  <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', margin: 0 }}>
-                    {version.fields[field.key] || '（空）'}
-                  </Typography.Paragraph>
-                </Descriptions.Item>
-              ))}
-            </Descriptions>
-            <Divider titlePlacement="start">Warning 逐项知悉</Divider>
-            {version.warnings.length === 0 ? (
-              <Alert type="success" showIcon message="当前版本没有 warning" />
-            ) : (
-              <Checkbox.Group
-                value={acknowledgedWarningIds}
-                onChange={(values) => setAcknowledgedWarningIds(values)}
-                style={{ width: '100%' }}
-              >
-                <Space direction="vertical" style={{ width: '100%' }}>
-                  {version.warnings.map((warning) => (
-                    <Card size="small" key={warning.id}>
-                      <Checkbox value={warning.id} disabled={warning.blocking}>
-                        <Space wrap>
-                          <Tag color={warning.blocking ? 'red' : 'gold'}>{warning.code}</Tag>
-                          <Typography.Text>
-                            {warning.message ?? warningText(warning)}
-                          </Typography.Text>
-                        </Space>
-                      </Checkbox>
-                    </Card>
-                  ))}
-                </Space>
-              </Checkbox.Group>
-            )}
-          </Space>
-        )}
       </Modal>
 
       <Modal
@@ -3097,8 +3102,8 @@ export function WeeklyReportsPage() {
             type="info"
             showIcon
             icon={<SafetyCertificateOutlined />}
-            message="AI 先生成独立建议，也可以由你明确点击后直接填入周报"
-            description="“AI 生成并填入周报”会在建议通过事实校验后立即采纳为当前版本，便于测试和继续手动编辑。模型只接收冻结快照重新构造的白名单元数据；失败或安全拦截时当前正文保持不变。"
+            message="AI 生成后仍由你决定是否提交"
+            description="AI 会根据已采集的工作信息生成周报正文。生成后可以继续修改，点击提交前不会写入钉钉。"
           />
 
           <Card title="生成新的 AI 建议" size="small">
@@ -3172,22 +3177,7 @@ export function WeeklyReportsPage() {
                   <Checkbox>允许发送按政策生成且已同意的 Jira 描述摘要</Checkbox>
                 </Form.Item>
               </Space>
-              <Alert
-                type="warning"
-                showIcon
-                message="秘密扫描优先于凭证读取和外部请求"
-                description="命中私钥、Authorization、token、连接串、凭证赋值、源码、diff 或客户高敏标记时会本地阻断；记录和页面只显示类别，不显示命中原文。"
-                style={{ marginTop: 16, marginBottom: 16 }}
-              />
               <Space wrap>
-                <Button
-                  icon={<ExperimentOutlined />}
-                  loading={editMutation.isPending}
-                  disabled={!report || !version || readOnly || editMutation.isPending}
-                  onClick={() => void loadWeeklyAiTestData()}
-                >
-                  填入测试数据
-                </Button>
                 <Button
                   htmlType="submit"
                   icon={<RobotOutlined />}
@@ -3480,7 +3470,7 @@ export function WeeklyReportsPage() {
                     </Button>
                     <Button
                       size="small"
-                      disabled={item.id === version?.id || readOnly}
+                      disabled={item.id === version?.id}
                       onClick={() =>
                         restoreVersion(item.id, `从历史 v${item.versionNo} 恢复`, 'history')
                       }
@@ -3583,18 +3573,6 @@ function editorFields(values: EditorValues): WeeklyReportVersion['fields'] {
   };
 }
 
-const weeklyAiTestFields = {
-  recentGoals: '【测试数据】Alpha 测试项目：验证周报 AI 从事实输入、生成建议到自动采纳的完整流程。',
-  weeklyWork:
-    '【测试数据】Alpha 测试项目：已完成硅基流动模型连接验证、结构化输出校验和周报自动填入测试。',
-  nextWeekPlans: '【测试数据】Alpha 测试项目：继续验证手动编辑、自动保存、版本历史和群聊通知流程。',
-  problems: '【测试数据】Alpha 测试项目：当前风险是模型输出格式可能波动，需要验证本地回退机制。',
-  other: '【测试数据】本内容仅用于测试环境的真实流程模拟，不代表实际工作记录。',
-} satisfies Pick<
-  WeeklyReportVersion['fields'],
-  'recentGoals' | 'weeklyWork' | 'nextWeekPlans' | 'problems' | 'other'
->;
-
 function sameWeeklyFields(
   left: WeeklyReportVersion['fields'],
   right: WeeklyReportVersion['fields'],
@@ -3644,7 +3622,7 @@ function statusLabel(status: WeeklyReport['status']): string {
     collecting: '采集中',
     generated: '已生成',
     editing: '编辑中',
-    confirmed: '已确认',
+    confirmed: '已保存',
   }[status];
 }
 
@@ -3678,6 +3656,67 @@ function deliveryStatusColor(status: string): string {
   return 'default';
 }
 
+function directSubmitStageLabel(stage: DirectSubmitStage): string {
+  return {
+    idle: '自动填写并提交到钉钉',
+    saving_content: '正在保存正文…',
+    saving_settings: '正在保存提交设置…',
+    preparing: '正在准备钉钉提交…',
+    queuing: '正在启动自动提交…',
+  }[stage];
+}
+
+function deliveryAutomationTitle(intent: WeeklyReportDeliveryIntent): string {
+  if (intent.status === 'pending') return '已启动自动提交，等待钉钉桌面执行';
+  if (intent.status === 'running') return '正在操作钉钉并填写周报';
+  if (intent.status === 'succeeded') return '钉钉周报提交成功';
+  if (intent.status === 'failed') {
+    return `自动提交失败：${desktopAutomationFailureStage(intent.lastErrorCode)}`;
+  }
+  if (intent.status === 'unknown' || intent.status === 'needs_review') {
+    return '钉钉已执行提交动作，但结果需要人工核对';
+  }
+  return `自动提交流程${deliveryStatusLabel(intent.status)}`;
+}
+
+function deliveryAutomationDescription(intent: WeeklyReportDeliveryIntent): string {
+  const route = '执行路径：工作台 → My 下的 Report → Create → 指定模板 → 填写六字段 → 提交。';
+  if (intent.status === 'failed') {
+    const detail = intent.lastErrorSummary ?? intent.lastErrorCode ?? '未返回详细错误';
+    return `${detail}。修复问题后可点击“重新自动提交到钉钉”。${route}`;
+  }
+  if (intent.status === 'unknown' || intent.status === 'needs_review') {
+    return '为避免重复周报，系统不会自动重试。请先在钉钉“我发出的”中核对结果。';
+  }
+  if (intent.status === 'succeeded') {
+    return `已取得桌面提交回执：${intent.externalId ?? '本地回执已记录'}`;
+  }
+  return route;
+}
+
+function desktopAutomationFailureStage(errorCode: string | null): string {
+  if (!errorCode) return '未知步骤';
+  if (errorCode.includes('WORKPLACE')) return '未找到工作台';
+  if (errorCode.includes('MY_SECTION')) return '未找到 My 应用区';
+  if (errorCode.includes('REPORT_APP')) return '未找到 My 下的 Report';
+  if (errorCode.includes('CREATE')) return '未找到 Create';
+  if (errorCode.includes('TEMPLATE')) return '未找到指定模板';
+  if (errorCode.includes('FORM')) return '未进入模板填写页';
+  if (errorCode.includes('FIELD') || errorCode.includes('INPUT')) return '填写六字段';
+  if (errorCode.includes('RECIPIENT')) return '校验接收范围';
+  if (errorCode.includes('SUBMIT')) return '点击或确认提交';
+  return errorCode;
+}
+
+function submissionLogColor(status: SubmissionOperationLog['status']): string {
+  return {
+    waiting: 'gray',
+    running: 'blue',
+    success: 'green',
+    error: 'red',
+  }[status];
+}
+
 function notificationTypeLabel(type: WeeklyReportRobotNotification['notificationType']): string {
   return {
     generation_reminder: '生成提醒',
@@ -3692,12 +3731,6 @@ function notificationTypeLabel(type: WeeklyReportRobotNotification['notification
 
 function formatDateTime(value: string | null | undefined): string {
   return value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '—';
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
-  return `${(value / 1024 / 1024).toFixed(1)} MiB`;
 }
 
 function fieldLabel(field: string): string {
@@ -3729,7 +3762,7 @@ function robotGroupLabel(connection: Integration): string {
 function warningText(warning: Record<string, unknown>): string {
   if (typeof warning.message === 'string') return warning.message;
   const refs = Array.isArray(warning.sourceRefs) ? warning.sourceRefs.length : 0;
-  return refs > 0 ? `涉及 ${refs} 个来源事实` : '请核对该风险后再确认';
+  return refs > 0 ? `涉及 ${refs} 个来源事实` : '请核对该风险后再处理';
 }
 
 function changeSummaryText(summary: Record<string, unknown> | undefined): string {

@@ -14,6 +14,7 @@ import type { RequestAuditContext } from '../settings/profile.service.js';
 import { IntegrationProbeRegistry, type IntegrationType } from './integration-probe.registry.js';
 import { aiProviderConfigSchema } from '../ai/ai-provider.config.js';
 import { validateDingTalkRobotWebhook } from '../dingtalk/dingtalk-robot.client.js';
+import { dingTalkDesktopConfigSchema } from '../dingtalk/dingtalk-desktop.client.js';
 
 const configSchemas = {
   gitlab: z
@@ -38,6 +39,7 @@ const configSchemas = {
       templateName: z.string().trim().min(1).max(200).default('uTwin产研创新部周报'),
     })
     .strict(),
+  dingtalk_desktop: dingTalkDesktopConfigSchema,
   dingtalk_robot: z
     .object({
       robotName: z.string().trim().min(1).max(100),
@@ -62,6 +64,7 @@ const credentialSchemas: Record<IntegrationType, z.ZodType> = {
       accessToken: z.string().min(8).max(4_096).optional(),
     })
     .strict(),
+  dingtalk_desktop: z.never(),
   dingtalk_robot: z
     .object({ webhook: z.string().url().max(4_096), secret: z.string().min(8).max(4_096) })
     .strict(),
@@ -231,6 +234,12 @@ export class IntegrationsService {
         configJson: JSON.stringify(normalized.config),
         version: { increment: 1 },
       };
+      if (before.type === 'dingtalk_desktop' && input.config !== undefined) {
+        updateData.status = 'unknown';
+        updateData.capabilitiesJson = '{}';
+        updateData.lastTestedAt = null;
+        updateData.lastSuccessAt = null;
+      }
       if (input.name !== undefined) updateData.name = input.name;
       if (credential && newCredentialRef) {
         if (before.type === 'dingtalk_robot') {
@@ -459,7 +468,7 @@ export class IntegrationsService {
     baseUrl: string | undefined,
     config: Record<string, unknown>,
   ) {
-    const requiresUrl = type !== 'dingtalk_robot';
+    const requiresUrl = !['dingtalk_robot', 'dingtalk_desktop'].includes(type);
     if (requiresUrl && !baseUrl)
       throw new DomainError('INTEGRATION_URL_REQUIRED', '该集成必须配置基础地址', {
         httpStatus: 422,

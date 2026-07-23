@@ -8,13 +8,27 @@ export interface DeliveryRecoveryActions {
   retryBlockedReason: string | null;
 }
 
+export function currentLogDeliveryIntent(
+  intents: WeeklyReportDeliveryIntent[],
+  confirmationId: string | null | undefined,
+): WeeklyReportDeliveryIntent | null {
+  if (!confirmationId) return null;
+  return (
+    intents.find(
+      (intent) => intent.channel === 'dingtalk_log' && intent.confirmationId === confirmationId,
+    ) ?? null
+  );
+}
+
 /** 页面动作矩阵与后端门禁保持同向：unknown 永远不能直接重试。 */
 export function deliveryRecoveryActions(
   intent: WeeklyReportDeliveryIntent,
+  options: { resultQuerySupported?: boolean } = {},
 ): DeliveryRecoveryActions {
   const unresolved = intent.status === 'unknown' || intent.status === 'needs_review';
+  const resultQuerySupported = options.resultQuerySupported ?? true;
   return {
-    canReconcile: intent.channel === 'dingtalk_log' && unresolved,
+    canReconcile: intent.channel === 'dingtalk_log' && unresolved && resultQuerySupported,
     canResolve: unresolved,
     canRetry: intent.status === 'failed' && intent.attemptCount < 3,
     retryBlockedReason:

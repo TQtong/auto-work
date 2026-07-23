@@ -168,12 +168,6 @@ export function generateWeeklyReportRuleDraft(
   for (const field of Object.keys(fields) as WeeklyReportField[]) {
     fields[field] = deduplicateBlocks(fields[field]).sort(compareBlocks);
   }
-  if (fields.problems.length === 0) {
-    fields.problems.push(
-      makeBlock('problems', null, '需要协助或存在的问题', '暂无', [], null, null, false, 'none'),
-    );
-  }
-
   const warnings = buildWarnings(tasks, evidence, taskById, Boolean(input.calendarVersion));
   const sourceIds = {
     taskIds: [...new Set(tasks.map((task) => task.id))].sort(),
@@ -550,7 +544,7 @@ function sourceTypeLabel(type: WeeklyEvidenceFact['sourceType']): string {
 }
 
 function displayTask(task: WeeklyTaskFact): string {
-  return task.issueKey ? `${task.issueKey} ${task.title}` : task.title;
+  return task.title;
 }
 
 function taskSortKey(task: WeeklyTaskFact): string {

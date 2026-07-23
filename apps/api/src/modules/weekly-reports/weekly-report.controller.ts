@@ -37,6 +37,7 @@ import {
   retryWeeklyReportDeliverySchema,
   submitWeeklyReportLogSchema,
   updateWeeklyReminderPolicySchema,
+  updateWeeklyReportContentTemplateSchema,
 } from './weekly-report.schemas.js';
 import { WeeklyReportAttachmentService } from './weekly-report-attachment.service.js';
 import { WeeklyReportAiService } from './weekly-report-ai.service.js';
@@ -65,6 +66,23 @@ export class WeeklyReportController {
     private readonly sessions: SessionService,
     private readonly security: LocalSecurityService,
   ) {}
+
+  @Get('content-template')
+  public async getContentTemplate(@Req() request: FastifyRequest) {
+    return apiResponse(await this.reports.getContentTemplate(), request.autoWork.correlationId);
+  }
+
+  @Put('content-template')
+  public async updateContentTemplate(@Body() rawBody: unknown, @Req() request: FastifyRequest) {
+    const input = updateWeeklyReportContentTemplateSchema.parse(rawBody);
+    return apiResponse(
+      await this.reports.updateContentTemplate(input, {
+        correlationId: request.autoWork.correlationId,
+        sessionId: request.autoWork.sessionId,
+      }),
+      request.autoWork.correlationId,
+    );
+  }
 
   @Get('reminder-policy')
   public async getReminderPolicy(@Req() request: FastifyRequest) {
@@ -102,6 +120,17 @@ export class WeeklyReportController {
     return apiResponse(await this.reports.list(query), request.autoWork.correlationId, {
       asOf: new Date().toISOString(),
     });
+  }
+
+  @Delete(':id')
+  public async archive(@Param('id') id: string, @Req() request: FastifyRequest) {
+    return apiResponse(
+      await this.reports.archive(id, {
+        correlationId: request.autoWork.correlationId,
+        sessionId: request.autoWork.sessionId,
+      }),
+      request.autoWork.correlationId,
+    );
   }
 
   @Get(':id/deliveries')

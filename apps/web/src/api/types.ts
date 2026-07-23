@@ -83,7 +83,7 @@ export interface WeeklyReportReminderClock {
 
 export interface Integration {
   id: string;
-  type: 'gitlab' | 'jira' | 'dingtalk_log' | 'dingtalk_robot' | 'ai';
+  type: 'gitlab' | 'jira' | 'dingtalk_log' | 'dingtalk_desktop' | 'dingtalk_robot' | 'ai';
   name: string;
   baseUrl: string | null;
   credentialMask: Record<string, string> | null;

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 
-export type IntegrationType = 'gitlab' | 'jira' | 'dingtalk_log' | 'dingtalk_robot' | 'ai';
+export type IntegrationType =
+  'gitlab' | 'jira' | 'dingtalk_log' | 'dingtalk_desktop' | 'dingtalk_robot' | 'ai';
 
 export interface ProbeTarget {
   id: string;

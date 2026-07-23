@@ -7,6 +7,10 @@ import type { CredentialVault } from '../../infrastructure/vault/credential-vaul
 import { CREDENTIAL_VAULT } from '../../infrastructure/vault/credential-vault.js';
 import { DingTalkLogClient } from '../dingtalk/dingtalk-log.client.js';
 import { DingTalkRobotClient } from '../dingtalk/dingtalk-robot.client.js';
+import {
+  DingTalkDesktopClient,
+  dingTalkDesktopConfigSchema,
+} from '../dingtalk/dingtalk-desktop.client.js';
 import type { JobExecutionContext, JobHandler } from '../jobs/job-registry.service.js';
 import { JobRegistryService } from '../jobs/job-registry.service.js';
 import { buildDingTalkReportContents } from './weekly-report-delivery.payload.js';
@@ -26,6 +30,7 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
     private readonly jobs: JobRegistryService,
     private readonly prisma: PrismaService,
     private readonly logClient: DingTalkLogClient,
+    private readonly desktopClient: DingTalkDesktopClient,
     private readonly robotClient: DingTalkRobotClient,
     @Inject(CREDENTIAL_VAULT) private readonly vault: CredentialVault,
   ) {}
@@ -59,6 +64,7 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
       };
     }
     try {
+      this.assertCurrentConnectionFacts(intent);
       const providerResult =
         intent.channel === 'dingtalk_log'
           ? await this.submitFormalLog(intent)
@@ -120,6 +126,9 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
   private async submitFormalLog(
     intent: Awaited<ReturnType<WeeklyReportDeliveryHandler['loadIntent']>>,
   ) {
+    if (intent.connection.type === 'dingtalk_desktop') {
+      return this.submitFormalLogThroughDesktop(intent);
+    }
     const credential = await this.readCredential(intent.connection.credentialRef);
     const config = this.parseObject(intent.connection.configJson);
     if (
@@ -172,6 +181,54 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
     };
   }
 
+  private async submitFormalLogThroughDesktop(
+    intent: Awaited<ReturnType<WeeklyReportDeliveryHandler['loadIntent']>>,
+  ) {
+    const config = dingTalkDesktopConfigSchema.safeParse(
+      this.parseObject(intent.connection.configJson),
+    );
+    if (!config.success) {
+      throw new DomainError(
+        'DINGTALK_DESKTOP_CONFIGURATION_REQUIRED',
+        '钉钉桌面正式日志连接缺少公司、模板或接收群配置',
+        { httpStatus: 422, suggestedAction: 'reconfigure' },
+      );
+    }
+    const result = await this.desktopClient.submit(config.data, {
+      reportDate: intent.confirmedVersion.reportDateText,
+      recentGoals: intent.confirmedVersion.recentGoalsText,
+      weeklyWork: intent.confirmedVersion.weeklyWorkText,
+      nextWeekPlans: intent.confirmedVersion.nextWeekPlansText,
+      problems: intent.confirmedVersion.problemsText,
+      other: intent.confirmedVersion.otherText,
+    });
+    if (!result.success) {
+      throw new DomainError(
+        result.errorCode ?? 'DINGTALK_DESKTOP_AUTOMATION_FAILED',
+        result.message ?? '钉钉桌面正式日志提交失败',
+        {
+          retryable: result.status === 'unknown',
+          suggestedAction: result.status === 'unknown' ? 'manual_review' : 'reconfigure',
+          details: { providerCallCount: 1, runId: result.runId ?? null },
+        },
+      );
+    }
+    if (!result.receipt || !result.runId) {
+      throw new DomainError(
+        'DINGTALK_DESKTOP_SUCCESS_FACT_MISSING',
+        '钉钉桌面自动化报告成功但缺少本地回执，必须人工核对',
+        { retryable: true, suggestedAction: 'manual_review' },
+      );
+    }
+    return {
+      externalId: result.receipt,
+      externalUrl: null,
+      providerRequestId: result.runId,
+      providerCallCount: 1,
+      retryDelaysMs: [] as number[],
+    };
+  }
+
   private async sendRobotSummary(
     intent: Awaited<ReturnType<WeeklyReportDeliveryHandler['loadIntent']>>,
   ) {
@@ -219,6 +276,52 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
       providerCallCount: result.providerCallCount,
       retryDelaysMs: result.retryDelaysMs,
     };
+  }
+
+  private assertCurrentConnectionFacts(
+    intent: Awaited<ReturnType<WeeklyReportDeliveryHandler['loadIntent']>>,
+  ): void {
+    if (intent.channel !== 'dingtalk_log') return;
+    const mapping = intent.confirmation.templateMappingVersion;
+    const discovery = this.parseObject(
+      this.parseObject(intent.connection.capabilitiesJson).templateDiscovery,
+    );
+    if (
+      !intent.connection.enabled ||
+      intent.connection.status !== 'healthy' ||
+      mapping.mapping.currentVersionId !== mapping.id ||
+      mapping.expiresAt <= new Date() ||
+      discovery.snapshotHash !== mapping.capabilitySnapshotHash
+    ) {
+      throw new DomainError(
+        'DINGTALK_LOG_CAPABILITY_CHANGED',
+        '执行前发现钉钉连接、模板或能力快照已变化，请重新探测并确认周报',
+        { suggestedAction: 'reconfirm' },
+      );
+    }
+    if (intent.connection.type !== 'dingtalk_desktop') return;
+    const config = this.parseObject(intent.connection.configJson);
+    const recipientGroupName =
+      typeof config.recipientGroupName === 'string' ? config.recipientGroupName : '';
+    const scope = this.parseObject(intent.confirmedVersion.recipientScopeJson);
+    const recipients = this.parseArray(scope.recipients);
+    const group = recipients.length === 1 ? this.parseObject(recipients[0]) : {};
+    const expectedExternalId = recipientGroupName
+      ? `desktop-group:${requestHash(recipientGroupName).slice(0, 24)}`
+      : '';
+    if (
+      !recipientGroupName ||
+      recipients.length !== 1 ||
+      group.subjectType !== 'group' ||
+      group.displayName !== recipientGroupName ||
+      group.externalId !== expectedExternalId
+    ) {
+      throw new DomainError(
+        'DINGTALK_DESKTOP_RECIPIENT_SCOPE_MISMATCH',
+        '执行前发现桌面日志默认接收群与确认版本不一致，请重新确认周报',
+        { suggestedAction: 'reconfirm' },
+      );
+    }
   }
 
   private async startAttempt(intent: DeliveryIntent) {
@@ -438,7 +541,11 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
       ].includes(errorCode);
     const resultUnknown =
       !explicitRobotFailure &&
-      (['EXTERNAL_REQUEST_TIMEOUT', 'EXTERNAL_REQUEST_FAILED'].includes(errorCode) ||
+      ([
+        'EXTERNAL_REQUEST_TIMEOUT',
+        'EXTERNAL_REQUEST_FAILED',
+        'DINGTALK_DESKTOP_SUBMISSION_RESULT_UNKNOWN',
+      ].includes(errorCode) ||
         (domain?.options.retryable === true && !errorCode.includes('RATE_LIMITED')));
     return {
       status: resultUnknown ? 'unknown' : 'failed',
@@ -455,7 +562,9 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
       include: {
         report: true,
         connection: true,
-        confirmation: { include: { templateMappingVersion: true } },
+        confirmation: {
+          include: { templateMappingVersion: { include: { mapping: true } } },
+        },
         confirmedVersion: { include: { sourceSnapshot: true } },
       },
     });
