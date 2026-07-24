@@ -222,7 +222,7 @@ describe('Jira 防漏增量同步', () => {
       normalizedStatus: 'other',
     });
     const cursor = await prisma.syncCursor.findUniqueOrThrow({
-      where: { connectionId_scope: { connectionId, scope: 'jira:incremental' } },
+      where: { connectionId_scope: { connectionId, scope: 'jira:full' } },
     });
     expect(cursor.lastUpdatedAt?.toISOString()).toBe(updated);
     expect(cursor.lastTiebreaker).toBe('PROJ-6');
@@ -447,7 +447,7 @@ describe('Jira 防漏增量同步', () => {
 
   it('中间空页和字段类型漂移均失败且不推进最后成功水位', async () => {
     const cursorBefore = await prisma.syncCursor.findUniqueOrThrow({
-      where: { connectionId_scope: { connectionId, scope: 'jira:incremental' } },
+      where: { connectionId_scope: { connectionId, scope: 'jira:full' } },
     });
     const { service: emptyPageService } = serviceWithPages(() => ({
       startAt: 0,
@@ -459,7 +459,7 @@ describe('Jira 防漏增量同步', () => {
       code: 'JIRA_PAGINATION_EMPTY_PAGE',
     });
     const cursorAfterEmpty = await prisma.syncCursor.findUniqueOrThrow({
-      where: { connectionId_scope: { connectionId, scope: 'jira:incremental' } },
+      where: { connectionId_scope: { connectionId, scope: 'jira:full' } },
     });
     expect(cursorAfterEmpty.lastSuccessRunId).toBe(cursorBefore.lastSuccessRunId);
 
@@ -503,7 +503,7 @@ describe('Jira 防漏增量同步', () => {
 
   it('第三页超时保留已写幂等观测但不推进成功水位，安全重放可收敛', async () => {
     const cursorBefore = await prisma.syncCursor.findUniqueOrThrow({
-      where: { connectionId_scope: { connectionId, scope: 'jira:incremental' } },
+      where: { connectionId_scope: { connectionId, scope: 'jira:full' } },
     });
     const { service } = serviceWithPages((startAt) => {
       if (startAt >= 4) {
@@ -526,7 +526,7 @@ describe('Jira 防漏增量同步', () => {
       code: 'EXTERNAL_REQUEST_TIMEOUT',
     });
     const cursorAfter = await prisma.syncCursor.findUniqueOrThrow({
-      where: { connectionId_scope: { connectionId, scope: 'jira:incremental' } },
+      where: { connectionId_scope: { connectionId, scope: 'jira:full' } },
     });
     expect(cursorAfter.lastSuccessRunId).toBe(cursorBefore.lastSuccessRunId);
     expect((await prisma.jiraSyncRun.findUniqueOrThrow({ where: { id: run.id } })).pageCount).toBe(

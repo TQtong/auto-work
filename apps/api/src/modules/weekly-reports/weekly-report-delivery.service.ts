@@ -55,6 +55,9 @@ export class WeeklyReportDeliveryService {
     const scope = this.parseObject(facts.confirmedVersion.recipientScopeJson);
     const recipients = Array.isArray(scope.recipients) ? scope.recipients : [];
     await this.assertRecipientFacts(connection.id, recipients);
+    if (connection.type === 'dingtalk_desktop') {
+      this.assertDesktopRecipientScope(connection.configJson, recipients);
+    }
     const attachmentFacts = this.parseArray(facts.confirmedVersion.attachmentsJson);
     if (attachmentFacts.length > 0) {
       throw new DomainError(
@@ -417,6 +420,7 @@ export class WeeklyReportDeliveryService {
     facts: Awaited<ReturnType<WeeklyReportDeliveryService['loadConfirmedFacts']>>,
     input: SubmitWeeklyReportLogInput,
     connection: {
+      type: string;
       enabled: boolean;
       status: string;
       credentialRef: string | null;
@@ -445,7 +449,7 @@ export class WeeklyReportDeliveryService {
     if (
       !connection.enabled ||
       connection.status !== 'healthy' ||
-      !connection.credentialRef ||
+      (connection.type !== 'dingtalk_desktop' && !connection.credentialRef) ||
       mapping.mapping.currentVersionId !== mapping.id ||
       mapping.expiresAt <= new Date() ||
       discovery.snapshotHash !== mapping.capabilitySnapshotHash
@@ -536,6 +540,29 @@ export class WeeklyReportDeliveryService {
       throw new DomainError(
         'DINGTALK_RECIPIENT_FACTS_EXPIRED',
         '接收对象已过期、被移除或事实发生变化，请重新确认周报',
+        { httpStatus: 422, suggestedAction: 'reconfirm' },
+      );
+    }
+  }
+
+  private assertDesktopRecipientScope(configJson: string, recipients: unknown[]): void {
+    const config = this.parseObject(configJson);
+    const recipientGroupName =
+      typeof config.recipientGroupName === 'string' ? config.recipientGroupName : '';
+    const group = recipients.length === 1 ? this.parseObject(recipients[0]) : {};
+    const expectedExternalId = recipientGroupName
+      ? `desktop-group:${requestHash(recipientGroupName).slice(0, 24)}`
+      : '';
+    if (
+      !recipientGroupName ||
+      recipients.length !== 1 ||
+      group.subjectType !== 'group' ||
+      group.displayName !== recipientGroupName ||
+      group.externalId !== expectedExternalId
+    ) {
+      throw new DomainError(
+        'DINGTALK_DESKTOP_RECIPIENT_SCOPE_MISMATCH',
+        '桌面日志只能提交到最近探测确认的唯一默认接收群，请重新选择接收群并确认周报',
         { httpStatus: 422, suggestedAction: 'reconfirm' },
       );
     }

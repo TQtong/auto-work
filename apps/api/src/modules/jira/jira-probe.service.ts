@@ -1,6 +1,5 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { DomainError } from '@auto-work/contracts';
-import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import {
   IntegrationProbeRegistry,
   type IntegrationProbe,
@@ -8,6 +7,7 @@ import {
   type ProbeTarget,
 } from '../integrations/integration-probe.registry.js';
 import { JiraApiClient, type JiraCredential } from './jira-api.client.js';
+import { JiraMappingService } from './jira-mapping.service.js';
 import {
   jiraFieldSchema,
   jiraProjectSchema,
@@ -21,7 +21,7 @@ export class JiraProbeService implements IntegrationProbe, OnModuleInit {
 
   public constructor(
     private readonly registry: IntegrationProbeRegistry,
-    private readonly prisma: PrismaService,
+    private readonly mappings: JiraMappingService,
     private readonly client: JiraApiClient,
   ) {}
 
@@ -104,11 +104,6 @@ export class JiraProbeService implements IntegrationProbe, OnModuleInit {
       const statuses = [...statusesById.values()].sort((left, right) =>
         left.name.localeCompare(right.name, 'zh-CN'),
       );
-      const latestMapping = await this.prisma.fieldMappingVersion.findFirst({
-        where: { connectionId: target.id },
-        orderBy: { versionNo: 'desc' },
-        select: { id: true, versionNo: true },
-      });
       const fieldSummaries = fields.map((field) => {
         const values = sample.issues
           .map((issue) => issue.fields[field.id])
@@ -122,10 +117,20 @@ export class JiraProbeService implements IntegrationProbe, OnModuleInit {
           sampleValues: values.slice(0, 3).map((value) => this.sampleValue(value)),
         };
       });
-      const configurationReady = Boolean(latestMapping);
+      const statusSummaries = statuses.map((status) => ({
+        id: status.id,
+        name: status.name,
+        categoryKey: status.statusCategory?.key ?? null,
+        categoryName: status.statusCategory?.name ?? null,
+      }));
+      const automaticReadConfig = await this.mappings.ensureAutomatic(
+        target.id,
+        fieldSummaries,
+        statusSummaries,
+      );
       return {
-        healthy: configurationReady,
-        status: configurationReady ? 'healthy' : 'configuration_required',
+        healthy: true,
+        status: 'healthy',
         identity: {
           id: user.accountId ?? user.key ?? user.name ?? user.displayName,
           username: user.name ?? user.key ?? user.accountId ?? user.displayName,
@@ -153,25 +158,15 @@ export class JiraProbeService implements IntegrationProbe, OnModuleInit {
             projectTypeKey: project.projectTypeKey ?? null,
             archived: project.archived ?? false,
           })),
-          statuses: statuses.map((status) => ({
-            id: status.id,
-            name: status.name,
-            categoryKey: status.statusCategory?.key ?? null,
-            categoryName: status.statusCategory?.name ?? null,
-          })),
+          statuses: statusSummaries,
           sampleIssueCount: sample.issues.length,
           sampleTotal: sample.total ?? sample.issues.length,
-          currentMappingVersionId: latestMapping?.id ?? null,
-          currentMappingVersionNo: latestMapping?.versionNo ?? null,
+          automaticReadConfigVersionId: automaticReadConfig.id,
+          automaticReadConfigVersionNo: automaticReadConfig.versionNo,
           descriptionPersisted: false,
           readOnly: true,
+          taskScope: 'all_assigned_to_current_user',
         },
-        ...(configurationReady
-          ? {}
-          : {
-              errorCode: 'JIRA_MAPPING_REQUIRED',
-              message: '身份和搜索已验证，请确认字段与状态映射',
-            }),
       };
     } catch (error) {
       const domainError = error instanceof DomainError ? error : null;

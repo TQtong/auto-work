@@ -8,6 +8,7 @@ import { AuditService } from '../audit/audit.service.js';
 import { JobQueueService } from '../jobs/job-queue.service.js';
 import { SessionService } from '../session/session.service.js';
 import { RepositoryInspectorService } from './repository-inspector.service.js';
+import { RepositoryDirectoryPickerService } from './repository-directory-picker.service.js';
 import { RepositoryService } from './repository.service.js';
 
 const discoverSchema = z.object({
@@ -62,12 +63,22 @@ const updateSchema = z.object({
   baselineBranch: z.string().trim().min(1).max(255).optional(),
 });
 const versionSchema = z.object({ version: z.number().int().positive() });
+const directoryPickerSchema = z.object({
+  initialPath: z
+    .string()
+    .trim()
+    .min(1)
+    .max(500)
+    .refine((value) => !/[\0\r\n]/u.test(value))
+    .optional(),
+});
 
 @Controller()
 export class RepositoriesController {
   public constructor(
     private readonly repositories: RepositoryService,
     private readonly inspector: RepositoryInspectorService,
+    private readonly directoryPicker: RepositoryDirectoryPickerService,
     private readonly queue: JobQueueService,
     private readonly audit: AuditService,
     private readonly sessions: SessionService,
@@ -133,6 +144,27 @@ export class RepositoriesController {
     return apiResponse(await this.repositories.list(), request.autoWork.correlationId, {
       asOf: new Date().toISOString(),
     });
+  }
+
+  @Get('repositories/discovery-config')
+  public async discoveryConfig(@Req() request: FastifyRequest) {
+    return apiResponse(
+      await this.inspector.discoveryConfiguration(),
+      request.autoWork.correlationId,
+      { asOf: new Date().toISOString() },
+    );
+  }
+
+  @Post('repositories/directory-picker')
+  public async selectDirectory(@Body() body: unknown, @Req() request: FastifyRequest) {
+    const result = await this.directoryPicker.select(directoryPickerSchema.parse(body).initialPath);
+    await this.recordAudit(
+      request,
+      'repository.directory_picker_completed',
+      'repository_configuration',
+      result.status,
+    );
+    return apiResponse(result, request.autoWork.correlationId);
   }
 
   @Post('repositories/sync')

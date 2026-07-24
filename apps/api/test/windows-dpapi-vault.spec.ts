@@ -25,6 +25,8 @@ describe.runIf(process.platform === 'win32')('Windows DPAPI 保险箱', () => {
       webDist: join(dataDirectory, 'web'),
       databaseUrl: `file:${join(dataDirectory, 'test.db').replaceAll('\\', '/')}`,
       repositoryRoot: 'D:\\company',
+      vaultBackend: 'dpapi',
+      vaultKeyFile: join(dataDirectory, 'vault-master.key'),
       logLevel: 'info',
       environment: 'test',
     };

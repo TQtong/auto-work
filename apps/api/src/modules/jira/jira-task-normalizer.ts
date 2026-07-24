@@ -4,17 +4,17 @@ import type { JiraIssue } from './jira.schemas.js';
 
 export interface JiraFieldMappings {
   plannedStartDate: string | null;
-  dueDate: string;
+  dueDate: string | null;
   sprint: string | null;
-  parent: string;
-  originalEstimateSeconds: string;
-  remainingEstimateSeconds: string;
-  timeSpentSeconds: string;
-  assignee: string;
-  status: string;
-  priority: string;
-  labels: string;
-  components: string;
+  parent: string | null;
+  originalEstimateSeconds: string | null;
+  remainingEstimateSeconds: string | null;
+  timeSpentSeconds: string | null;
+  assignee: string | null;
+  status: string | null;
+  priority: string | null;
+  labels: string | null;
+  components: string | null;
 }
 
 export interface NormalizedJiraTask {
@@ -65,7 +65,7 @@ export function normalizeJiraIssue(input: {
   const project = objectValue(fields.project);
   const projectKey = stringValue(project?.key) ?? issue.key.split('-')[0]!;
   const issueType = stringValue(objectValue(fields.issuetype)?.name);
-  const statusValue = objectValue(fields[mappings.status]);
+  const statusValue = objectValue(mappedValue(fields, mappings.status));
   const rawStatusId = stringValue(statusValue?.id);
   const rawStatusName = stringValue(statusValue?.name);
   const normalizedStatus =
@@ -79,11 +79,11 @@ export function normalizeJiraIssue(input: {
   ) {
     warnings.push({
       code: 'JIRA_STATUS_UNMAPPED',
-      fieldId: mappings.status,
+      ...(mappings.status ? { fieldId: mappings.status } : {}),
       message: `状态 ${rawStatusName ?? rawStatusId} 未映射，保留原状态并归入 other`,
     });
   }
-  const assignee = objectValue(fields[mappings.assignee]);
+  const assignee = objectValue(mappedValue(fields, mappings.assignee));
   const assigneeExternalId =
     stringValue(assignee?.accountId) ?? stringValue(assignee?.key) ?? stringValue(assignee?.name);
   const assigneeName = stringValue(assignee?.displayName) ?? stringValue(assignee?.name);
@@ -93,7 +93,7 @@ export function normalizeJiraIssue(input: {
       .map((value) => value.toLocaleLowerCase()),
   );
   const parent =
-    objectValue(fields[mappings.parent]) ??
+    objectValue(mappedValue(fields, mappings.parent)) ??
     (input.parentFallbackFieldId ? objectValue(fields[input.parentFallbackFieldId]) : null);
   const plannedStartDate = businessDate(
     fields[mappings.plannedStartDate ?? ''],
@@ -101,19 +101,24 @@ export function normalizeJiraIssue(input: {
     mappings.plannedStartDate,
     warnings,
   );
-  const dueDate = businessDate(fields[mappings.dueDate], issue.key, mappings.dueDate, warnings);
+  const dueDate = businessDate(
+    mappedValue(fields, mappings.dueDate),
+    issue.key,
+    mappings.dueDate,
+    warnings,
+  );
   const originalEstimateSeconds = nonnegativeInteger(
-    fields[mappings.originalEstimateSeconds],
+    mappedValue(fields, mappings.originalEstimateSeconds),
     issue.key,
     mappings.originalEstimateSeconds,
   );
   const remainingEstimateSeconds = nonnegativeInteger(
-    fields[mappings.remainingEstimateSeconds],
+    mappedValue(fields, mappings.remainingEstimateSeconds),
     issue.key,
     mappings.remainingEstimateSeconds,
   );
   const timeSpentSeconds = nonnegativeInteger(
-    fields[mappings.timeSpentSeconds],
+    mappedValue(fields, mappings.timeSpentSeconds),
     issue.key,
     mappings.timeSpentSeconds,
   );
@@ -122,9 +127,9 @@ export function normalizeJiraIssue(input: {
     mappings.sprint,
     warnings,
   );
-  const priority = stringValue(objectValue(fields[mappings.priority])?.name);
-  const labels = stringArray(fields[mappings.labels]);
-  const componentsValue = fields[mappings.components];
+  const priority = stringValue(objectValue(mappedValue(fields, mappings.priority))?.name);
+  const labels = stringArray(mappedValue(fields, mappings.labels));
+  const componentsValue = mappedValue(fields, mappings.components);
   const components = Array.isArray(componentsValue)
     ? componentsValue
         .map((value) => stringValue(objectValue(value)?.name) ?? stringValue(value))
@@ -211,8 +216,13 @@ function businessDate(
   return candidate;
 }
 
-function nonnegativeInteger(value: unknown, issueKey: string, fieldId: string): number | null {
+function nonnegativeInteger(
+  value: unknown,
+  issueKey: string,
+  fieldId: string | null,
+): number | null {
   if (value === null || value === undefined || value === '') return null;
+  if (!fieldId) return null;
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw mappingError(issueKey, fieldId, '工时字段必须是非负整数秒');
   }
@@ -268,6 +278,10 @@ function stringValue(value: unknown): string | null {
   if (typeof value === 'string') return value.trim() || null;
   if (typeof value === 'number') return String(value);
   return null;
+}
+
+function mappedValue(fields: Record<string, unknown>, fieldId: string | null): unknown {
+  return fieldId ? fields[fieldId] : undefined;
 }
 
 function mappingError(issueKey: string, fieldId: string, message: string): DomainError {

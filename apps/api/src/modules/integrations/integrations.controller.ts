@@ -20,7 +20,14 @@ import { IntegrationsService } from './integrations.service.js';
 import { DingTalkTemplateMappingService } from './dingtalk-template-mapping.service.js';
 import { saveDingTalkTemplateMappingSchema } from './dingtalk-template-mapping.schemas.js';
 
-const integrationTypeSchema = z.enum(['gitlab', 'jira', 'dingtalk_log', 'dingtalk_robot', 'ai']);
+const integrationTypeSchema = z.enum([
+  'gitlab',
+  'jira',
+  'dingtalk_log',
+  'dingtalk_desktop',
+  'dingtalk_robot',
+  'ai',
+]);
 const credentialSchema = z.record(z.string().min(1).max(100), z.string().min(1).max(4_096));
 const createSchema = z
   .object({

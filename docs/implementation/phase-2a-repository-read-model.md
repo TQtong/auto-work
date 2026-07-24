@@ -17,7 +17,7 @@
 
 ## 2. 安全执行边界
 
-1. Git 子进程固定调用 `git.exe` 参数数组，`shell: false`，不接受 raw command、cwd 或附加参数。
+1. Git 子进程按平台固定调用 `git.exe`（Windows）或 `git`（Linux/macOS）参数数组，`shell: false`，不接受 raw command、cwd 或附加参数；Docker bind mount 只为当前已校验仓库注入精确 `safe.directory`，禁止 `*` 通配放宽。
 2. 清除继承的 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_INDEX_FILE`、对象目录和 `GIT_SSH_COMMAND`，关闭交互凭证提示和可选锁。
 3. 参数中的 NUL、CR、LF 在启动子进程前拒绝；输出限制为 2 MiB，常规只读命令超时 5 秒。
 4. 远端明文只在内存中经过规范化；数据库和 API 只包含无凭证 URL。
@@ -26,14 +26,14 @@
 
 ## 3. 需求状态
 
-| 需求 | 状态 | 本增量证据 | 后续 |
-| --- | --- | --- | --- |
-| PRJ-001 | verified | 自动化一级/嵌套范围测试；真实允许根发现 18 个一级仓库并保存逐项状态 | 企业指定 `D:\company` 的 14 仓 UAT 在发布阶段复跑 |
-| PRJ-002 | implemented | 三类 URL 解析、凭证脱敏、别名/项目/远端/基线确认均已实现 | 02B 加入 GitLab project ID 精确匹配候选 |
-| PRJ-003 | implemented | 本地分支、工作区、ahead/behind、最近提交、新鲜度和完整 UI 已实现 | 02B/阶段三拼接 MR、Pipeline 和任务摘要 |
-| GLB-001 | verified | 没有任何 GitLab 连接时，发现、状态刷新、确认和仓库中心端到端成功 | 保持为回归门禁 |
-| GLB-002 | planned | 本增量没有伪造 GitLab 缓存 | 02B 实现所有分页资源 |
-| GIT-001～004 | planned | 本增量只提供不可写的 Git 进程基础与参数安全测试 | 02C 独立实现、批准和验收全部动作 |
+| 需求         | 状态        | 本增量证据                                                          | 后续                                              |
+| ------------ | ----------- | ------------------------------------------------------------------- | ------------------------------------------------- |
+| PRJ-001      | verified    | 自动化一级/嵌套范围测试；真实允许根发现 18 个一级仓库并保存逐项状态 | 企业指定 `D:\company` 的 14 仓 UAT 在发布阶段复跑 |
+| PRJ-002      | implemented | 三类 URL 解析、凭证脱敏、别名/项目/远端/基线确认均已实现            | 02B 加入 GitLab project ID 精确匹配候选           |
+| PRJ-003      | implemented | 本地分支、工作区、ahead/behind、最近提交、新鲜度和完整 UI 已实现    | 02B/阶段三拼接 MR、Pipeline 和任务摘要            |
+| GLB-001      | verified    | 没有任何 GitLab 连接时，发现、状态刷新、确认和仓库中心端到端成功    | 保持为回归门禁                                    |
+| GLB-002      | planned     | 本增量没有伪造 GitLab 缓存                                          | 02B 实现所有分页资源                              |
+| GIT-001～004 | planned     | 本增量只提供不可写的 Git 进程基础与参数安全测试                     | 02C 独立实现、批准和验收全部动作                  |
 
 ## 4. 自动化与运行证据
 

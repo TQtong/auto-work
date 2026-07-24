@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, normalize } from 'node:path';
 import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { newId } from '@auto-work/domain';
@@ -35,7 +35,8 @@ export class BackupHandlers implements OnModuleInit {
   ) {
     this.backupDirectory = join(config.dataDir, 'backups');
     this.pendingRestorePath = join(config.dataDir, 'pending-restore.json');
-    this.databasePath = config.databaseUrl.slice('file:'.length).replaceAll('/', '\\');
+    // 保留当前平台的原生分隔符；Linux 容器不能把绝对路径强制转换为 Windows 反斜杠。
+    this.databasePath = normalize(config.databaseUrl.slice('file:'.length));
   }
 
   public onModuleInit(): void {

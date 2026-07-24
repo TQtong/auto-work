@@ -5,7 +5,14 @@ import { loadAppConfig } from '../src/config/app-config.js';
 
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
-const managedKeys = ['AUTO_WORK_DATA_DIR', 'AUTO_WORK_DATABASE_URL', 'AUTO_WORK_WEB_DIST'] as const;
+const managedKeys = [
+  'AUTO_WORK_DATA_DIR',
+  'AUTO_WORK_DATABASE_URL',
+  'AUTO_WORK_WEB_DIST',
+  'AUTO_WORK_HOST',
+  'AUTO_WORK_VAULT_BACKEND',
+  'AUTO_WORK_VAULT_KEY_FILE',
+] as const;
 const originalEnvironment = Object.fromEntries(managedKeys.map((key) => [key, process.env[key]]));
 
 afterEach(() => {
@@ -38,6 +45,32 @@ describe('应用路径配置', () => {
     const config = loadAppConfig();
     expect(config.databaseUrl).toBe(
       `file:${resolve(workspaceRoot, 'data/default-url-test/auto-work.db').replaceAll('\\', '/')}`,
+    );
+  });
+
+  it('容器监听地址与持久化凭据密钥路径均经过严格解析', () => {
+    process.env.AUTO_WORK_HOST = '0.0.0.0';
+    process.env.AUTO_WORK_DATA_DIR = './data/docker-config-test';
+    process.env.AUTO_WORK_VAULT_BACKEND = 'sealed';
+    process.env.AUTO_WORK_VAULT_KEY_FILE = './data/docker-config-test/secret.key';
+
+    const config = loadAppConfig();
+
+    expect(config.host).toBe('0.0.0.0');
+    expect(config.vaultBackend).toBe('sealed');
+    expect(config.vaultKeyFile).toBe(resolve(workspaceRoot, 'data/docker-config-test/secret.key'));
+  });
+
+  it('未指定密钥文件时默认放在数据目录并使用自动后端', () => {
+    process.env.AUTO_WORK_DATA_DIR = './data/default-vault-test';
+    delete process.env.AUTO_WORK_VAULT_BACKEND;
+    delete process.env.AUTO_WORK_VAULT_KEY_FILE;
+
+    const config = loadAppConfig();
+
+    expect(config.vaultBackend).toBe('auto');
+    expect(config.vaultKeyFile).toBe(
+      resolve(workspaceRoot, 'data/default-vault-test/vault-master.key'),
     );
   });
 });

@@ -24,6 +24,7 @@ import type {
   GenerateWeeklyReportInput,
   ListWeeklyReportsQuery,
   RestoreWeeklyReportVersionInput,
+  UpdateWeeklyReportContentTemplateInput,
 } from './weekly-report.schemas.js';
 import { WeeklyReportAttachmentService } from './weekly-report-attachment.service.js';
 
@@ -82,6 +83,62 @@ export class WeeklyReportService {
     private readonly attachments: WeeklyReportAttachmentService,
   ) {}
 
+  public async getContentTemplate() {
+    const row = await this.prisma.weeklyReportContentTemplate.findUnique({
+      where: { profileId: this.sessions.currentProfileId },
+    });
+    return this.serializeContentTemplate(row);
+  }
+
+  public async updateContentTemplate(
+    input: UpdateWeeklyReportContentTemplateInput,
+    context: RequestContext,
+  ) {
+    const saved = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.weeklyReportContentTemplate.findUnique({
+        where: { profileId: this.sessions.currentProfileId },
+      });
+      if ((!existing && input.version !== 0) || (existing && existing.version !== input.version)) {
+        throw new DomainError(errorCodes.versionConflict, '周报默认模板已被修改，请刷新后重试', {
+          httpStatus: 409,
+          suggestedAction: 'refresh',
+        });
+      }
+      const fields = {
+        recentGoalsText: input.recentGoals,
+        weeklyWorkText: input.weeklyWork,
+        nextWeekPlansText: input.nextWeekPlans,
+        problemsText: input.problems,
+        otherText: input.other,
+      };
+      const row = existing
+        ? await tx.weeklyReportContentTemplate.update({
+            where: { id: existing.id },
+            data: { ...fields, version: { increment: 1 } },
+          })
+        : await tx.weeklyReportContentTemplate.create({
+            data: {
+              id: newId(),
+              profileId: this.sessions.currentProfileId,
+              ...fields,
+            },
+          });
+      await this.audit.recordInTransaction(tx, {
+        actorId: this.sessions.currentProfileId,
+        action: 'weekly_report.content_template_updated',
+        targetType: 'weekly_report_content_template',
+        targetId: row.id,
+        correlationId: context.correlationId,
+        outcome: 'succeeded',
+        before: existing ? this.serializeContentTemplate(existing) : null,
+        after: this.serializeContentTemplate(row),
+        clientSessionHash: this.security.sessionHash(context.sessionId),
+      });
+      return row;
+    });
+    return this.serializeContentTemplate(saved);
+  }
+
   public async generate(
     input: GenerateWeeklyReportInput,
     context: RequestContext,
@@ -99,7 +156,8 @@ export class WeeklyReportService {
     });
     const selectedMapping = input.templateMappingVersionId
       ? await this.resolveSelectableMapping(this.prisma, input.templateMappingVersionId)
-      : null;
+      : await this.resolveDefaultDesktopMapping(this.prisma);
+    const selectedMappingVersionId = selectedMapping?.id ?? null;
     if (profile.timezone !== 'Asia/Shanghai' || input.timezone !== 'Asia/Shanghai') {
       throw new DomainError(
         'WEEKLY_REPORT_TIMEZONE_UNSUPPORTED',
@@ -146,6 +204,33 @@ export class WeeklyReportService {
       evidence: sources.evidence,
       manualInputs,
     });
+    const contentTemplate = await this.prisma.weeklyReportContentTemplate.findUnique({
+      where: { profileId: profile.id },
+    });
+    const templateFields = this.contentTemplateFields(contentTemplate);
+    const effectiveFields = Object.fromEntries(
+      weeklyFields.map((field) => {
+        const text = templateFields[field];
+        if (!text.trim()) return [field, ruleDraft.fields[field]];
+        return [
+          field,
+          [
+            {
+              id: `template-${field}-${requestHash({ version: contentTemplate?.version ?? 0, text }).slice(0, 16)}`,
+              field,
+              projectName: null,
+              title: '默认内容',
+              body: text,
+              sourceRefs: [],
+              actualHours: null,
+              estimatedHours: null,
+              pinned: true,
+              sortKey: `template:${field}`,
+            },
+          ],
+        ];
+      }),
+    ) as Record<WeeklyReportField, WeeklyReportBlock[]>;
     const jiraQuery = {
       scope: 'weekly',
       currentUser: true,
@@ -168,13 +253,16 @@ export class WeeklyReportService {
       freshnessPolicy: input.freshnessPolicy,
       includeUnconfirmedEvidence: input.includeUnconfirmedEvidence,
       ruleVersion: weeklyReportRuleVersion,
-      templateMappingVersionId: input.templateMappingVersionId,
+      templateMappingVersionId: selectedMappingVersionId,
       sanitizationPolicyVersion,
+      contentTemplate: contentTemplate
+        ? { id: contentTemplate.id, version: contentTemplate.version, fields: templateFields }
+        : null,
     };
     const sourceContentHash = requestHash(sourceContent);
     const generationHash = requestHash({
       sourceContentHash,
-      ruleContentHash: ruleDraft.contentHash,
+      ruleContentHash: requestHash({ rule: ruleDraft.contentHash, fields: effectiveFields }),
     });
 
     try {
@@ -229,7 +317,7 @@ export class WeeklyReportService {
                 ...period,
                 timezone: input.timezone,
                 templateName: defaultTemplateName,
-                templateMappingVersionId: input.templateMappingVersionId,
+                templateMappingVersionId: selectedMappingVersionId,
                 status: 'collecting',
               },
             });
@@ -250,7 +338,7 @@ export class WeeklyReportService {
             freshnessPolicyJson: JSON.stringify(input.freshnessPolicy),
             warningsJson: JSON.stringify(ruleDraft.warnings),
             ruleVersion: weeklyReportRuleVersion,
-            templateMappingVersionId: input.templateMappingVersionId,
+            templateMappingVersionId: selectedMappingVersionId,
             sanitizationPolicyVersion,
             generationHash,
             sourceContentHash,
@@ -265,18 +353,21 @@ export class WeeklyReportService {
             })
           : null;
         const versionId = newId();
-        const rendered = this.renderFields(ruleDraft.fields);
-        const initialRecipientScope = {
-          connectionId: selectedMapping?.mapping.connectionId ?? null,
-          recipients: [],
-        };
+        const rendered = this.renderFields(effectiveFields);
+        const initialRecipientScope = selectedMapping
+          ? await this.resolveDefaultDesktopRecipientScope(
+              tx,
+              selectedMapping.mapping.connection,
+              now,
+            )
+          : { connectionId: null, recipients: [] };
         const versionContentHash = requestHash({
           fields: { reportDate: period.reportDate, ...rendered },
-          structured: ruleDraft.fields,
+          structured: effectiveFields,
           warnings: ruleDraft.warnings,
           attachments: [],
           recipientScope: initialRecipientScope,
-          templateMappingVersionId: input.templateMappingVersionId,
+          templateMappingVersionId: selectedMappingVersionId,
           scheduleAt: null,
           sourceContentHash,
         });
@@ -293,11 +384,11 @@ export class WeeklyReportService {
             nextWeekPlansText: rendered.nextWeekPlans,
             problemsText: rendered.problems,
             otherText: rendered.other,
-            fieldsJson: JSON.stringify(ruleDraft.fields),
+            fieldsJson: JSON.stringify(effectiveFields),
             warningsJson: JSON.stringify(ruleDraft.warnings),
             attachmentsJson: '[]',
             recipientScopeJson: JSON.stringify(initialRecipientScope),
-            templateMappingVersionId: input.templateMappingVersionId,
+            templateMappingVersionId: selectedMappingVersionId,
             scheduleAt: null,
             sourceSnapshotId: snapshot.id,
             contentHash: versionContentHash,
@@ -311,7 +402,7 @@ export class WeeklyReportService {
         const sourceLinks = this.buildSourceLinks(
           snapshot.id,
           version.id,
-          ruleDraft.fields,
+          effectiveFields,
           sources.tasks,
           sources.evidence,
           manualInputs,
@@ -326,7 +417,7 @@ export class WeeklyReportService {
           where: { id: report.id, version: report.version },
           data: {
             reportDate: period.reportDate,
-            templateMappingVersionId: input.templateMappingVersionId,
+            templateMappingVersionId: selectedMappingVersionId,
             status: 'generated',
             currentVersionId: version.id,
             confirmedVersionId: null,
@@ -420,6 +511,44 @@ export class WeeklyReportService {
     };
   }
 
+  public async archive(reportId: string, context: RequestContext) {
+    const archivedAt = new Date();
+    return this.prisma.$transaction(async (tx) => {
+      const report = await tx.weeklyReport.findFirst({
+        where: {
+          id: reportId,
+          ownerProfileId: this.sessions.currentProfileId,
+          archivedAt: null,
+        },
+      });
+      if (!report) {
+        throw new DomainError(errorCodes.notFound, '周报不存在', { httpStatus: 404 });
+      }
+      const changed = await tx.weeklyReport.updateMany({
+        where: { id: report.id, version: report.version, archivedAt: null },
+        data: { archivedAt, version: { increment: 1 } },
+      });
+      if (changed.count !== 1) {
+        throw new DomainError(errorCodes.versionConflict, '周报已被其他页面修改，请刷新后重试', {
+          httpStatus: 409,
+          suggestedAction: 'refresh',
+        });
+      }
+      await this.audit.recordInTransaction(tx, {
+        actorId: this.sessions.currentProfileId,
+        action: 'weekly_report.archived',
+        targetType: 'weekly_report',
+        targetId: report.id,
+        correlationId: context.correlationId,
+        outcome: 'succeeded',
+        before: { archivedAt: null, aggregateVersion: report.version },
+        after: { archivedAt: archivedAt.toISOString(), aggregateVersion: report.version + 1 },
+        clientSessionHash: this.security.sessionHash(context.sessionId),
+      });
+      return { id: report.id, archivedAt: archivedAt.toISOString() };
+    });
+  }
+
   public async get(reportId: string) {
     return this.serializeReport(this.prisma, reportId);
   }
@@ -481,15 +610,6 @@ export class WeeklyReportService {
         problems: input.fields.problems ?? current.problemsText,
         other: input.fields.other ?? current.otherText,
       };
-      if (!fields.problems.trim()) {
-        throw new DomainError(
-          'WEEKLY_REPORT_PROBLEMS_REQUIRED',
-          '问题栏不能为空；没有问题时请明确填写“无”',
-          {
-            httpStatus: 422,
-          },
-        );
-      }
       const changedFields = Object.entries(input.fields).flatMap(([field, value]) =>
         value !== undefined &&
         value !== fieldsFromVersion(current)[field as keyof ReturnType<typeof fieldsFromVersion>]
@@ -791,19 +911,6 @@ export class WeeklyReportService {
       this.assertEditBase(report, input.versionId, input.reportVersion);
       const version = report.currentVersion;
       const fields = fieldsFromVersion(version);
-      const missingFields = Object.entries(fields)
-        .filter(([, value]) => !value.trim())
-        .map(([field]) => field);
-      if (missingFields.length > 0) {
-        throw new DomainError(
-          'WEEKLY_REPORT_FIELDS_INCOMPLETE',
-          '六个周报字段必须全部填写后才能确认',
-          {
-            httpStatus: 422,
-            details: { missingFields },
-          },
-        );
-      }
       if (fields.reportDate < report.periodStart || fields.reportDate > report.periodEnd) {
         throw new DomainError(
           'WEEKLY_REPORT_DATE_OUTSIDE_PERIOD',
@@ -1077,6 +1184,53 @@ export class WeeklyReportService {
       );
     }
     return version;
+  }
+
+  private async resolveDefaultDesktopMapping(tx: Prisma.TransactionClient | PrismaService) {
+    const mapping = await tx.dingTalkTemplateMapping.findFirst({
+      where: {
+        currentVersionId: { not: null },
+        connection: {
+          type: 'dingtalk_desktop',
+          enabled: true,
+          status: 'healthy',
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { currentVersionId: true },
+    });
+    return mapping?.currentVersionId
+      ? this.resolveSelectableMapping(tx, mapping.currentVersionId)
+      : null;
+  }
+
+  private async resolveDefaultDesktopRecipientScope(
+    tx: Prisma.TransactionClient,
+    connection: { id: string; type: string; configJson: string },
+    now: Date,
+  ) {
+    if (connection.type !== 'dingtalk_desktop') {
+      return { connectionId: connection.id, recipients: [] };
+    }
+    const config = this.parseObject(connection.configJson);
+    const groupName =
+      typeof config.recipientGroupName === 'string' ? config.recipientGroupName.trim() : '';
+    if (!groupName) return { connectionId: connection.id, recipients: [] };
+    const validation = await tx.dingTalkRecipientValidation.findFirst({
+      where: {
+        connectionId: connection.id,
+        subjectType: 'group',
+        externalId: `desktop-group:${requestHash(groupName).slice(0, 24)}`,
+        displayName: groupName,
+        available: true,
+        expiresAt: { gt: now },
+      },
+      orderBy: { observedAt: 'desc' },
+      select: { id: true },
+    });
+    return validation
+      ? this.resolveRecipientScope(tx, connection.id, [validation.id])
+      : { connectionId: connection.id, recipients: [] };
   }
 
   private async resolveRecipientScope(
@@ -1449,8 +1603,19 @@ export class WeeklyReportService {
   }> {
     const taskRows = await this.prisma.task.findMany({
       where: {
+        primarySource: 'jira',
         isCurrentUser: true,
         visibilityState: 'visible',
+        OR: [
+          { plannedStartDate: { gte: period.periodStart, lte: period.periodEnd } },
+          { dueDate: { gte: period.periodStart, lte: period.periodEnd } },
+          {
+            AND: [
+              { plannedStartDate: { lte: period.periodEnd } },
+              { dueDate: { gte: period.periodStart } },
+            ],
+          },
+        ],
         ...(input.jiraQuery.connectionIds?.length
           ? { connectionId: { in: input.jiraQuery.connectionIds } }
           : {}),
@@ -1697,6 +1862,44 @@ export class WeeklyReportService {
     return calendar?.currentVersion ?? null;
   }
 
+  private contentTemplateFields(
+    row: {
+      recentGoalsText: string;
+      weeklyWorkText: string;
+      nextWeekPlansText: string;
+      problemsText: string;
+      otherText: string;
+    } | null,
+  ): Record<WeeklyReportField, string> {
+    return {
+      recentGoals: row?.recentGoalsText ?? '',
+      weeklyWork: row?.weeklyWorkText ?? '',
+      nextWeekPlans: row?.nextWeekPlansText ?? '',
+      problems: row?.problemsText ?? '',
+      other: row?.otherText ?? '',
+    };
+  }
+
+  private serializeContentTemplate(
+    row: {
+      id: string;
+      version: number;
+      recentGoalsText: string;
+      weeklyWorkText: string;
+      nextWeekPlansText: string;
+      problemsText: string;
+      otherText: string;
+      updatedAt: Date;
+    } | null,
+  ) {
+    return {
+      id: row?.id ?? null,
+      version: row?.version ?? 0,
+      fields: this.contentTemplateFields(row),
+      updatedAt: row?.updatedAt.toISOString() ?? null,
+    };
+  }
+
   private renderFields(fields: Record<WeeklyReportField, WeeklyReportBlock[]>) {
     return Object.fromEntries(
       weeklyFields.map((field) => [
@@ -1704,6 +1907,7 @@ export class WeeklyReportService {
         fields[field]
           .map((block) => block.body.trim())
           .filter(Boolean)
+          .map((text, index) => `${index + 1}、${text.replace(/^\s*\d+[、.．]\s*/u, '')}`)
           .join('\n'),
       ]),
     ) as Record<WeeklyReportField, string>;

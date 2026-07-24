@@ -117,6 +117,27 @@ describe('周报 AI 白名单净化与事实校验', () => {
     expect(request.estimatedInputTokens).toBeGreaterThan(0);
   });
 
+  it('允许空白周报栏位使用任务事实生成，不再把空栏位当作安全错误', () => {
+    const sanitized = sanitizeWeeklyAiInput(
+      input({ baseFields: { ...baseFields(), recentGoals: '   ' } }),
+    );
+
+    expect(sanitized.storedReferences).toHaveLength(1);
+    expect(sanitized.storedReferences[0]?.sourceType).toBe('task');
+    expect(sanitized.inputCategories).toEqual(['jira_metadata']);
+  });
+
+  it('没有任何可引用事实时给出明确的空输入错误', () => {
+    expect(() =>
+      sanitizeWeeklyAiInput(
+        input({
+          baseFields: { ...baseFields(), recentGoals: '' },
+          tasks: [],
+        }),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'AI_SANITIZED_INPUT_EMPTY' }));
+  });
+
   it('只接受被段落引用直接支持的工单号、日期、数字和项目名', () => {
     const sanitized = sanitizeWeeklyAiInput(input());
     const taskRef = sanitized.storedReferences.find((item) => item.sourceType === 'task')!.refId;
@@ -127,7 +148,7 @@ describe('周报 AI 白名单净化与事实校验', () => {
           paragraphs: [
             {
               projectName: 'Alpha',
-              text: '推进 Alpha 项目 AW-12，已投入 2 小时，截止 2026-07-18。',
+              text: `推进 Alpha 项目 AW-12，完成完整实现 AI 建议，已投入 2 小时，截止 2026-07-18。[citation:${taskRef}]`,
               citations: [taskRef],
             },
           ],
@@ -136,9 +157,76 @@ describe('周报 AI 白名单净化与事实校验', () => {
     });
     const result = validateWeeklyAiOutput(valid, sanitized, baseFields());
 
-    expect(result.fieldTexts.recentGoals).toContain('AW-12');
+    expect(result.fieldTexts.recentGoals).toContain('1、推进 Alpha 项目 完成完整实现 AI 建议');
+    expect(result.fieldTexts.recentGoals).not.toContain('AW-12');
+    expect(result.fieldTexts.recentGoals).not.toContain('[citation:');
     expect(result.fields[0]?.paragraphs[0]?.citations).toEqual([taskRef]);
     expect(result.fieldTexts.weeklyWork).toBe('本周原始工作');
+  });
+
+  it('接受引用正文中明确出现的项目名，即使来源没有独立 projectName 字段', () => {
+    const fields = { ...baseFields(), recentGoals: '推进凤凰平台的周报生成能力。' };
+    const sanitized = sanitizeWeeklyAiInput(input({ baseFields: fields, tasks: [] }));
+    const baseRef = sanitized.storedReferences[0]!.refId;
+    const raw = JSON.stringify({
+      fields: [
+        {
+          field: 'recentGoals',
+          paragraphs: [
+            {
+              projectName: '凤凰平台',
+              text: '推进凤凰平台的周报生成能力。',
+              citations: [baseRef],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(validateWeeklyAiOutput(raw, sanitized, fields).fieldTexts.recentGoals).toBe(
+      '1、推进凤凰平台的周报生成能力。',
+    );
+  });
+
+  it('AI 无有效内容时保留模板基线，有内容时才用编号后的优化结果覆盖', () => {
+    const sanitized = sanitizeWeeklyAiInput(input({ selectedFields: ['problems'] }));
+    const taskRef = sanitized.storedReferences.find((item) => item.sourceType === 'task')!.refId;
+    const placeholder = JSON.stringify({
+      fields: [
+        {
+          field: 'problems',
+          paragraphs: [{ projectName: null, text: '无明确问题。', citations: [taskRef] }],
+        },
+      ],
+    });
+    expect(validateWeeklyAiOutput(placeholder, sanitized, baseFields()).fieldTexts.problems).toBe(
+      '暂无',
+    );
+    expect(
+      validateWeeklyAiOutput(placeholder, sanitized, baseFields()).fields[0]?.paragraphs,
+    ).toEqual([]);
+
+    const empty = JSON.stringify({ fields: [{ field: 'problems', paragraphs: [] }] });
+    expect(validateWeeklyAiOutput(empty, sanitized, baseFields()).fieldTexts.problems).toBe('暂无');
+  });
+
+  it('归一化 JSON Object 模式返回的字段对象和缺省项目名', () => {
+    const sanitized = sanitizeWeeklyAiInput(
+      input({ selectedFields: ['recentGoals', 'weeklyWork'] }),
+    );
+    const taskRef = sanitized.storedReferences.find((item) => item.sourceType === 'task')!.refId;
+    const raw = JSON.stringify({
+      recentGoals: { paragraphs: [] },
+      weeklyWork: {
+        paragraphs: [{ text: '推进 Alpha 项目 AW-12，已投入 2 小时。', citations: [taskRef] }],
+      },
+    });
+
+    const result = validateWeeklyAiOutput(raw, sanitized, baseFields());
+
+    expect(result.fields[1]?.paragraphs[0]?.projectName).toBeNull();
+    expect(result.fieldTexts.recentGoals).toBe(baseFields().recentGoals);
+    expect(result.fieldTexts.weeklyWork).toBe('1、推进 Alpha 项目 已投入 2 小时。');
   });
 
   it.each([
@@ -146,7 +234,6 @@ describe('周报 AI 白名单净化与事实校验', () => {
     ['AI_OUTPUT_NUMBER_UNSUPPORTED', { text: '推进 Alpha 项目 AW-12，已投入 3 小时。' }],
     ['AI_OUTPUT_ISSUE_UNSUPPORTED', { text: '推进 Alpha 项目 AW-999，已投入 2 小时。' }],
     ['AI_OUTPUT_DATE_UNSUPPORTED', { text: '推进 Alpha 项目 AW-12，截止 2027-01-01。' }],
-    ['AI_OUTPUT_PROJECT_UNSUPPORTED', { projectName: 'Imaginary' }],
     ['AI_OUTPUT_ACTIVE_CONTENT_REJECTED', { text: '<script>alert(1)</script>' }],
     [
       'AI_OUTPUT_SECURITY_BLOCKED',
@@ -173,6 +260,29 @@ describe('周报 AI 白名单净化与事实校验', () => {
     expect(() => validateWeeklyAiOutput(raw, sanitized, baseFields())).toThrowError(
       expect.objectContaining({ code }),
     );
+  });
+
+  it('清空无引用依据的项目标签，但保留通过事实校验的正文', () => {
+    const sanitized = sanitizeWeeklyAiInput(input());
+    const taskRef = sanitized.storedReferences.find((item) => item.sourceType === 'task')!.refId;
+    const raw = JSON.stringify({
+      fields: [
+        {
+          field: 'recentGoals',
+          paragraphs: [
+            {
+              projectName: 'Imaginary',
+              text: '推进 Alpha 项目 AW-12，已投入 2 小时。',
+              citations: [taskRef],
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = validateWeeklyAiOutput(raw, sanitized, baseFields());
+    expect(result.fields[0]?.paragraphs[0]?.projectName).toBeNull();
+    expect(result.fieldTexts.recentGoals).toBe('1、推进 Alpha 项目 已投入 2 小时。');
   });
 
   it('拒绝字段缺失、重复和额外动作结构', () => {
@@ -205,6 +315,7 @@ describe('周报 AI 白名单净化与事实校验', () => {
       evidence: WeeklyEvidenceFact[];
       manualInputs: WeeklyManualInput[];
       baseFields: Record<WeeklyReportField, string>;
+      selectedFields: WeeklyReportField[];
       consent: {
         allowPeopleNames: boolean;
         allowInternalUrls: boolean;
@@ -217,7 +328,7 @@ describe('周报 AI 白名单净化与事实校验', () => {
       periodEnd: '2026-07-19',
       reportDate: '2026-07-18',
       timezone: 'Asia/Shanghai',
-      selectedFields: ['recentGoals'] as WeeklyReportField[],
+      selectedFields: override.selectedFields ?? (['recentGoals'] as WeeklyReportField[]),
       baseFields: override.baseFields ?? baseFields(),
       tasks: override.tasks ?? [task()],
       evidence: override.evidence ?? [],

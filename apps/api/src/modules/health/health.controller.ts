@@ -35,7 +35,12 @@ export class HealthController {
             reason: this.gitHealth.reason,
           },
         },
-        binding: { host: this.config.host, port: this.config.port, loopbackOnly: true },
+        binding: {
+          host: this.config.host,
+          port: this.config.port,
+          // 容器内监听所有接口，但 Compose 仍只向宿主机回环地址发布端口。
+          loopbackOnly: this.config.host !== '0.0.0.0',
+        },
         environment: this.config.environment,
       },
       request.autoWork.correlationId,

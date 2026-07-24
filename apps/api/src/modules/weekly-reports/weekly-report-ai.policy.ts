@@ -9,8 +9,8 @@ import {
 } from '@auto-work/domain';
 import { z } from 'zod';
 
-export const weeklyAiPromptTemplateVersion = 'weekly-report-ai-prompt-v1';
-export const weeklyAiSanitizationPolicyVersion = 'weekly-report-ai-sanitization-v1';
+export const weeklyAiPromptTemplateVersion = 'weekly-report-ai-prompt-v3';
+export const weeklyAiSanitizationPolicyVersion = 'weekly-report-ai-sanitization-v2';
 export const weeklyAiMaximumRawOutputBytes = 2 * 1024 * 1024;
 
 export const weeklyAiFields = [
@@ -53,6 +53,7 @@ interface WeeklyAiValidationReference extends WeeklyAiStoredReference {
   dates: Set<string>;
   numbers: Set<string>;
   projectNames: Set<string>;
+  sourceTexts: Set<string>;
 }
 
 interface WeeklyAiSanitizedSource {
@@ -126,7 +127,7 @@ const outputParagraphSchema = z
 const outputFieldSchema = z
   .object({
     field: z.enum(weeklyAiFields),
-    paragraphs: z.array(outputParagraphSchema).min(1).max(100),
+    paragraphs: z.array(outputParagraphSchema).max(100),
   })
   .strict();
 
@@ -155,12 +156,15 @@ export function sanitizeWeeklyAiInput(
   const inputCategories = new Set<string>();
 
   for (const field of selectedFields) {
+    const baseText = input.baseFields[field].trim();
+    // AI 填写允许从空白周报开始；空栏位不是事实来源，直接跳过即可。
+    if (!baseText) continue;
     addSource(
       {
         refId: referenceId(),
         kind: 'base_field',
         field,
-        text: requireSafeText(input.baseFields[field], `baseFields.${field}`),
+        text: requireSafeText(baseText, `baseFields.${field}`),
       },
       field,
       field,
@@ -225,6 +229,17 @@ export function sanitizeWeeklyAiInput(
     inputCategories.add('manual_inputs');
   }
 
+  if (sources.length === 0) {
+    throw new DomainError(
+      'AI_SANITIZED_INPUT_EMPTY',
+      '没有可用于 AI 生成的白名单事实，请先同步任务或填写周报内容',
+      {
+        httpStatus: 422,
+        details: { policyVersion: weeklyAiSanitizationPolicyVersion },
+      },
+    );
+  }
+
   const sanitizedInput: WeeklyAiSanitizedInput = {
     policyVersion: weeklyAiSanitizationPolicyVersion,
     purpose: 'weekly_report',
@@ -269,6 +284,7 @@ export function sanitizeWeeklyAiInput(
       dates: extractDates(source),
       numbers: extractNumbers(source),
       projectNames: source.projectName ? new Set([normalizeFact(source.projectName)]) : new Set(),
+      sourceTexts: extractProjectSupportingTexts(source),
     });
   }
 }
@@ -281,7 +297,11 @@ export function buildWeeklyAiGenerationRequest(policy: WeeklyAiSanitizationResul
 } {
   const systemPrompt = [
     '你是本地周报的文字改写器，只能依据用户消息中的白名单事实改写，不能补充、推断或编造。',
+    '必须以 base_field 中的当前周报正文为基础进行优化，保留其中已有的有效信息；任务和证据只用于补充或改善表达。',
     '每个段落必须给出至少一个 citations 引用；日期、数字、工单号和项目名必须被所引引用直接支持。',
+    'projectName 只能填写当前段落 citations 明确支持的项目名；没有项目依据时必须返回 null。',
+    '周报正文必须以 Jira 任务标题 title 为主体，不要输出工单号、refId 或 [citation:...] 等内部引用标记。',
+    '某个栏位没有可靠的新内容或无法安全优化时，返回该栏位但将 paragraphs 设为空数组，系统会保留原文；不要填写“暂无”“无明确问题”等占位句。',
     '不得输出动作、工具调用、代码、HTML、Markdown 代码块、源码、diff、凭证或附件内容。',
     '不要使用带数字的列表编号；无法可靠改写时，应忠实复述已引用的原文。',
     '只返回符合 JSON Schema 的 JSON，不得返回解释或代码围栏。',
@@ -324,7 +344,9 @@ export function validateWeeklyAiOutput(
   } catch {
     throw outputError('AI_OUTPUT_JSON_INVALID', 'AI 输出不是有效 JSON');
   }
-  const result = outputSchema.safeParse(parsed);
+  const result = outputSchema.safeParse(
+    normalizeWeeklyAiOutputShape(parsed, policy.sanitizedInput.requestedFields),
+  );
   if (!result.success) {
     throw outputError('AI_OUTPUT_SCHEMA_INVALID', 'AI 输出不符合周报建议结构');
   }
@@ -340,6 +362,10 @@ export function validateWeeklyAiOutput(
 
   for (const field of result.data.fields) {
     for (const paragraph of field.paragraphs) {
+      paragraph.text = cleanWeeklyAiCitations(paragraph.text);
+      if (!paragraph.text) {
+        throw outputError('AI_OUTPUT_TEXT_EMPTY', 'AI 输出清理内部标记后正文为空');
+      }
       if (/```|<\/?[a-z][^>]*>/iu.test(paragraph.text)) {
         throw outputError('AI_OUTPUT_ACTIVE_CONTENT_REJECTED', 'AI 输出包含代码围栏或 HTML');
       }
@@ -353,27 +379,113 @@ export function validateWeeklyAiOutput(
         }
         return reference;
       });
-      if (
-        paragraph.projectName &&
-        !cited.some((reference) =>
-          reference.projectNames.has(normalizeFact(paragraph.projectName!)),
-        )
-      ) {
-        throw outputError('AI_OUTPUT_PROJECT_UNSUPPORTED', 'AI 输出中的项目名没有引用依据');
+      if (paragraph.projectName && !isProjectSupported(paragraph.projectName, cited)) {
+        // projectName 只是展示分组元数据。模型偶尔会把其他段落的项目标签复制过来；
+        // 本地直接丢弃无依据标签，正文仍必须继续通过逐项事实与引用校验。
+        paragraph.projectName = null;
       }
       assertFactsSupported('issue', extractIssueKeys(paragraph.text), cited);
       assertFactsSupported('date', extractDates(paragraph.text), cited);
       assertFactsSupported('number', extractNumbers(paragraph.text), cited);
+      paragraph.text = cleanWeeklyAiTaskKeys(paragraph.text);
+      if (!paragraph.text) {
+        throw outputError('AI_OUTPUT_TEXT_EMPTY', 'AI 输出清理内部标记后正文为空');
+      }
     }
   }
 
   const fieldTexts = { ...baseFields };
   for (const field of result.data.fields) {
-    fieldTexts[field.field] = field.paragraphs
-      .map((paragraph) => paragraph.text.trim())
-      .join('\n\n');
+    const meaningful = field.paragraphs.filter(
+      (paragraph) => !isEmptyWeeklyPlaceholder(field.field, paragraph.text),
+    );
+    field.paragraphs = meaningful;
+    if (meaningful.length > 0) {
+      fieldTexts[field.field] = meaningful
+        .map(
+          (paragraph, index) => `${index + 1}、${paragraph.text.replace(/^\s*\d+[、.．]\s*/u, '')}`,
+        )
+        .join('\n');
+    }
   }
   return { fields: result.data.fields, fieldTexts };
+}
+
+function normalizeWeeklyAiOutputShape(
+  parsed: unknown,
+  requestedFields: WeeklyReportField[],
+): unknown {
+  if (!isPlainObject(parsed)) return parsed;
+
+  if (Array.isArray(parsed.fields)) {
+    return {
+      ...parsed,
+      fields: parsed.fields.map((field) => normalizeWeeklyAiFieldShape(field)),
+    };
+  }
+
+  const keys = Object.keys(parsed);
+  if (
+    keys.length !== requestedFields.length ||
+    keys.some((key) => !requestedFields.includes(key as WeeklyReportField))
+  ) {
+    return parsed;
+  }
+
+  return {
+    fields: requestedFields.map((field) => {
+      const value = parsed[field];
+      if (!isPlainObject(value)) return value;
+      return normalizeWeeklyAiFieldShape({ field, ...value });
+    }),
+  };
+}
+
+function normalizeWeeklyAiFieldShape(value: unknown): unknown {
+  if (!isPlainObject(value) || !Array.isArray(value.paragraphs)) return value;
+  const paragraphs = value.paragraphs as unknown[];
+  return {
+    ...value,
+    paragraphs: paragraphs.map((paragraph) => {
+      if (!isPlainObject(paragraph) || Object.hasOwn(paragraph, 'projectName')) return paragraph;
+      return { ...paragraph, projectName: null };
+    }),
+  };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function cleanWeeklyAiCitations(value: string): string {
+  return value
+    .replace(/\s*[[【]citation\s*:\s*[^\]】]+[\]】]/giu, '')
+    .replace(/[ \t]{2,}/gu, ' ')
+    .trim();
+}
+
+function cleanWeeklyAiTaskKeys(value: string): string {
+  return value
+    .replace(/\b[A-Z][A-Z0-9]+-\d+\b\s*[,，:：、]?\s*/gu, '')
+    .replace(/[ \t]{2,}/gu, ' ')
+    .trim();
+}
+
+function isEmptyWeeklyPlaceholder(field: WeeklyReportField, value: string): boolean {
+  const normalized = value.replace(/[。.!！\s]/gu, '');
+  if (normalized === '暂无' || normalized === '无') return true;
+  if (field === 'nextWeekPlans') {
+    return ['无明确计划', '暂无计划', '无下周计划'].includes(normalized);
+  }
+  if (field === 'problems') {
+    return ['无明确问题', '暂无问题', '无问题', '无风险', '暂无风险', '无问题与风险'].includes(
+      normalized,
+    );
+  }
+  if (field === 'other') {
+    return ['无其他事项', '暂无其他事项', '无其他补充', '暂无其他补充'].includes(normalized);
+  }
+  return false;
 }
 
 function weeklyAiOutputJsonSchema(selectedFields: WeeklyReportField[]): Record<string, unknown> {
@@ -390,7 +502,7 @@ function weeklyAiOutputJsonSchema(selectedFields: WeeklyReportField[]): Record<s
             field: { type: 'string', enum: selectedFields },
             paragraphs: {
               type: 'array',
-              minItems: 1,
+              minItems: 0,
               maxItems: 100,
               items: {
                 type: 'object',
@@ -538,6 +650,26 @@ function extractNumbers(value: unknown): Set<string> {
     json.match(/(?<![\p{L}\p{N}_])\d+(?:\.\d+)?(?:\s*(?:小时|分钟|秒|天|个|项|次|%))?/gu) ?? [];
   return new Set(
     matches.map((fact) => normalizeFact(fact.replace(/(?:小时|分钟|秒|天|个|项|次|%)$/u, ''))),
+  );
+}
+
+function extractProjectSupportingTexts(source: WeeklyAiSanitizedSource): Set<string> {
+  return new Set(
+    [source.projectName, source.title, source.text]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map(normalizeFact),
+  );
+}
+
+function isProjectSupported(
+  projectName: string,
+  citations: WeeklyAiValidationReference[],
+): boolean {
+  const normalizedProjectName = normalizeFact(projectName);
+  return citations.some(
+    (citation) =>
+      citation.projectNames.has(normalizedProjectName) ||
+      [...citation.sourceTexts].some((text) => text.includes(normalizedProjectName)),
   );
 }
 

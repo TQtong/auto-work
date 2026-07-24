@@ -40,6 +40,7 @@ model UserProfile {
   reportSourceSnapshots ReportSourceSnapshot[]
   weeklyReports         WeeklyReport[]
   weeklyReminderPolicy  WeeklyReportReminderPolicy?
+  weeklyContentTemplate WeeklyReportContentTemplate?
   quarterlyReviews      QuarterlyReview[]
   metricTemplates       PerformanceMetricTemplate[]
 
@@ -912,6 +913,22 @@ model WeeklyReportReminderPolicy {
 
   @@index([enabled, updatedAt])
   @@map("weekly_report_reminder_policy")
+}
+
+model WeeklyReportContentTemplate {
+  id                  String      @id
+  profileId           String      @unique @map("profile_id")
+  recentGoalsText     String      @default("") @map("recent_goals_text")
+  weeklyWorkText      String      @default("") @map("weekly_work_text")
+  nextWeekPlansText   String      @default("") @map("next_week_plans_text")
+  problemsText        String      @default("") @map("problems_text")
+  otherText           String      @default("") @map("other_text")
+  version             Int         @default(1)
+  createdAt           DateTime    @default(now()) @map("created_at")
+  updatedAt           DateTime    @updatedAt @map("updated_at")
+  profile             UserProfile @relation(fields: [profileId], references: [id], onDelete: Restrict)
+
+  @@map("weekly_report_content_template")
 }
 
 model WeeklyReportVersion {

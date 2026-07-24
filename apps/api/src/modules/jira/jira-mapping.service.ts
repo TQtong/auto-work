@@ -7,13 +7,20 @@ import { AuditService } from '../audit/audit.service.js';
 import { SessionService } from '../session/session.service.js';
 import type { RequestAuditContext } from '../settings/profile.service.js';
 import type { JiraMappingInput } from './jira-mapping.schemas.js';
+import type { JiraFieldMappings } from './jira-task-normalizer.js';
 
 interface CapabilityField {
   id: string;
   name: string;
-  schema?: { type?: string | null; items?: string | null } | null;
+  schema?: { type?: string | null | undefined; items?: string | null | undefined } | null;
   occurrenceRate?: number;
   sampleValues?: unknown[];
+}
+
+interface CapabilityStatus {
+  id: string;
+  name: string;
+  categoryKey?: string | null;
 }
 
 @Injectable()
@@ -24,6 +31,78 @@ export class JiraMappingService {
     private readonly sessions: SessionService,
     private readonly security: LocalSecurityService,
   ) {}
+
+  /**
+   * Jira 字段差异属于适配器实现细节，不要求用户在 Web 端维护映射。
+   * 探测成功后根据 Jira 系统字段及字段元数据生成一个内部、不可变的读取配置。
+   */
+  public async ensureAutomatic(
+    connectionId: string,
+    fields: CapabilityField[],
+    statuses: CapabilityStatus[],
+  ) {
+    await this.connection(connectionId);
+    const byId = new Map(fields.map((field) => [field.id, field]));
+    const fieldMappings: JiraFieldMappings = {
+      plannedStartDate: this.findField(
+        fields,
+        ['计划开始', '开始日期', 'start date'],
+        ['date', 'datetime', 'string'],
+      ),
+      dueDate: byId.has('duedate') ? 'duedate' : null,
+      sprint: this.findField(fields, ['sprint'], ['array', 'string']),
+      parent: byId.has('parent') ? 'parent' : null,
+      originalEstimateSeconds: byId.has('timeoriginalestimate') ? 'timeoriginalestimate' : null,
+      remainingEstimateSeconds: byId.has('timeestimate') ? 'timeestimate' : null,
+      timeSpentSeconds: byId.has('timespent') ? 'timespent' : null,
+      assignee: byId.has('assignee') ? 'assignee' : null,
+      status: byId.has('status') ? 'status' : null,
+      priority: byId.has('priority') ? 'priority' : null,
+      labels: byId.has('labels') ? 'labels' : null,
+      components: byId.has('components') ? 'components' : null,
+    };
+    const statusMappings = Object.fromEntries(
+      statuses.map((status) => [status.id, this.automaticStatus(status)]),
+    );
+    const parserRules = {
+      parentFallbackFieldId: null,
+      sprintStringFallback: true,
+      preserveUnknownStatus: true,
+    };
+    const serialized = {
+      fields: JSON.stringify(fieldMappings),
+      statuses: JSON.stringify(statusMappings),
+      parserRules: JSON.stringify(parserRules),
+    };
+    const latest = await this.prisma.fieldMappingVersion.findFirst({
+      where: { connectionId },
+      orderBy: { versionNo: 'desc' },
+    });
+    if (
+      latest?.fieldMappingsJson === serialized.fields &&
+      latest.statusMappingsJson === serialized.statuses &&
+      latest.parserRulesJson === serialized.parserRules
+    ) {
+      return latest;
+    }
+    return this.prisma.fieldMappingVersion.create({
+      data: {
+        id: newId(),
+        connectionId,
+        versionNo: (latest?.versionNo ?? 0) + 1,
+        fieldMappingsJson: serialized.fields,
+        statusMappingsJson: serialized.statuses,
+        parserRulesJson: serialized.parserRules,
+        validationSummaryJson: JSON.stringify({
+          mode: 'automatic_read_adapter',
+          detectedAt: new Date().toISOString(),
+          availableFieldCount: fields.length,
+          statusCount: statuses.length,
+        }),
+        createdBy: 'system:auto-jira-adapter',
+      },
+    });
+  }
 
   public async list(connectionId: string) {
     await this.connection(connectionId);
@@ -205,5 +284,28 @@ export class JiraMappingService {
 
   private async latestRow() {
     return this.prisma.fieldMappingVersion.findFirstOrThrow();
+  }
+
+  private findField(
+    fields: CapabilityField[],
+    names: string[],
+    acceptedTypes: string[],
+  ): string | null {
+    const matched = fields.find((field) => {
+      const name = field.name.toLocaleLowerCase();
+      const type = field.schema?.type ?? 'any';
+      return names.some((candidate) => name.includes(candidate)) && acceptedTypes.includes(type);
+    });
+    return matched?.id ?? null;
+  }
+
+  private automaticStatus(status: CapabilityStatus) {
+    const name = status.name.toLocaleLowerCase();
+    if (/(取消|作废|cancel|won't do|wont do)/u.test(name)) return 'cancelled' as const;
+    if (/(阻塞|受阻|blocked|impediment)/u.test(name)) return 'blocked' as const;
+    if (status.categoryKey === 'new') return 'planned' as const;
+    if (status.categoryKey === 'indeterminate') return 'in_progress' as const;
+    if (status.categoryKey === 'done') return 'done' as const;
+    return 'other' as const;
   }
 }

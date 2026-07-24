@@ -28,6 +28,6 @@ export default tseslint.config(
   },
   {
     ...tseslint.configs.disableTypeChecked,
-    files: ['scripts/benchmarks/*.mjs'],
+    files: ['scripts/benchmarks/*.mjs', 'docker/*.mjs'],
   },
 );

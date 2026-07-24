@@ -78,6 +78,8 @@ describe.runIf(process.platform === 'win32')('Git 批次持久化工作流', () 
       webDist: join(temporaryDirectory, 'web'),
       databaseUrl: `file:${join(temporaryDirectory, 'workflow.db').replaceAll('\\', '/')}`,
       repositoryRoot,
+      vaultBackend: 'sealed',
+      vaultKeyFile: join(temporaryDirectory, 'data', 'vault-master.key'),
       logLevel: 'info',
       environment: 'test',
     };

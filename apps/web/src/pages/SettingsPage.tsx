@@ -36,7 +36,7 @@ import type {
   WeeklyReportReminderPolicy,
 } from '../api/types.js';
 import { StatusTag } from '../components/StatusTag.js';
-import { JiraSettingsModal } from './JiraSettingsModal.js';
+import { AiProviderSettings } from './AiProviderSettings.js';
 
 interface IntegrationFormValues {
   type: Integration['type'];
@@ -52,6 +52,10 @@ interface IntegrationFormValues {
   corpId?: string;
   operatorUserId?: string;
   templateName?: string;
+  organizationName?: string;
+  recipientGroupName?: string;
+  desktopExecutablePath?: string;
+  desktopTimeoutSeconds?: number;
   robotName?: string;
   groupId?: string;
   robotQuietWindowMinutes?: number;
@@ -96,6 +100,7 @@ export function SettingsPage() {
         items={[
           { key: 'profile', label: '个人身份与别名', children: <ProfileSettings /> },
           { key: 'reminders', label: '周报提醒', children: <ReminderPolicySettings /> },
+          { key: 'ai-providers', label: '模型供应商', children: <AiProviderSettings /> },
           { key: 'integrations', label: '外部集成', children: <IntegrationSettings /> },
         ]}
       />
@@ -495,7 +500,6 @@ function IntegrationSettings() {
   const selectedType = Form.useWatch('type', form);
   const [open, setOpen] = useState(false);
   const [cacheConnection, setCacheConnection] = useState<Integration | null>(null);
-  const [jiraConnection, setJiraConnection] = useState<Integration | null>(null);
   const [robotRiskConnection, setRobotRiskConnection] = useState<Integration | null>(null);
   const [messageApi, holder] = message.useMessage();
   useEffect(() => {
@@ -580,15 +584,10 @@ function IntegrationSettings() {
             })
           : apiRequest(`/api/v1/integrations/${row.id}/test`, { method: 'POST' });
       if (kind === 'sync')
-        return row.type === 'jira'
-          ? apiRequest(`/api/v1/integrations/${row.id}/jira/sync`, {
-              method: 'POST',
-              body: JSON.stringify({ scope: 'incremental' }),
-            })
-          : apiRequest(`/api/v1/integrations/${row.id}/gitlab/sync`, {
-              method: 'POST',
-              body: '{}',
-            });
+        return apiRequest(`/api/v1/integrations/${row.id}/gitlab/sync`, {
+          method: 'POST',
+          body: '{}',
+        });
       if (kind === 'disable')
         return apiRequest(`/api/v1/integrations/${row.id}/disable`, {
           method: 'POST',
@@ -627,7 +626,7 @@ function IntegrationSettings() {
       <Table
         rowKey="id"
         loading={integrations.isLoading}
-        dataSource={integrations.data?.data ?? []}
+        dataSource={(integrations.data?.data ?? []).filter((item) => item.type !== 'ai')}
         expandable={{
           expandedRowRender: (row: Integration) => (
             <Descriptions bordered size="small" column={2}>
@@ -680,7 +679,11 @@ function IntegrationSettings() {
             render: (value: Record<string, string> | null, row: Integration) => (
               <Space direction="vertical" size={2}>
                 <Typography.Text>
-                  {value ? Object.values(value).join(' / ') : '当前凭证未配置'}
+                  {row.type === 'dingtalk_desktop'
+                    ? '无需凭证，使用当前 Windows 登录会话'
+                    : value
+                      ? Object.values(value).join(' / ')
+                      : '当前凭证未配置'}
                 </Typography.Text>
                 {row.credentialReplacementPending && (
                   <Typography.Text type="warning">待测试凭证已安全保存</Typography.Text>
@@ -712,7 +715,7 @@ function IntegrationSettings() {
                       {row.credentialReplacementPending ? '测试并启用新凭证' : '发送固定测试消息'}
                     </Button>
                   </Popconfirm>
-                ) : (
+                ) : row.type !== 'jira' ? (
                   <Button
                     size="small"
                     onClick={() => action.mutate({ row, kind: 'test' })}
@@ -720,6 +723,10 @@ function IntegrationSettings() {
                   >
                     测试
                   </Button>
+                ) : (
+                  <Typography.Text type="secondary">
+                    每天 06:00 自动只读同步；可在任务页手动刷新
+                  </Typography.Text>
                 )}
                 {row.type === 'gitlab' && (
                   <>
@@ -739,24 +746,6 @@ function IntegrationSettings() {
                     </Button>
                   </>
                 )}
-                {row.type === 'jira' && (
-                  <>
-                    <Button size="small" onClick={() => setJiraConnection(row)}>
-                      字段与状态映射
-                    </Button>
-                    <Button
-                      size="small"
-                      onClick={() => action.mutate({ row, kind: 'sync' })}
-                      disabled={
-                        !row.enabled ||
-                        !row.credentialMask ||
-                        !['healthy', 'degraded'].includes(row.status)
-                      }
-                    >
-                      同步个人任务
-                    </Button>
-                  </>
-                )}
                 {row.type === 'dingtalk_robot' && (
                   <Button
                     size="small"
@@ -771,26 +760,30 @@ function IntegrationSettings() {
                     严重风险规则
                   </Button>
                 )}
-                <Popconfirm
-                  title="禁用后定时同步和外部调用都会停止，历史记录仍保留。"
-                  onConfirm={() => action.mutate({ row, kind: 'disable' })}
-                >
-                  <Button size="small" disabled={!row.enabled}>
-                    禁用
-                  </Button>
-                </Popconfirm>
-                <Popconfirm
-                  title="确认删除本机保险箱中的凭证？外部平台 Token 仍需在平台侧另行吊销。"
-                  onConfirm={() => action.mutate({ row, kind: 'revoke' })}
-                >
-                  <Button
-                    size="small"
-                    danger
-                    disabled={!row.credentialMask && !row.credentialReplacementPending}
-                  >
-                    撤销凭证
-                  </Button>
-                </Popconfirm>
+                {row.type !== 'jira' && (
+                  <>
+                    <Popconfirm
+                      title="禁用后定时同步和外部调用都会停止，历史记录仍保留。"
+                      onConfirm={() => action.mutate({ row, kind: 'disable' })}
+                    >
+                      <Button size="small" disabled={!row.enabled}>
+                        禁用
+                      </Button>
+                    </Popconfirm>
+                    <Popconfirm
+                      title="确认删除本机保险箱中的凭证？外部平台 Token 仍需在平台侧另行吊销。"
+                      onConfirm={() => action.mutate({ row, kind: 'revoke' })}
+                    >
+                      <Button
+                        size="small"
+                        danger
+                        disabled={!row.credentialMask && !row.credentialReplacementPending}
+                      >
+                        撤销凭证
+                      </Button>
+                    </Popconfirm>
+                  </>
+                )}
               </Space>
             ),
           },
@@ -853,7 +846,6 @@ function IntegrationSettings() {
           ]}
         />
       </Modal>
-      <JiraSettingsModal connection={jiraConnection} onClose={() => setJiraConnection(null)} />
       <Modal
         title={`${robotRiskConnection?.name ?? '机器人'} · 严重风险规则`}
         width={720}
@@ -909,13 +901,14 @@ function IntegrationSettings() {
             type: 'gitlab',
             authScheme: 'bearer',
             protocol: 'openai_compatible',
-            aiTimeoutMs: 60_000,
+            aiTimeoutMs: 180_000,
             aiMaxInputTokens: 32_000,
             aiMaxOutputTokens: 4_096,
             aiTemperaturePolicy: 'deterministic',
             aiTemperature: 0,
             aiAllowedPurposes: ['weekly_report'],
             templateName: 'uTwin产研创新部周报',
+            desktopTimeoutSeconds: 45,
             gitlabHistoryDays: 120,
             robotQuietWindowMinutes: 30,
             severeRiskCodes: [],
@@ -929,8 +922,8 @@ function IntegrationSettings() {
                   { value: 'gitlab', label: 'GitLab' },
                   { value: 'jira', label: 'Jira' },
                   { value: 'dingtalk_log', label: '钉钉正式日志' },
+                  { value: 'dingtalk_desktop', label: '钉钉桌面正式日志（无需接口权限）' },
                   { value: 'dingtalk_robot', label: '钉钉加签机器人' },
-                  { value: 'ai', label: '外部 AI' },
                 ]}
               />
             </Form.Item>
@@ -938,7 +931,7 @@ function IntegrationSettings() {
               <Input />
             </Form.Item>
           </div>
-          {selectedType !== 'dingtalk_robot' && (
+          {!['dingtalk_robot', 'dingtalk_desktop'].includes(selectedType ?? '') && (
             <Form.Item
               name="baseUrl"
               label="HTTPS 基础地址"
@@ -953,10 +946,14 @@ function IntegrationSettings() {
             </Form.Item>
           )}
           <IntegrationFields type={selectedType ?? 'gitlab'} />
-          <Divider titlePlacement="start">
-            <KeyOutlined /> 一次性凭证输入
-          </Divider>
-          <CredentialFields type={selectedType ?? 'gitlab'} />
+          {selectedType !== 'dingtalk_desktop' && (
+            <>
+              <Divider titlePlacement="start">
+                <KeyOutlined /> 一次性凭证输入
+              </Divider>
+              <CredentialFields type={selectedType ?? 'gitlab'} />
+            </>
+          )}
         </Form>
       </Modal>
     </Card>
@@ -1022,6 +1019,59 @@ function IntegrationFields({ type }: { type: Integration['type'] }) {
         >
           <Input />
         </Form.Item>
+      </>
+    );
+  if (type === 'dingtalk_desktop')
+    return (
+      <>
+        <Alert
+          type="info"
+          showIcon
+          message="无需申请钉钉接口权限"
+          description="系统使用当前 Windows 用户已登录的钉钉桌面客户端，进入公司工作台的正式日志模板并填写、提交。测试连接时请保持电脑解锁并允许钉钉窗口置前；测试不会提交内容，但钉钉可能留下一个空白周报草稿。"
+          style={{ marginBottom: 16 }}
+        />
+        <div className="form-grid">
+          <Form.Item
+            name="organizationName"
+            label="钉钉客户端组织名称"
+            rules={[{ required: true }]}
+            extra="填写钉钉客户端左侧组织切换按钮显示的名称；不要填写管理后台个人组织名或日志页水印公司名。"
+          >
+            <Input placeholder="例如：八维通科技有限公司" />
+          </Form.Item>
+          <Form.Item name="templateName" label="周报模板名称" rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item
+            name="recipientGroupName"
+            label="默认接收群"
+            rules={[{ required: true }]}
+            extra="提交前必须在日志表单中识别到该群，否则自动停止。"
+          >
+            <Input placeholder="例如：uTwin产研创新部" />
+          </Form.Item>
+          <Form.Item
+            name="desktopTimeoutSeconds"
+            label="单步等待上限（秒）"
+            rules={[{ required: true }]}
+          >
+            <InputNumber min={5} max={180} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+        </div>
+        <Form.Item
+          name="desktopExecutablePath"
+          label="钉钉客户端路径（可选）"
+          extra="留空会从常见安装位置自动发现。"
+        >
+          <Input placeholder="C:\Users\...\DingTalk.exe" />
+        </Form.Item>
+        <Alert
+          type="warning"
+          showIcon
+          message="桌面自动化运行条件"
+          description="预约时间到达时电脑必须开机、已解锁且钉钉保持登录。自动填写会临时使用剪贴板，并在结束后清空。页面结构变化、验证码或登录失效都会停止执行并要求人工核对，系统不会盲目重复提交。"
+        />
       </>
     );
   if (type === 'dingtalk_robot')
@@ -1209,6 +1259,18 @@ export function toIntegrationPayload(values: IntegrationFormValues) {
         ...(values.accessToken ? { accessToken: values.accessToken } : {}),
       },
     };
+  if (values.type === 'dingtalk_desktop')
+    return {
+      ...common,
+      baseUrl: undefined,
+      config: {
+        organizationName: values.organizationName,
+        templateName: values.templateName,
+        recipientGroupName: values.recipientGroupName,
+        timeoutSeconds: values.desktopTimeoutSeconds ?? 45,
+        ...(values.desktopExecutablePath ? { executablePath: values.desktopExecutablePath } : {}),
+      },
+    };
   if (values.type === 'dingtalk_robot')
     return {
       ...common,
@@ -1226,7 +1288,7 @@ export function toIntegrationPayload(values: IntegrationFormValues) {
       protocol: values.protocol,
       model: values.model,
       metadataOnly: true,
-      timeoutMs: values.aiTimeoutMs ?? 60_000,
+      timeoutMs: values.aiTimeoutMs ?? 180_000,
       maxInputTokens: values.aiMaxInputTokens ?? 32_000,
       maxOutputTokens: values.aiMaxOutputTokens ?? 4_096,
       temperaturePolicy: values.aiTemperaturePolicy ?? 'deterministic',

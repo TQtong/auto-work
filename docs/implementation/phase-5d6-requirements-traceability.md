@@ -140,4 +140,4 @@
 
 本轮代码终审没有遗留本机可实现功能缺口。尚未提升为 `verified` 的项目全部依赖用户授权的公司 GitLab/Jira/钉钉/AI 测试资源；在获得这些资源前，发布签字必须保留对应外部 UAT 项，不能用测试桩替代。
 
-代码候选基线提交 `744332856b88745e3d9ddab4d5613354b4f0a058` 已通过本机及 GitHub Actions Windows 完整 `pnpm release:gate`：69 个测试文件/300 个用例、两端生产构建、27 迁移空库部署、391 个跟踪文件秘密扫描、生产依赖 high 门禁、CycloneDX 1.6 SBOM 和 508 文件候选 ZIP 全部通过。证据文档提交态以 PR 头提交的同名绿色 check 和上传制品为最终权威证据。
+代码候选基线提交 `744332856b88745e3d9ddab4d5613354b4f0a058` 已通过本机及 GitHub Actions Windows 完整 `pnpm release:gate`：69 个测试文件/300 个用例、两端生产构建、27 迁移空库部署、391 个跟踪文件秘密扫描、生产依赖 high 门禁、CycloneDX 1.6 SBOM 和 508 文件候选 ZIP 全部通过。最终 CI 维护基线 `f611b0908c42bd4cf096eb84171e2945f780ad7d` 又以 Node 24 action 完整重跑同一门禁；run `29676804507` 成功、annotation 为 0、发布制品已上传。证据文档提交态以 PR 头提交的同名绿色 check 和上传制品为最终权威证据。

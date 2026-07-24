@@ -83,7 +83,7 @@ export interface WeeklyReportReminderClock {
 
 export interface Integration {
   id: string;
-  type: 'gitlab' | 'jira' | 'dingtalk_log' | 'dingtalk_robot' | 'ai';
+  type: 'gitlab' | 'jira' | 'dingtalk_log' | 'dingtalk_desktop' | 'dingtalk_robot' | 'ai';
   name: string;
   baseUrl: string | null;
   credentialMask: Record<string, string> | null;
@@ -265,58 +265,6 @@ export interface ProjectSummary {
   repositoryCount: number;
   taskCount: number;
   version: number;
-}
-
-export interface JiraCapabilityField {
-  id: string;
-  name: string;
-  custom: boolean;
-  schema: { type?: string | null; items?: string | null } | null;
-  occurrenceRate: number;
-  sampleValues: unknown[];
-}
-
-export interface JiraCapabilityStatus {
-  id: string;
-  name: string;
-  categoryKey: string | null;
-  categoryName: string | null;
-}
-
-export interface JiraCapabilities {
-  status: string;
-  capabilities: {
-    authenticated?: boolean;
-    identity?: { id: string; username?: string | null; name?: string | null };
-    search?: { post: boolean; getFallback: boolean; selectedMethod: 'post' | 'get' };
-    fields?: JiraCapabilityField[];
-    projects?: Array<{ id: string; key: string; name: string; archived: boolean }>;
-    statuses?: JiraCapabilityStatus[];
-    sampleIssueCount?: number;
-    sampleTotal?: number;
-    descriptionPersisted?: boolean;
-    readOnly?: boolean;
-  };
-  currentMapping: { id: string; versionNo: number; effectiveAt: string } | null;
-  cursors: Array<{
-    scope: string;
-    lastUpdatedAt: string | null;
-    lastTiebreaker: string | null;
-    overlapSeconds: number;
-    lastSuccessRunId: string | null;
-  }>;
-}
-
-export interface JiraMappingVersion {
-  id: string;
-  connectionId: string;
-  versionNo: number;
-  fieldMappings: Record<string, string | null>;
-  statusMappings: Record<string, string>;
-  parserRules: Record<string, unknown>;
-  validationSummary: Record<string, unknown>;
-  effectiveAt: string;
-  createdAt: string;
 }
 
 export interface TaskSummary {
@@ -747,6 +695,39 @@ export interface RepositoryView {
   taskSummary: RepositoryTaskSummary;
 }
 
+export interface RepositoryDiscoveryConfiguration {
+  deploymentMode: 'native' | 'docker';
+  directoryPickerMode: 'native' | 'browser_assisted';
+  configuredRoot: string;
+  hostRoot: string;
+  configurationKey: 'AUTO_WORK_REPOSITORY_ROOT' | 'AUTO_WORK_REPOSITORY_PATH';
+  changeRequiresRestart: boolean;
+  accessible: boolean;
+  status: 'ready' | 'unavailable' | 'empty' | 'no_git_candidates';
+  statusMessage: string;
+  scanDepth: 1;
+  directoryCount: number;
+  gitCandidateCount: number;
+  skippedEntryCount: number;
+  detectedAt: string;
+}
+
+export type RepositoryDirectorySelection =
+  { status: 'selected'; path: string } | { status: 'cancelled'; path: null };
+
+export interface RepositoryDiscoveryWarning {
+  directory: string;
+  code: string;
+  message: string;
+}
+
+export interface RepositoryDiscoveryResult {
+  root: string;
+  repositories: RepositoryView[];
+  warnings: RepositoryDiscoveryWarning[];
+  scannedDirectoryCount: number;
+}
+
 export interface RepositoryTaskSummary {
   sourceStatus: 'unmapped' | 'not_configured' | 'empty' | 'fresh' | 'stale';
   visibleCount: number;
@@ -829,6 +810,48 @@ export type GitBatchAction =
   | 'stash_apply'
   | 'stage_paths'
   | 'commit';
+
+export interface GitBranchView {
+  name: string;
+  fullName: string;
+  scope: 'local' | 'remote';
+  remote: string | null;
+  oid: string;
+  updatedAt: string;
+  subject: string;
+  current: boolean;
+}
+
+export interface CreateBranchesResponse {
+  status: 'completed' | 'partial_failed' | 'failed';
+  summary: {
+    repositories: number;
+    total: number;
+    created: number;
+    alreadyExists: number;
+    failed: number;
+  };
+  repositories: Array<{
+    repositoryId: string;
+    status: 'completed' | 'partial_failed' | 'failed';
+    baseline: { fullName: string; name: string; oid: string } | null;
+    summary: { total: number; created: number; alreadyExists: number; failed: number };
+    results: Array<{
+      branchName: string;
+      status: 'created' | 'already_exists' | 'failed';
+      message: string;
+    }>;
+    error: string | null;
+  }>;
+}
+
+export interface DeleteBranchResponse {
+  repositoryId: string;
+  branchName: string;
+  status: 'deleted' | 'already_absent';
+  deletedOid: string | null;
+  message: string;
+}
 
 export interface GitBatchItem {
   id: string;
@@ -1043,6 +1066,7 @@ export interface WeeklyReportRobotNotification {
     | 'generation_reminder'
     | 'confirmation_reminder'
     | 'deadline_reminder'
+    | 'test_report'
     | 'submission_success'
     | 'submission_failure'
     | 'risk_alert';

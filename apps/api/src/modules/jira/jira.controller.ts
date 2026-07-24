@@ -8,8 +8,6 @@ import { LocalSecurityService } from '../../infrastructure/http/local-security.s
 import { AuditService } from '../audit/audit.service.js';
 import { JobQueueService } from '../jobs/job-queue.service.js';
 import { SessionService } from '../session/session.service.js';
-import { jiraMappingInputSchema } from './jira-mapping.schemas.js';
-import { JiraMappingService } from './jira-mapping.service.js';
 
 const syncSchema = z
   .object({
@@ -38,7 +36,6 @@ export class JiraController {
   public constructor(
     private readonly prisma: PrismaService,
     private readonly queue: JobQueueService,
-    private readonly mappings: JiraMappingService,
     private readonly audit: AuditService,
     private readonly sessions: SessionService,
     private readonly security: LocalSecurityService,
@@ -59,7 +56,7 @@ export class JiraController {
       {
         status: connection.status,
         capabilities: JSON.parse(connection.capabilitiesJson) as unknown,
-        currentMapping: mapping
+        automaticReadConfig: mapping
           ? {
               id: mapping.id,
               versionNo: mapping.versionNo,
@@ -76,27 +73,6 @@ export class JiraController {
       },
       request.autoWork.correlationId,
       { asOf: new Date().toISOString() },
-    );
-  }
-
-  @Get('mappings')
-  public async listMappings(@Param('id') id: string, @Req() request: FastifyRequest) {
-    return apiResponse(await this.mappings.list(id), request.autoWork.correlationId);
-  }
-
-  @Post('mappings')
-  public async createMapping(
-    @Param('id') id: string,
-    @Body() rawBody: unknown,
-    @Req() request: FastifyRequest,
-  ) {
-    const body = jiraMappingInputSchema.parse(rawBody);
-    return apiResponse(
-      await this.mappings.create(id, body, {
-        correlationId: request.autoWork.correlationId,
-        sessionId: request.autoWork.sessionId,
-      }),
-      request.autoWork.correlationId,
     );
   }
 
@@ -119,8 +95,9 @@ export class JiraController {
       orderBy: { versionNo: 'desc' },
     });
     if (!mapping)
-      throw new DomainError('JIRA_MAPPING_REQUIRED', '请先确认 Jira 字段与状态映射', {
+      throw new DomainError('JIRA_READ_CONFIG_REQUIRED', 'Jira 只读适配器尚未完成自动初始化', {
         httpStatus: 409,
+        suggestedAction: 'refresh',
       });
     const dedupeKey = `jira.sync:${id}:${body.scope}`;
     const existing = await this.prisma.job.findFirst({

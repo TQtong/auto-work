@@ -9,7 +9,7 @@ describe('Jira 结构化 JQL 策略', () => {
     expect(
       buildJiraQuery({ scope: 'incremental', updatedFloor: new Date('2026-07-17T00:00:00Z') }),
     ).toBe(
-      'assignee = currentUser() AND updated >= "2026-07-17T00:00:00.000Z" ORDER BY updated ASC, key ASC',
+      'assignee = currentUser() AND updated >= "2026-07-17 08:00" ORDER BY updated ASC, key ASC',
     );
     expect(
       buildJiraQuery({

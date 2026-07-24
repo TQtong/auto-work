@@ -259,7 +259,7 @@ export class DingTalkTemplateMappingService {
     const connection = await this.prisma.integrationConnection.findUnique({
       where: { id: connectionId },
     });
-    if (!connection || connection.type !== 'dingtalk_log') {
+    if (!connection || !['dingtalk_log', 'dingtalk_desktop'].includes(connection.type)) {
       throw new DomainError(errorCodes.notFound, '钉钉日志连接不存在', { httpStatus: 404 });
     }
     return connection;

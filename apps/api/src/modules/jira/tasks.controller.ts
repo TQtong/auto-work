@@ -147,17 +147,43 @@ export class TasksController {
         : {}),
       ...(query.dateFrom || query.dateTo
         ? {
-            dueDate: {
-              ...(query.dateFrom ? { gte: query.dateFrom } : {}),
-              ...(query.dateTo ? { lte: query.dateTo } : {}),
-            },
+            OR: [
+              {
+                plannedStartDate: {
+                  ...(query.dateFrom ? { gte: query.dateFrom } : {}),
+                  ...(query.dateTo ? { lte: query.dateTo } : {}),
+                },
+              },
+              {
+                dueDate: {
+                  ...(query.dateFrom ? { gte: query.dateFrom } : {}),
+                  ...(query.dateTo ? { lte: query.dateTo } : {}),
+                },
+              },
+              ...(query.dateFrom && query.dateTo
+                ? [
+                    {
+                      AND: [
+                        { plannedStartDate: { lte: query.dateTo } },
+                        { dueDate: { gte: query.dateFrom } },
+                      ],
+                    },
+                  ]
+                : []),
+            ],
           }
         : {}),
     };
     const [items, total] = await this.prisma.$transaction([
       this.prisma.task.findMany({
         where,
-        orderBy: [{ externalUpdatedAt: 'desc' }, { issueKey: 'asc' }, { id: 'asc' }],
+        orderBy: [
+          { plannedStartDate: 'desc' },
+          { dueDate: 'desc' },
+          { externalUpdatedAt: 'desc' },
+          { issueKey: 'asc' },
+          { id: 'asc' },
+        ],
         skip: offset,
         take: query.limit,
         include: {

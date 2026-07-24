@@ -2,7 +2,8 @@
 
 ## 1. 适用范围
 
-本门禁用于 Auto Work 的 Windows 单用户本机发布。门禁通过只证明仓库内自动化检查和发布包完整；企业 GitLab、Jira、钉钉、机器人和 AI 的真实账号联调必须另附 UAT 记录，不能用 fixture 结果冒充。
+本门禁用于 Auto Work 的 Windows 发布包和 Docker 单用户本机部署。门禁通过只证明仓库内自动化检查、发布包完整和容器
+smoke test；企业 GitLab、Jira、钉钉、机器人和 AI 的真实账号联调必须另附 UAT 记录，不能用 fixture 结果冒充。
 
 ## 2. 一键执行
 
@@ -22,6 +23,9 @@ pnpm release:gate
 5. 使用固定版本 cdxgen 生成 CycloneDX 1.6 SBOM，并再次解析 UTF-8 JSON、组件和依赖图；
 6. 生成带版本、Git commit、schema、逐文件校验和的 ZIP 发布包。
 
+CI 的独立 Linux Docker job 还会从固定摘要基础镜像构建容器，启动新数据卷，等待健康检查并验证首页/API、迁移、重启
+持久性和容器安全约束；本机没有 Docker 引擎时，`release:gate` 不会伪造这部分结果。
+
 门禁不会连接企业系统，也不会读取本机正式数据库。隔离数据库位于 `tmp/release-gate/database-<pid>`，结束后按精确目录删除。
 
 ## 3. 发布物
@@ -31,13 +35,18 @@ pnpm release:gate
 - `auto-work-<version>.zip`：可交付发布包；
 - `auto-work-<version>.zip.sha256`：ZIP 外部校验和；
 - 展开目录中的 `release-manifest.json`、`SHA256SUMS` 和 `SBOM.cdx.json`；
-- API/Web/共享包生产构建、Prisma 迁移、Windows 运维脚本和本运行手册。
+- API/Web/共享包生产构建、Prisma 迁移、Windows 运维脚本、Dockerfile、Compose 和本运行手册。
 
 交付前必须在独立目录重新计算 ZIP SHA-256，并展开后运行安装脚本的逐文件校验。任何不一致都应丢弃发布包，不能手工跳过。
 
 ## 4. CI
 
-`.github/workflows/release-gate.yml` 在 Windows runner 上对 PR 执行同一门禁，并上传 14 天保留的候选发布物。CI 不是签名服务；当前版本提供哈希完整性，不提供 Authenticode 发布者身份保证。
+`.github/workflows/release-gate.yml` 在 Windows runner 上执行发布包门禁，在 Ubuntu runner 上独立执行 Docker 构建和 smoke test。
+第三方 action 使用声明 `node24` 的稳定版本并锁定到 40 位 commit SHA，禁止浮动 tag；应用构建与测试仍由 setup-node
+固定到 Node.js 22.14.0。CI 不推送镜像，也不是签名服务；当前版本提供哈希完整性，不提供 Authenticode 或容器签名的发布者
+身份保证。
+
+最终维护基线 `f611b0908c42bd4cf096eb84171e2945f780ad7d` 的 run `29676804507` 已验证新 action 组合：完整发布门禁和 upload-artifact v7 均成功，check annotation 为 0。PR 事件中的 `${{ github.sha }}` 是 GitHub 生成的合并提交，因此制品名使用该合并 SHA；`release-manifest.json` 仍是候选包内容与源码提交绑定的权威事实。
 
 ## 5. 人工发布签字项
 

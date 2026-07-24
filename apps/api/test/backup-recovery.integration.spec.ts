@@ -37,6 +37,8 @@ describe('备份校验、恢复准备与取消', () => {
       webDist: join(temporaryDirectory, 'web'),
       databaseUrl: `file:${databasePath.replaceAll('\\', '/')}`,
       repositoryRoot: join(temporaryDirectory, 'repositories'),
+      vaultBackend: 'sealed',
+      vaultKeyFile: join(temporaryDirectory, 'vault-master.key'),
       logLevel: 'info',
       environment: 'test',
     };

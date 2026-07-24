@@ -5,16 +5,20 @@ import {
   BranchesOutlined,
   DashboardOutlined,
   FileTextOutlined,
+  MoonOutlined,
   SettingOutlined,
+  SunOutlined,
   UnorderedListOutlined,
 } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
-import { Avatar, Layout, Menu, Skeleton, Space, Spin, Typography } from 'antd';
+import { Avatar, Button, Layout, Menu, Skeleton, Space, Spin, Tooltip, Typography } from 'antd';
 import { lazy, Suspense } from 'react';
-import { Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { apiRequest, getSession } from './api/client.js';
 import type { Health, Integration, Job } from './api/types.js';
 import { StatusTag } from './components/StatusTag.js';
+
+export type ThemeMode = 'light' | 'dark';
 
 const DashboardPage = lazy(async () => ({
   default: (await import('./pages/DashboardPage.js')).DashboardPage,
@@ -25,8 +29,8 @@ const QuarterlyReviewsPage = lazy(async () => ({
 const RepositoriesPage = lazy(async () => ({
   default: (await import('./pages/RepositoriesPage.js')).RepositoriesPage,
 }));
-const GitBatchesPage = lazy(async () => ({
-  default: (await import('./pages/GitBatchesPage.js')).GitBatchesPage,
+const GitBranchesPage = lazy(async () => ({
+  default: (await import('./pages/GitBatchesPage.js')).GitBranchesPage,
 }));
 const TasksPage = lazy(async () => ({
   default: (await import('./pages/TasksPage.js')).TasksPage,
@@ -44,7 +48,7 @@ const SettingsPage = lazy(async () => ({
 const navigation = [
   { key: '/', icon: <DashboardOutlined />, label: '总览' },
   { key: '/repositories', icon: <ApartmentOutlined />, label: '项目与仓库' },
-  { key: '/git-batches', icon: <BranchesOutlined />, label: 'Git 批次' },
+  { key: '/git-branches', icon: <BranchesOutlined />, label: '分支管理' },
   { key: '/tasks', icon: <UnorderedListOutlined />, label: '任务与证据' },
   { key: '/weekly-reports', icon: <FileTextOutlined />, label: '周报' },
   { key: '/quarterly-reviews', icon: <BarChartOutlined />, label: '季度绩效' },
@@ -52,7 +56,12 @@ const navigation = [
   { key: '/settings', icon: <SettingOutlined />, label: '设置与集成' },
 ];
 
-export function App() {
+type AppProps = {
+  themeMode: ThemeMode;
+  onThemeModeChange: (themeMode: ThemeMode) => void;
+};
+
+export function App({ themeMode, onThemeModeChange }: AppProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const session = useQuery({
@@ -105,7 +114,7 @@ export function App() {
 
   return (
     <Layout className="app-layout">
-      <Layout.Sider width={246} theme="light" className="app-sider">
+      <Layout.Sider width={246} theme={themeMode} className="app-sider">
         <div className="brand">
           <div className="brand-mark">AW</div>
           <div>
@@ -141,6 +150,17 @@ export function App() {
             </Space>
           </Space>
           <Space>
+            <Tooltip title={themeMode === 'dark' ? '切换到亮色主题' : '切换到暗色主题'}>
+              <Button
+                type="text"
+                shape="circle"
+                icon={themeMode === 'dark' ? <SunOutlined /> : <MoonOutlined />}
+                aria-label={themeMode === 'dark' ? '切换到亮色主题' : '切换到暗色主题'}
+                onClick={() => {
+                  onThemeModeChange(themeMode === 'dark' ? 'light' : 'dark');
+                }}
+              />
+            </Tooltip>
             <Avatar>{sessionData.displayName.slice(0, 1)}</Avatar>
             <div>
               <Typography.Text strong>{sessionData.displayName}</Typography.Text>
@@ -154,7 +174,8 @@ export function App() {
             <Routes>
               <Route path="/" element={<DashboardPage />} />
               <Route path="/repositories" element={<RepositoriesPage />} />
-              <Route path="/git-batches" element={<GitBatchesPage />} />
+              <Route path="/git-branches" element={<GitBranchesPage />} />
+              <Route path="/git-batches" element={<Navigate to="/git-branches" replace />} />
               <Route path="/tasks" element={<TasksPage />} />
               <Route path="/weekly-reports" element={<WeeklyReportsPage />} />
               <Route path="/quarterly-reviews" element={<QuarterlyReviewsPage />} />

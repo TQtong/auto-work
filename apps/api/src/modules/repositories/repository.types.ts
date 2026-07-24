@@ -43,3 +43,24 @@ export interface DiscoveryWarning {
   code: string;
   message: string;
 }
+
+/**
+ * 仓库发现根目录的只读诊断信息。
+ * 路径本身是启动时安全边界，接口不会提供运行时改写能力。
+ */
+export interface RepositoryDiscoveryConfiguration {
+  deploymentMode: 'native' | 'docker';
+  directoryPickerMode: 'native' | 'browser_assisted';
+  configuredRoot: string;
+  hostRoot: string;
+  configurationKey: 'AUTO_WORK_REPOSITORY_ROOT' | 'AUTO_WORK_REPOSITORY_PATH';
+  changeRequiresRestart: boolean;
+  accessible: boolean;
+  status: 'ready' | 'unavailable' | 'empty' | 'no_git_candidates';
+  statusMessage: string;
+  scanDepth: 1;
+  directoryCount: number;
+  gitCandidateCount: number;
+  skippedEntryCount: number;
+  detectedAt: string;
+}

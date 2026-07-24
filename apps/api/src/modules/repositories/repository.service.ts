@@ -46,11 +46,10 @@ export class RepositoryService {
         const identity = await this.inspector.inspect(candidatePath, root);
         seenPaths.add(identity.canonicalPath.toLowerCase());
         const repository = await this.upsertObservation(identity);
-        const snapshot = await this.collectAndPersistSnapshot(
-          repository.id,
-          identity.canonicalPath,
-        );
-        repositories.push(this.toRepositoryView({ ...repository, snapshots: [snapshot] }));
+        // 发现阶段只读取仓库身份并完成登记，不同步执行可能很慢的完整工作区状态扫描。
+        // Docker Desktop bind mount 上大型仓库的 git status 可能需要数分钟；它应由独立刷新作业处理，
+        // 不能让已经识别成功的仓库在发现报告中被误写成“跳过”。
+        repositories.push(this.toRepositoryView({ ...repository, snapshots: [] }));
       } catch (error) {
         const domainError = error as DomainError;
         warnings.push({
@@ -153,6 +152,13 @@ export class RepositoryService {
   ) {
     const repository = await this.prisma.repository.findUnique({ where: { id } });
     if (!repository) throw new DomainError(errorCodes.notFound, '仓库不存在', { httpStatus: 404 });
+    if (repository.whitelistStatus === 'missing') {
+      throw new DomainError(
+        'REPOSITORY_PATH_UNAVAILABLE',
+        '仓库目录当前不存在，不能加入白名单；请检查扫描目录后重新扫描',
+        { httpStatus: 409, suggestedAction: 'refresh' },
+      );
+    }
     const identity = await this.inspector.inspect(repository.canonicalPath);
     if (identity.identityHash !== repository.identityHash) {
       throw new DomainError('REPOSITORY_IDENTITY_CHANGED', '仓库身份与发现快照不一致', {
@@ -383,11 +389,14 @@ export class RepositoryService {
         existing.remotePath !== remote?.path),
     );
     const needsReview = identityChanged || gitlabRemoteChanged;
+    const restoredFromMissing = existing.whitelistStatus === 'missing' && !needsReview;
     const statusReason = identityChanged
       ? '相同路径中的 Git 元数据身份已变化'
       : gitlabRemoteChanged
         ? '已确认的远端主机、端口或项目路径发生变化，GitLab 匹配必须重新确认'
-        : existing.statusReason;
+        : restoredFromMissing
+          ? null
+          : existing.statusReason;
     return this.prisma.repository.update({
       where: { id: existing.id },
       data: {
@@ -401,9 +410,13 @@ export class RepositoryService {
         remotePort: remote?.port ?? null,
         remotePath: remote?.path ?? null,
         lastSeenAt: new Date(),
-        whitelistStatus: needsReview ? 'needs_review' : existing.whitelistStatus,
+        whitelistStatus: needsReview
+          ? 'needs_review'
+          : restoredFromMissing
+            ? 'discovered'
+            : existing.whitelistStatus,
         statusReason,
-        ...(needsReview ? { version: { increment: 1 } } : {}),
+        ...(needsReview || restoredFromMissing ? { version: { increment: 1 } } : {}),
       },
     });
   }

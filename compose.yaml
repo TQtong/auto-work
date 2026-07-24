@@ -1,0 +1,59 @@
+name: auto-work
+
+services:
+  auto-work:
+    image: auto-work:${AUTO_WORK_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      AUTO_WORK_HOST: 0.0.0.0
+      AUTO_WORK_PORT: ${AUTO_WORK_PORT:-3760}
+      AUTO_WORK_DATA_DIR: /app/data
+      AUTO_WORK_WEB_DIST: /app/apps/web/dist
+      AUTO_WORK_DATABASE_URL: file:/app/data/auto-work.db
+      AUTO_WORK_REPOSITORY_ROOT: /repositories
+      # 宿主机原始路径只用于界面诊断；后端扫描边界仍固定为容器内 /repositories。
+      AUTO_WORK_REPOSITORY_HOST_PATH: ${AUTO_WORK_REPOSITORY_PATH:-./repositories}
+      AUTO_WORK_DEPLOYMENT_MODE: docker
+      AUTO_WORK_VAULT_BACKEND: sealed
+      AUTO_WORK_VAULT_KEY_FILE: /app/data/vault-master.key
+      AUTO_WORK_LOG_LEVEL: ${AUTO_WORK_LOG_LEVEL:-info}
+      # Docker 容器不能直接操作宿主机桌面；通过只含一次性请求/响应的本地桥接目录协作。
+      AUTO_WORK_DINGTALK_DESKTOP_BRIDGE_DIR: /app/desktop-bridge
+    ports:
+      - '127.0.0.1:${AUTO_WORK_PORT:-3760}:${AUTO_WORK_PORT:-3760}'
+    volumes:
+      - type: volume
+        source: auto-work-data
+        target: /app/data
+      - type: bind
+        source: ${AUTO_WORK_REPOSITORY_PATH:-./repositories}
+        target: /repositories
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${AUTO_WORK_DINGTALK_DESKTOP_BRIDGE_HOST_PATH:-./data/desktop-bridge}
+        target: /app/desktop-bridge
+        bind:
+          create_host_path: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    healthcheck:
+      test: ['CMD', 'node', '/app/docker/healthcheck.mjs']
+      interval: 15s
+      timeout: 5s
+      start_period: 45s
+      retries: 4
+
+volumes:
+  auto-work-data:
+    name: auto-work-data

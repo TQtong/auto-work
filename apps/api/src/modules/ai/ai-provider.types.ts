@@ -4,6 +4,7 @@ export type AiPurpose =
   'weekly_report' | 'evidence_suggestion' | 'quarterly_review' | 'score_suggestion';
 
 export interface AiProviderConfig {
+  provider?: string;
   protocol: AiProtocol;
   model: string;
   metadataOnly: true;

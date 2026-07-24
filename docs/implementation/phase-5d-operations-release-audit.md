@@ -35,7 +35,7 @@
 - 固定 `@cyclonedx/cdxgen 12.6.0`，生成 CycloneDX 1.6；工具退出成功后仍再次解析 UTF-8 JSON、根版本、四个工作区组件和依赖图；
 - Git 跟踪文件秘密扫描覆盖私钥和主流平台高置信 Token 格式，并拒绝凭证文件；
 - 生产依赖审计以 high 为失败阈值；React Router 从 7.10.1 升至 7.18.1，消除 6 个高危公告；
-- GitHub Actions 使用 Windows runner，所有第三方 action 固定到完整 commit SHA；
+- GitHub Actions 使用 Windows runner；checkout、pnpm setup、Node setup 和制品上传均升级到声明 `node24` 的稳定版本，并固定到完整 commit SHA。Action 自身运行时与应用 Node 22.14.0 运行时相互独立；
 - `release:package` 自身强制重新生产构建，避免陈旧 `dist`；ZIP 内含版本、Git commit、schema、生产构建、迁移、SBOM、逐文件 SHA-256、运维脚本和手册，ZIP 外另有 SHA-256；
 - `pnpm release:gate` 使用隔离数据库，依次执行全仓 verify、schema 校验、27 迁移部署/状态、秘密/依赖扫描、SBOM 和候选包生成。
 
@@ -63,6 +63,8 @@
 - 候选发布包包含 508 个文件，清单绑定 commit `744332856b88745e3d9ddab4d5613354b4f0a058` 和 schema `20260719090000_task_manual_override_lifecycle`；ZIP 大小 3,946,076 字节，SHA-256 为 `ead6f53c8187ecc37c31929bc4c4e580390d4b2777d4879195c18dc82c619c6d`。
 
 证据文档本身提交后，PR 头提交仍由同一 Windows workflow 重新执行完整门禁；最终 PR check 和该次上传制品是文档提交态的权威证据，避免在被打入 ZIP 的文档内构造不可实现的自引用 commit/ZIP 哈希。
+
+最终 CI 维护基线提交 `f611b0908c42bd4cf096eb84171e2945f780ad7d` 把四个 action 升级为 Node 24 运行时并继续锁定不可变 SHA。GitHub Actions run `29676804507` / job `88165564527` 在 12 分 27 秒内完成全部门禁和制品上传，check conclusion 为 `success`、annotation 数量为 0；上传制品 `auto-work-release-7545fdd24af981b878c72815c539ffd7bd8a1184` 为 PR 合并提交上下文制品，大小 4,041,544 字节且未过期。
 
 前一候选包已在全新临时安装根完成 500 文件校验、生产依赖冻结安装、26 迁移、3863 loopback 启动和停止。页面/API 创建的备份状态为 `verified`，SHA-256 为 64 位，schema 与当时发布清单一致；本轮新增迁移也已由最终门禁从空库完整部署验证。
 

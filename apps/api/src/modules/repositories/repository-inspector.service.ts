@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { lstat, realpath, stat } from 'node:fs/promises';
-import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
+import { lstat, readdir, realpath, stat } from 'node:fs/promises';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { DomainError } from '@auto-work/contracts';
 import { normalizeGitRemote, sha256 } from '@auto-work/domain';
 import { APP_CONFIG, type AppConfig } from '../../config/config.module.js';
@@ -8,22 +8,104 @@ import { GitProcessService } from '../../infrastructure/git/git-process.service.
 import type {
   GitStatusSnapshot,
   NormalizedRemoteObservation,
+  RepositoryDiscoveryConfiguration,
   RepositoryIdentity,
 } from './repository.types.js';
+import { repositoryDirectoryPickerMode } from './repository-directory-picker.service.js';
 
 @Injectable()
 export class RepositoryInspectorService {
   private readonly configuredRoot: string;
+  private readonly configuredHostRoot: string;
+  private readonly deploymentMode: 'native' | 'docker';
 
   public constructor(
     @Inject(APP_CONFIG) config: AppConfig,
     private readonly git: GitProcessService,
   ) {
     this.configuredRoot = config.repositoryRoot;
+    this.deploymentMode = config.deploymentMode ?? 'native';
+    this.configuredHostRoot = config.repositoryHostPath ?? config.repositoryRoot;
   }
 
   public get repositoryRoot(): string {
     return this.configuredRoot;
+  }
+
+  /**
+   * 返回扫描前即可展示的根目录状态，避免用户在空目录或错误挂载上反复点击扫描。
+   * 这里只检查一级目录和 .git 标记，不执行 Git 命令，也不会登记任何仓库。
+   */
+  public async discoveryConfiguration(): Promise<RepositoryDiscoveryConfiguration> {
+    const detectedAt = new Date().toISOString();
+    const base = {
+      deploymentMode: this.deploymentMode,
+      directoryPickerMode: repositoryDirectoryPickerMode(this.deploymentMode, process.platform),
+      configuredRoot: resolve(this.configuredRoot),
+      hostRoot: this.configuredHostRoot,
+      configurationKey:
+        this.deploymentMode === 'docker'
+          ? ('AUTO_WORK_REPOSITORY_PATH' as const)
+          : ('AUTO_WORK_REPOSITORY_ROOT' as const),
+      changeRequiresRestart: true,
+      scanDepth: 1 as const,
+      detectedAt,
+    };
+
+    try {
+      const root = await realpath(this.configuredRoot);
+      if (!(await stat(root)).isDirectory()) throw new Error('配置路径不是目录');
+      const entries = await readdir(root, { withFileTypes: true });
+      const directories = entries.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink());
+      let gitCandidateCount = 0;
+      for (const directory of directories) {
+        const marker = await lstat(join(root, directory.name, '.git')).catch(() => null);
+        if (marker?.isDirectory() || marker?.isFile()) gitCandidateCount += 1;
+      }
+      const skippedEntryCount = entries.length - directories.length;
+      if (directories.length === 0) {
+        return {
+          ...base,
+          accessible: true,
+          status: 'empty',
+          statusMessage: '扫描根目录可访问，但其中没有一级子目录',
+          directoryCount: 0,
+          gitCandidateCount: 0,
+          skippedEntryCount,
+        };
+      }
+      if (gitCandidateCount === 0) {
+        return {
+          ...base,
+          accessible: true,
+          status: 'no_git_candidates',
+          statusMessage: '已找到一级子目录，但没有发现带 .git 标记的仓库候选',
+          directoryCount: directories.length,
+          gitCandidateCount: 0,
+          skippedEntryCount,
+        };
+      }
+      return {
+        ...base,
+        accessible: true,
+        status: 'ready',
+        statusMessage: `扫描目录就绪，发现 ${gitCandidateCount} 个一级 Git 仓库候选`,
+        directoryCount: directories.length,
+        gitCandidateCount,
+        skippedEntryCount,
+      };
+    } catch {
+      // 不向前端泄漏底层文件系统异常；详细失败会在真正扫描时转成稳定领域错误。
+      return {
+        ...base,
+        accessible: false,
+        status: 'unavailable',
+        statusMessage: '扫描根目录不存在或当前进程无权访问',
+        directoryCount: 0,
+        gitCandidateCount: 0,
+        skippedEntryCount: 0,
+      };
+    }
   }
 
   public async canonicalRoot(requestedRoot?: string): Promise<string> {
@@ -53,7 +135,15 @@ export class RepositoryInspectorService {
 
   public async inspect(candidatePath: string, rootPath?: string): Promise<RepositoryIdentity> {
     const root = rootPath ?? (await this.canonicalRoot());
-    const candidate = resolve(await realpath(candidatePath));
+    const candidate = resolve(
+      await realpath(candidatePath).catch(() => {
+        throw new DomainError(
+          'REPOSITORY_PATH_UNAVAILABLE',
+          '仓库目录不存在或当前进程无权访问，请检查扫描目录后重新扫描',
+          { httpStatus: 409, suggestedAction: 'refresh' },
+        );
+      }),
+    );
     this.assertDirectChild(root, candidate);
     const gitMarker = resolve(candidate, '.git');
     const markerStat = await lstat(gitMarker).catch(() => null);

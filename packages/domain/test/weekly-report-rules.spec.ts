@@ -70,23 +70,23 @@ describe('六字段周报确定性规则', () => {
     );
 
     expect(draft.fields.recentGoals.map((block) => block.body)).toEqual([
-      expect.stringContaining('PROJ-2'),
+      expect.stringContaining('任务 2'),
     ]);
     expect(draft.fields.weeklyWork.map((block) => block.body)).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('PROJ-1'),
-        expect.stringContaining('PROJ-2'),
-        expect.stringContaining('PROJ-3'),
+        expect.stringContaining('任务 1'),
+        expect.stringContaining('任务 2'),
+        expect.stringContaining('任务 3'),
       ]),
     );
     expect(
-      draft.fields.weeklyWork.find((block) => block.body.includes('PROJ-1'))?.actualHours,
+      draft.fields.weeklyWork.find((block) => block.body.includes('任务 1'))?.actualHours,
     ).toBeNull();
     expect(
-      draft.fields.weeklyWork.find((block) => block.body.includes('PROJ-2'))?.actualHours,
+      draft.fields.weeklyWork.find((block) => block.body.includes('任务 2'))?.actualHours,
     ).toBe(4);
-    expect(draft.fields.nextWeekPlans.some((block) => block.body.includes('PROJ-3'))).toBe(false);
-    expect(draft.fields.nextWeekPlans.find((block) => block.body.includes('PROJ-2'))).toMatchObject(
+    expect(draft.fields.nextWeekPlans.some((block) => block.body.includes('任务 3'))).toBe(false);
+    expect(draft.fields.nextWeekPlans.find((block) => block.body.includes('任务 2'))).toMatchObject(
       {
         estimatedHours: 8,
       },
@@ -149,7 +149,7 @@ describe('六字段周报确定性规则', () => {
     );
   });
 
-  it('没有问题时精确写入“暂无”，并保留人工置顶目标和其他补充', () => {
+  it('没有问题时保持空白，并保留人工置顶目标和其他补充', () => {
     const draft = generateWeeklyReportRuleDraft(
       input({
         tasks: [task('1', { normalizedStatus: 'done', sprintActive: false })],
@@ -160,8 +160,7 @@ describe('六字段周报确定性规则', () => {
       }),
     );
 
-    expect(draft.fields.problems).toHaveLength(1);
-    expect(draft.fields.problems[0]).toMatchObject({ body: '暂无', sourceRefs: [] });
+    expect(draft.fields.problems).toEqual([]);
     expect(draft.fields.recentGoals[0]).toMatchObject({ body: '完成架构评审', pinned: true });
     expect(draft.fields.other[0]?.body).toBe('参与跨组技术分享');
   });

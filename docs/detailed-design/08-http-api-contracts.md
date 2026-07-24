@@ -19,13 +19,13 @@
 
 统一错误包含：
 
-| 字段 | 说明 |
-|---|---|
-| code | 稳定机器码，如 `GIT_PREVIEW_STALE` |
-| message | 可面向用户的简要中文，不含秘密 |
-| details | 字段错误、目标项结果等结构化信息 |
-| correlationId | 排障关联 ID |
-| retryable | 是否可安全重试 |
+| 字段            | 说明                                               |
+| --------------- | -------------------------------------------------- |
+| code            | 稳定机器码，如 `GIT_PREVIEW_STALE`                 |
+| message         | 可面向用户的简要中文，不含秘密                     |
+| details         | 字段错误、目标项结果等结构化信息                   |
+| correlationId   | 排障关联 ID                                        |
+| retryable       | 是否可安全重试                                     |
 | suggestedAction | `refresh/reconfigure/reconfirm/manual_review/none` |
 
 HTTP 语义：400 格式/规则、401 本机会话、403 安全策略、404 资源、409 状态/并发/幂等冲突、412 预检或版本前置条件、422 可解析但业务校验失败、429 限频、502 外部无效响应、503 外部/本机依赖不可用、504 超时。
@@ -44,27 +44,27 @@ HTTP 语义：400 格式/规则、401 本机会话、403 安全策略、404 资�
 
 ## 2. 会话、设置和运行状态
 
-| 方法与路径 | 用途 | 关键输入/输出 |
-|---|---|---|
-| GET `/session` | 当前本机会话 | 用户 SID 摘要、时区、CSRF 状态 |
-| GET `/settings/profile` | 用户与身份 | 工作时长、Git/Jira 别名、工作日历 |
-| PUT `/settings/profile` | 更新非敏感设置 | version、字段变更；写审计 |
-| GET `/health` | 页面健康摘要 | db/worker/scheduler 状态；不泄漏凭证 |
-| GET `/operations/:id` | 异步任务状态 | progress、逐项结果、错误、可取消性 |
-| POST `/operations/:id/cancel` | 请求取消 | 仅尚未完成且允许取消的任务 |
+| 方法与路径                    | 用途           | 关键输入/输出                        |
+| ----------------------------- | -------------- | ------------------------------------ |
+| GET `/session`                | 当前本机会话   | 用户 SID 摘要、时区、CSRF 状态       |
+| GET `/settings/profile`       | 用户与身份     | 工作时长、Git/Jira 别名、工作日历    |
+| PUT `/settings/profile`       | 更新非敏感设置 | version、字段变更；写审计            |
+| GET `/health`                 | 页面健康摘要   | db/worker/scheduler 状态；不泄漏凭证 |
+| GET `/operations/:id`         | 异步任务状态   | progress、逐项结果、错误、可取消性   |
+| POST `/operations/:id/cancel` | 请求取消       | 仅尚未完成且允许取消的任务           |
 
 ## 3. 集成配置
 
 ### 3.1 通用资源
 
-| 方法与路径 | 说明 |
-|---|---|
-| GET `/integrations` | 列出连接、掩码、状态、能力、上次测试 |
-| POST `/integrations` | 创建配置；秘密字段只在此请求传入且不回显 |
-| PUT `/integrations/:id` | 更新非敏感配置或替换凭证；需 version |
-| POST `/integrations/:id/test` | 连接与能力探测，返回 operation |
-| POST `/integrations/:id/disable` | 禁用连接，不删历史 |
-| DELETE `/integrations/:id/credential` | 撤销本地密钥并使连接 invalid，需确认 |
+| 方法与路径                            | 说明                                     |
+| ------------------------------------- | ---------------------------------------- |
+| GET `/integrations`                   | 列出连接、掩码、状态、能力、上次测试     |
+| POST `/integrations`                  | 创建配置；秘密字段只在此请求传入且不回显 |
+| PUT `/integrations/:id`               | 更新非敏感配置或替换凭证；需 version     |
+| POST `/integrations/:id/test`         | 连接与能力探测，返回 operation           |
+| POST `/integrations/:id/disable`      | 禁用连接，不删历史                       |
+| DELETE `/integrations/:id/credential` | 撤销本地密钥并使连接 invalid，需确认     |
 
 专门兼容路由 `/integrations/gitlab/test`、`/integrations/jira/test` 可保留为前端便利入口，但应委托同一 use case，避免两套语义。
 
@@ -102,16 +102,18 @@ HTTP 语义：400 格式/规则、401 本机会话、403 安全策略、404 资�
 
 ### 4.2 查询与刷新
 
-| 方法与路径 | 说明 |
-|---|---|
-| GET `/projects` | 项目摘要，可按 archived/status 过滤 |
-| GET `/projects/:id` | 项目、仓库、任务摘要 |
-| GET `/repositories` | 仓库中心读模型 |
-| GET `/repositories/:id` | 仓库、本地/GitLab 状态、刷新时间 |
-| POST `/repositories/:id/sync` | 刷新本地与可用远端元数据；202 |
-| POST `/repositories/sync` | 批量只读刷新；202 |
-| PUT `/repositories/:id` | 更新别名、项目、基线等；需 version |
-| POST `/repositories/:id/disable` | 移出可写白名单但保留历史 |
+| 方法与路径                            | 说明                                                                                         |
+| ------------------------------------- | -------------------------------------------------------------------------------------------- |
+| GET `/projects`                       | 项目摘要，可按 archived/status 过滤                                                          |
+| GET `/projects/:id`                   | 项目、仓库、任务摘要                                                                         |
+| GET `/repositories`                   | 仓库中心读模型                                                                               |
+| GET `/repositories/discovery-config`  | 扫描根目录只读状态：宿主机/运行时路径、访问性、一级目录、Git 候选数、目录选择能力和重启要求  |
+| POST `/repositories/directory-picker` | 仅 Windows 本机进程打开原生目录窗口；返回 selected/绝对路径或 cancelled，Docker 返回稳定 409 |
+| GET `/repositories/:id`               | 仓库、本地/GitLab 状态、刷新时间                                                             |
+| POST `/repositories/:id/sync`         | 刷新本地与可用远端元数据；202                                                                |
+| POST `/repositories/sync`             | 批量只读刷新；202                                                                            |
+| PUT `/repositories/:id`               | 更新别名、项目、基线等；需 version                                                           |
+| POST `/repositories/:id/disable`      | 移出可写白名单但保留历史                                                                     |
 
 ## 5. Git 批次
 
@@ -241,4 +243,3 @@ HTTP 语义：400 格式/规则、401 本机会话、403 安全策略、404 资�
 - If-Match 冲突、状态机越级、重复批准、确认后修改。
 - raw command、force、reset、任意 JQL/URL 越权表达不可进入执行层。
 - 错误和审计响应秘密扫描。
-

@@ -34,6 +34,12 @@ import {
   type WeeklyAiValidatedOutput,
 } from './weekly-report-ai.policy.js';
 
+const weeklyAiTransactionOptions = {
+  maxWait: 10_000,
+  timeout: 30_000,
+} as const;
+const weeklyAiMinimumTimeoutMs = 180_000;
+
 interface MutationContext {
   correlationId: string;
   sessionId: string;
@@ -112,6 +118,25 @@ export class WeeklyReportAiService {
       startedAt,
     };
 
+    const weeklyTasks = this.parseFacts<WeeklyTaskFact>(
+      report.currentVersion.sourceSnapshot.taskFactsJson,
+    ).filter((task) => this.isTaskInPeriod(task, report.periodStart, report.periodEnd));
+    const weeklyTaskIds = new Set(weeklyTasks.map((task) => task.id));
+    const weeklyEvidence = this.parseFacts<WeeklyEvidenceFact>(
+      report.currentVersion.sourceSnapshot.evidenceFactsJson,
+    ).filter((item) =>
+      item.taskId
+        ? weeklyTaskIds.has(item.taskId)
+        : Boolean(
+            item.eventAt &&
+            item.eventAt.slice(0, 10) >= report.periodStart &&
+            item.eventAt.slice(0, 10) <= report.periodEnd,
+          ),
+    );
+    // AI 改写始终以当前周报（含已应用的正文模板）为基线。任务事实只用于补充和优化，
+    // 不能因为本周存在任务就丢弃模板原文，否则模型返回空栏位时会把正文清空。
+    const generationBaseFields = this.baseFields(report.currentVersion);
+
     let policy: WeeklyAiSanitizationResult;
     try {
       // 净化与秘密扫描必须先于凭证读取；命中禁区时，调用链不会接触密钥或外部网络。
@@ -121,11 +146,9 @@ export class WeeklyReportAiService {
         reportDate: report.reportDate,
         timezone: report.timezone,
         selectedFields: requestedFields,
-        baseFields: this.baseFields(report.currentVersion),
-        tasks: this.parseFacts<WeeklyTaskFact>(report.currentVersion.sourceSnapshot.taskFactsJson),
-        evidence: this.parseFacts<WeeklyEvidenceFact>(
-          report.currentVersion.sourceSnapshot.evidenceFactsJson,
-        ),
+        baseFields: generationBaseFields,
+        tasks: weeklyTasks,
+        evidence: weeklyEvidence,
         manualInputs: this.parseFacts<WeeklyManualInput>(
           report.currentVersion.sourceSnapshot.manualInputsJson,
         ),
@@ -197,11 +220,7 @@ export class WeeklyReportAiService {
     let validated: WeeklyAiValidatedOutput;
     try {
       // 供应商输出仍是不可信输入，先做秘密/主动内容扫描，再校验 JSON、引用和事实。
-      validated = validateWeeklyAiOutput(
-        providerResponse.outputText,
-        policy,
-        this.baseFields(report.currentVersion),
-      );
+      validated = validateWeeklyAiOutput(providerResponse.outputText, policy, generationBaseFields);
     } catch (error) {
       const outputSecurityBlocked =
         error instanceof DomainError && error.code === 'AI_OUTPUT_SECURITY_BLOCKED';
@@ -449,7 +468,7 @@ export class WeeklyReportAiService {
       };
       await this.completeIdempotency(tx, context.idempotencyRecordId, response);
       return response;
-    });
+    }, weeklyAiTransactionOptions);
   }
 
   public async reject(
@@ -504,7 +523,7 @@ export class WeeklyReportAiService {
       };
       await this.completeIdempotency(tx, context.idempotencyRecordId, response);
       return response;
-    });
+    }, weeklyAiTransactionOptions);
   }
 
   private async persistSuggestion(
@@ -521,142 +540,169 @@ export class WeeklyReportAiService {
     },
     context: MutationContext,
   ) {
-    return this.prisma.$transaction(async (tx) => {
-      // 这里只预留聚合版本并创建独立建议；当前正文指针必须保持在人工核对前的基线。
-      const reserved = await tx.weeklyReport.updateMany({
-        where: {
-          id: attempt.reportId,
-          ownerProfileId: this.sessions.currentProfileId,
-          archivedAt: null,
-          currentVersionId: attempt.baseVersionId,
-          version: attempt.baseReportVersion,
-        },
-        data: { version: { increment: 1 } },
-      });
-      if (reserved.count !== 1) this.throwBaseChanged();
+    let persistenceStage = 'transaction_start';
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // 这里只预留聚合版本并创建独立建议；当前正文指针必须保持在人工核对前的基线。
+        persistenceStage = 'reserve_report_version';
+        const reserved = await tx.weeklyReport.updateMany({
+          where: {
+            id: attempt.reportId,
+            ownerProfileId: this.sessions.currentProfileId,
+            archivedAt: null,
+            currentVersionId: attempt.baseVersionId,
+            version: attempt.baseReportVersion,
+          },
+          data: { version: { increment: 1 } },
+        });
+        if (reserved.count !== 1) this.throwBaseChanged();
 
-      const generation = await tx.aiGeneration.create({
-        data: {
-          ...this.generationBaseData(attempt),
-          rawOutput: providerResponse.outputText,
-          parsedOutputJson: JSON.stringify(validated),
-          protocol: providerResponse.protocol,
-          model: providerResponse.model,
-          providerRequestId: providerResponse.providerRequestId,
-          stopReason: providerResponse.stopReason,
-          usageJson: JSON.stringify(providerResponse.usage),
-          durationMs: Date.now() - attempt.startedAt,
-          status: 'succeeded',
-          errorCode: null,
-          securityBlocksJson: '[]',
-          adoptionStatus: 'pending',
-          completedAt: new Date(),
-        },
-      });
-      const latest = await tx.weeklyReportVersion.aggregate({
-        where: { reportId: attempt.reportId },
-        _max: { versionNo: true },
-      });
-      const structured = this.structuredSuggestion(base.fieldsJson, validated, attempt.policy!);
-      const warnings = [
-        ...this.parseArray(base.warningsJson),
-        {
-          code: 'AI_GENERATED_CONTENT',
-          message: '本版本包含 AI 建议，确认前必须逐段核对引用和事实并显式知悉。',
-          sourceRefs: [],
-          blocking: false,
-          aiGenerationId: generation.id,
-        },
-      ];
-      const fields = validated.fieldTexts;
-      const contentHash = requestHash({
-        fields: { reportDate: base.reportDateText, ...fields },
-        structured: structured.fields,
-        warnings,
-        attachments: this.parseArray(base.attachmentsJson),
-        recipientScope: this.parseObject(base.recipientScopeJson),
-        templateMappingVersionId: base.templateMappingVersionId,
-        scheduleAt: base.scheduleAt?.toISOString() ?? null,
-        sourceSnapshotId: base.sourceSnapshotId,
-      });
-      const suggestion = await tx.weeklyReportVersion.create({
-        data: {
-          id: newId(),
-          reportId: attempt.reportId,
-          versionNo: (latest._max.versionNo ?? 0) + 1,
-          origin: 'ai',
-          parentVersionId: base.id,
-          reportDateText: base.reportDateText,
-          recentGoalsText: fields.recentGoals,
-          weeklyWorkText: fields.weeklyWork,
-          nextWeekPlansText: fields.nextWeekPlans,
-          problemsText: fields.problems,
-          otherText: fields.other,
-          fieldsJson: JSON.stringify(structured.fields),
-          warningsJson: JSON.stringify(warnings),
-          attachmentsJson: base.attachmentsJson,
-          recipientScopeJson: base.recipientScopeJson,
+        persistenceStage = 'create_generation_record';
+        const generation = await tx.aiGeneration.create({
+          data: {
+            ...this.generationBaseData(attempt),
+            rawOutput: providerResponse.outputText,
+            parsedOutputJson: JSON.stringify(validated),
+            protocol: providerResponse.protocol,
+            model: providerResponse.model,
+            providerRequestId: providerResponse.providerRequestId,
+            stopReason: providerResponse.stopReason,
+            usageJson: JSON.stringify(providerResponse.usage),
+            durationMs: Date.now() - attempt.startedAt,
+            status: 'succeeded',
+            errorCode: null,
+            securityBlocksJson: '[]',
+            adoptionStatus: 'pending',
+            completedAt: new Date(),
+          },
+        });
+        persistenceStage = 'read_latest_version';
+        const latest = await tx.weeklyReportVersion.aggregate({
+          where: { reportId: attempt.reportId },
+          _max: { versionNo: true },
+        });
+        const structured = this.structuredSuggestion(base.fieldsJson, validated, attempt.policy!);
+        const warnings = [
+          ...this.parseArray(base.warningsJson),
+          {
+            code: 'AI_GENERATED_CONTENT',
+            message: '本版本包含 AI 建议，确认前必须逐段核对引用和事实并显式知悉。',
+            sourceRefs: [],
+            blocking: false,
+            aiGenerationId: generation.id,
+          },
+        ];
+        const fields = validated.fieldTexts;
+        const contentHash = requestHash({
+          fields: { reportDate: base.reportDateText, ...fields },
+          structured: structured.fields,
+          warnings,
+          attachments: this.parseArray(base.attachmentsJson),
+          recipientScope: this.parseObject(base.recipientScopeJson),
           templateMappingVersionId: base.templateMappingVersionId,
-          scheduleAt: base.scheduleAt,
+          scheduleAt: base.scheduleAt?.toISOString() ?? null,
           sourceSnapshotId: base.sourceSnapshotId,
-          aiGenerationId: generation.id,
-          contentHash,
-          changeSummaryJson: JSON.stringify({
-            kind: 'ai_suggestion',
-            generationId: generation.id,
-            baseVersionId: base.id,
-            requestedFields: attempt.requestedFields,
-            promptTemplateVersion: weeklyAiPromptTemplateVersion,
-            sanitizationPolicyVersion: weeklyAiSanitizationPolicyVersion,
-          }),
-          createdBy: this.sessions.currentProfileId,
+        });
+        persistenceStage = 'create_suggestion_version';
+        const suggestion = await tx.weeklyReportVersion.create({
+          data: {
+            id: newId(),
+            reportId: attempt.reportId,
+            versionNo: (latest._max.versionNo ?? 0) + 1,
+            origin: 'ai',
+            parentVersionId: base.id,
+            reportDateText: base.reportDateText,
+            recentGoalsText: fields.recentGoals,
+            weeklyWorkText: fields.weeklyWork,
+            nextWeekPlansText: fields.nextWeekPlans,
+            problemsText: fields.problems,
+            otherText: fields.other,
+            fieldsJson: JSON.stringify(structured.fields),
+            warningsJson: JSON.stringify(warnings),
+            attachmentsJson: base.attachmentsJson,
+            recipientScopeJson: base.recipientScopeJson,
+            templateMappingVersionId: base.templateMappingVersionId,
+            scheduleAt: base.scheduleAt,
+            sourceSnapshotId: base.sourceSnapshotId,
+            aiGenerationId: generation.id,
+            contentHash,
+            changeSummaryJson: JSON.stringify({
+              kind: 'ai_suggestion',
+              generationId: generation.id,
+              baseVersionId: base.id,
+              requestedFields: attempt.requestedFields,
+              promptTemplateVersion: weeklyAiPromptTemplateVersion,
+              sanitizationPolicyVersion: weeklyAiSanitizationPolicyVersion,
+            }),
+            createdBy: this.sessions.currentProfileId,
+          },
+        });
+        persistenceStage = 'create_suggestion_links';
+        await this.createSuggestionLinks(
+          tx,
+          base,
+          suggestion.id,
+          validated.fields
+            .filter((field) => field.paragraphs.length > 0)
+            .map((field) => field.field),
+          structured.blocks,
+          attempt.policy!,
+        );
+        persistenceStage = 'write_audit_event';
+        await this.audit.recordInTransaction(tx, {
+          actorId: this.sessions.currentProfileId,
+          action: 'weekly_report.ai_suggestion_created',
+          targetType: 'ai_generation',
+          targetId: generation.id,
+          correlationId: context.correlationId,
+          outcome: 'succeeded',
+          before: {
+            reportVersion: attempt.baseReportVersion,
+            baseVersionId: attempt.baseVersionId,
+          },
+          after: {
+            reportVersion: attempt.baseReportVersion + 1,
+            suggestionVersionId: suggestion.id,
+            suggestionVersionNo: suggestion.versionNo,
+            sanitizedInputHash: attempt.policy!.sanitizedInputHash,
+          },
+          clientSessionHash: this.security.sessionHash(context.sessionId),
+        });
+        persistenceStage = 'read_persisted_generation';
+        const fullGeneration = await tx.aiGeneration.findUniqueOrThrow({
+          where: { id: generation.id },
+          include: { generatedVersions: true },
+        });
+        const response = {
+          replayed: false,
+          fallback: false,
+          generation: this.serializeGeneration(fullGeneration, true, attempt.baseVersionId),
+          suggestionVersion: this.versionSummary(suggestion),
+          report: {
+            id: attempt.reportId,
+            currentVersionId: attempt.baseVersionId,
+            version: attempt.baseReportVersion + 1,
+          },
+        };
+        persistenceStage = 'complete_idempotency';
+        await this.completeIdempotency(tx, context.idempotencyRecordId, response);
+        return response;
+      }, weeklyAiTransactionOptions);
+    } catch (error) {
+      throw new DomainError(
+        'AI_SUGGESTION_PERSIST_FAILED',
+        `AI 建议已生成，但保存建议版本失败（${persistenceStage}）`,
+        {
+          httpStatus: 500,
+          details: {
+            stage: persistenceStage,
+            errorClass: error instanceof Error ? error.name : typeof error,
+          },
+          retryable: true,
+          suggestedAction: 'manual_review',
         },
-      });
-      await this.createSuggestionLinks(
-        tx,
-        base,
-        suggestion.id,
-        attempt.requestedFields,
-        structured.blocks,
-        attempt.policy!,
       );
-      await this.audit.recordInTransaction(tx, {
-        actorId: this.sessions.currentProfileId,
-        action: 'weekly_report.ai_suggestion_created',
-        targetType: 'ai_generation',
-        targetId: generation.id,
-        correlationId: context.correlationId,
-        outcome: 'succeeded',
-        before: {
-          reportVersion: attempt.baseReportVersion,
-          baseVersionId: attempt.baseVersionId,
-        },
-        after: {
-          reportVersion: attempt.baseReportVersion + 1,
-          suggestionVersionId: suggestion.id,
-          suggestionVersionNo: suggestion.versionNo,
-          sanitizedInputHash: attempt.policy!.sanitizedInputHash,
-        },
-        clientSessionHash: this.security.sessionHash(context.sessionId),
-      });
-      const fullGeneration = await tx.aiGeneration.findUniqueOrThrow({
-        where: { id: generation.id },
-        include: { generatedVersions: true },
-      });
-      const response = {
-        replayed: false,
-        fallback: false,
-        generation: this.serializeGeneration(fullGeneration, true, attempt.baseVersionId),
-        suggestionVersion: this.versionSummary(suggestion),
-        report: {
-          id: attempt.reportId,
-          currentVersionId: attempt.baseVersionId,
-          version: attempt.baseReportVersion + 1,
-        },
-      };
-      await this.completeIdempotency(tx, context.idempotencyRecordId, response);
-      return response;
-    });
+    }
   }
 
   private async recordNonSuccess(
@@ -729,7 +775,7 @@ export class WeeklyReportAiService {
       };
       await this.completeIdempotency(tx, context.idempotencyRecordId, response);
       return response;
-    });
+    }, weeklyAiTransactionOptions);
   }
 
   private generationBaseData(attempt: GenerationAttemptFacts) {
@@ -769,6 +815,8 @@ export class WeeklyReportAiService {
       policy.storedReferences.map((reference) => [reference.refId, reference]),
     );
     for (const field of validated.fields) {
+      // AI 没有产出有效段落时，正文文本、结构化模板块和原有引用必须一起保留。
+      if (field.paragraphs.length === 0) continue;
       fields[field.field] = field.paragraphs.map((paragraph) => {
         const id = newId();
         blocks.set(id, { field: field.field, citations: paragraph.citations });
@@ -805,12 +853,12 @@ export class WeeklyReportAiService {
     tx: Prisma.TransactionClient,
     base: BaseVersion,
     suggestionVersionId: string,
-    requestedFields: WeeklyReportField[],
+    replacedFields: WeeklyReportField[],
     blocks: Map<string, { field: WeeklyReportField; citations: string[] }>,
     policy: WeeklyAiSanitizationResult,
   ): Promise<void> {
     const data: Prisma.ReportSourceLinkCreateManyInput[] = base.sourceLinks
-      .filter((link) => !requestedFields.includes(link.fieldName as WeeklyReportField))
+      .filter((link) => !replacedFields.includes(link.fieldName as WeeklyReportField))
       .map((link) => ({
         id: newId(),
         snapshotId: link.snapshotId,
@@ -830,16 +878,21 @@ export class WeeklyReportAiService {
     for (const [blockId, block] of blocks) {
       for (const citation of block.citations) {
         const reference = references.get(citation)!;
+        // report_source_link 的历史数据库约束只允许 task/evidence/manual。
+        // 周报原正文属于本地人工事实，在持久化引用图中按 manual 保存；
+        // aiRefId 与原始 sourceType 仍保留在摘要中供诊断和审计。
+        const persistedSourceType =
+          reference.sourceType === 'base_field' ? 'manual' : reference.sourceType;
         data.push({
           id: newId(),
           snapshotId: base.sourceSnapshotId,
           versionId: suggestionVersionId,
           fieldName: block.field,
           blockId,
-          sourceType: reference.sourceType,
+          sourceType: persistedSourceType,
           sourceId: reference.sourceId,
-          taskId: reference.sourceType === 'task' ? reference.sourceId : null,
-          evidenceId: reference.sourceType === 'evidence' ? reference.sourceId : null,
+          taskId: persistedSourceType === 'task' ? reference.sourceId : null,
+          evidenceId: persistedSourceType === 'evidence' ? reference.sourceId : null,
           sourceContentHash: reference.contentHash,
           sourceSummaryJson: JSON.stringify({
             aiRefId: reference.refId,
@@ -905,7 +958,11 @@ export class WeeklyReportAiService {
       });
     }
     const configInput: unknown = JSON.parse(row.configJson);
-    const config = aiProviderConfigSchema.parse(configInput);
+    const parsedConfig = aiProviderConfigSchema.parse(configInput);
+    const config = {
+      ...parsedConfig,
+      timeoutMs: Math.max(parsedConfig.timeoutMs, weeklyAiMinimumTimeoutMs),
+    };
     if (!config.allowedPurposes.includes('weekly_report')) {
       throw new DomainError('AI_PURPOSE_NOT_ALLOWED', 'AI 连接未允许周报用途', {
         httpStatus: 403,
@@ -996,6 +1053,20 @@ export class WeeklyReportAiService {
       problems: version.problemsText,
       other: version.otherText,
     };
+  }
+
+  private isTaskInPeriod(task: WeeklyTaskFact, periodStart: string, periodEnd: string): boolean {
+    const plannedStart = task.plannedStartDate ?? null;
+    const dueDate = task.dueDate ?? null;
+    const statusChangedDate = task.statusChangedAt?.slice(0, 10) ?? null;
+    const dateInPeriod = (value: string | null) =>
+      Boolean(value && value >= periodStart && value <= periodEnd);
+    return (
+      dateInPeriod(plannedStart) ||
+      dateInPeriod(dueDate) ||
+      dateInPeriod(statusChangedDate) ||
+      Boolean(plannedStart && dueDate && plannedStart <= periodEnd && dueDate >= periodStart)
+    );
   }
 
   private parseFacts<T>(value: string): T[] {

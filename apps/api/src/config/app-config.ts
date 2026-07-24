@@ -5,23 +5,32 @@ import { z } from 'zod';
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 
 const envSchema = z.object({
-  AUTO_WORK_HOST: z.enum(['127.0.0.1', '::1']).default('127.0.0.1'),
+  AUTO_WORK_HOST: z.enum(['127.0.0.1', '::1', '0.0.0.0']).default('127.0.0.1'),
   AUTO_WORK_PORT: z.coerce.number().int().min(1024).max(65535).default(3760),
   AUTO_WORK_DATA_DIR: z.string().min(1).default('./data'),
   AUTO_WORK_WEB_DIST: z.string().min(1).default('./apps/web/dist'),
   AUTO_WORK_DATABASE_URL: z.string().min(1).startsWith('file:').optional(),
   AUTO_WORK_REPOSITORY_ROOT: z.string().min(3).default('D:\\company'),
+  AUTO_WORK_REPOSITORY_HOST_PATH: z.string().min(1).optional(),
+  AUTO_WORK_DEPLOYMENT_MODE: z.enum(['native', 'docker']).optional(),
+  AUTO_WORK_VAULT_BACKEND: z.enum(['auto', 'dpapi', 'sealed']).default('auto'),
+  AUTO_WORK_VAULT_KEY_FILE: z.string().min(1).optional(),
   AUTO_WORK_LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 });
 
 export interface AppConfig {
-  host: '127.0.0.1' | '::1';
+  host: '127.0.0.1' | '::1' | '0.0.0.0';
   port: number;
   dataDir: string;
   webDist: string;
   databaseUrl: string;
   repositoryRoot: string;
+  /** Docker bind mount 对应的宿主机路径，仅用于诊断展示，扫描仍严格限定 repositoryRoot。 */
+  repositoryHostPath?: string;
+  deploymentMode?: 'native' | 'docker';
+  vaultBackend: 'auto' | 'dpapi' | 'sealed';
+  vaultKeyFile: string;
   logLevel: string;
   environment: 'development' | 'test' | 'production';
 }
@@ -50,6 +59,16 @@ export function loadAppConfig(): AppConfig {
     webDist: resolveWorkspacePath(parsed.AUTO_WORK_WEB_DIST),
     databaseUrl: resolveSqliteUrl(parsed.AUTO_WORK_DATABASE_URL, dataDir),
     repositoryRoot: resolveWorkspacePath(parsed.AUTO_WORK_REPOSITORY_ROOT),
+    ...(parsed.AUTO_WORK_REPOSITORY_HOST_PATH
+      ? { repositoryHostPath: parsed.AUTO_WORK_REPOSITORY_HOST_PATH }
+      : {}),
+    deploymentMode:
+      parsed.AUTO_WORK_DEPLOYMENT_MODE ??
+      (parsed.AUTO_WORK_HOST === '0.0.0.0' ? 'docker' : 'native'),
+    vaultBackend: parsed.AUTO_WORK_VAULT_BACKEND,
+    vaultKeyFile: parsed.AUTO_WORK_VAULT_KEY_FILE
+      ? resolveWorkspacePath(parsed.AUTO_WORK_VAULT_KEY_FILE)
+      : resolve(dataDir, 'vault-master.key'),
     logLevel: parsed.AUTO_WORK_LOG_LEVEL,
     environment: parsed.NODE_ENV,
   };

@@ -201,7 +201,8 @@ GET /api/v4/projects/:id/pipelines
 - 不允许通过聊天、日志、URL 参数或截图传递。
 - 数据库只保存加密后的凭证引用。
 - 页面只显示掩码。
-- 提供“测试连接”和“立即撤销本地配置”。
+- Jira 连接保存后由后台自动测试；页面仅展示连接状态和最近同步时间。
+- 提供“立即撤销本地配置”，不提供 Jira 写操作。
 - 不保存 Jira 登录密码。
 - 不使用网页登录自动化。
 
@@ -216,15 +217,15 @@ GET /rest/api/2/project
 GET /rest/api/2/search
 ```
 
-首次连接完成：
+首次连接完成后由后台自动执行：
 
 - 确认当前 Jira 用户。
-- 获取标准字段和自定义字段。
-- 配置任务开始日期字段。
-- 配置迭代/Sprint 字段。
-- 配置父子任务关系。
-- 配置工时字段。
-- 保存字段映射版本。
+- 识别当前 Jira 实例可读取的标准字段和自定义字段。
+- 在适配器内部识别日期、Sprint、父子关系和工时；不向用户展示字段映射。
+- 立即全量拉取 `assignee = currentUser()` 的所有任务。
+- 全量完成后每天 06:00 按 `updated` 复合水位增量更新；任务页可手动触发全量刷新。
+
+Web 端没有字段映射和状态映射；任务页只保留一个手动刷新按钮，并展示本地只读任务缓存及生成结果。
 
 ### 4.3 任务查询
 
@@ -235,24 +236,9 @@ assignee = currentUser()
 ORDER BY updated DESC
 ```
 
-周报同步：
+周报和季度绩效不再临时向 Jira 发起不同范围的查询，而是从已全量同步的本地任务缓存中，按计划开始日、到期日、更新时间和状态变化日期选择对应周期的任务。
 
-```text
-assignee = currentUser()
-AND updated >= startOfWeek()
-ORDER BY project, updated
-```
-
-季度同步：
-
-```text
-assignee = currentUser()
-AND updated >= "季度开始日期"
-AND updated <= "季度结束日期"
-ORDER BY project, updated
-```
-
-增量同步以 Jira 的 `updated` 字段为游标。
+后台增量同步以 Jira 的 `updated` 字段为游标，并保留重叠窗口避免漏数。
 
 ### 4.4 Jira 字段模型
 
@@ -282,7 +268,7 @@ interface JiraTask {
 }
 ```
 
-Jira 状态统一映射：
+Jira 状态由适配器根据 Jira `statusCategory` 自动归类：
 
 ```text
 待处理 → planned
@@ -290,8 +276,10 @@ Jira 状态统一映射：
 已完成/已关闭 → done
 受阻 → blocked
 取消 → cancelled
-其他 → 保留原状态并由用户映射
+其他 → 保留原状态并归入 other
 ```
+
+原始状态 ID 和名称始终保留；用户不需要维护状态映射。
 
 ### 4.5 Excel 兜底导入
 
@@ -332,9 +320,9 @@ Jira 状态统一映射：
 ```ts
 interface TaskEvidenceLink {
   taskId: string;
-  sourceType: "commit" | "branch" | "merge_request" | "pipeline";
+  sourceType: 'commit' | 'branch' | 'merge_request' | 'pipeline';
   sourceId: string;
-  method: "issue_key" | "branch_name" | "keyword" | "ai_suggestion" | "manual";
+  method: 'issue_key' | 'branch_name' | 'keyword' | 'ai_suggestion' | 'manual';
   confidence: number;
   confirmed: boolean;
 }
@@ -373,6 +361,8 @@ interface WeeklyReportDraft {
 ```
 
 ### 6.2 字段生成规则
+
+后台按周划分任务日期，自动创建周报草稿；配置了可用 AI 时，AI 基于该周期的只读任务事实生成表述。Web 端只展示草稿、来源和版本，不承担 Jira 同步操作。
 
 #### 周报填写日期
 
@@ -571,7 +561,7 @@ partial_delivery
 ```ts
 interface AIProviderConfig {
   name: string;
-  protocol: "openai_compatible" | "anthropic" | "gemini";
+  protocol: 'openai_compatible' | 'anthropic' | 'gemini';
   baseUrl?: string;
   model: string;
   apiKeyRef: string;
@@ -632,19 +622,17 @@ interface AIProviderConfig {
 
 处理流程：
 
-1. 选择季度。
-2. 同步 Jira 和 Git。
-3. 汇总周报。
+1. 系统按任务日期自动识别季度并创建绩效草稿。
+2. 从后台只读缓存读取 Jira 和 Git 事实。
+3. 汇总已生成周报。
 4. 按项目和成果聚类。
 5. 去重。
 6. 展示成果候选池。
-7. 用户勾选。
-8. 映射考核指标。
-9. 生成自评文字。
-10. 生成分数建议。
-11. 用户调整分数。
-12. 使用公式计算总分。
-13. 导出 Excel 和 Word。
+7. AI 生成成果候选、指标建议和自评文字。
+8. AI 生成分数建议。
+9. 用户只在需要时复核或调整。
+10. 使用公式计算总分。
+11. 导出 Excel 和 Word。
 
 要求：
 
@@ -743,8 +731,8 @@ POST /api/quarterly-reviews/:id/export
 ### 阶段三：Jira 与 Excel
 
 - Jira REST API。
-- 字段映射。
-- 个人任务同步。
+- 适配器自动识别字段，不提供用户字段映射。
+- 自动全量拉取全部个人任务。
 - 增量同步。
 - 当前 Excel 模板导入。
 - Jira 和 Excel 去重。

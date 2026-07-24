@@ -14,7 +14,7 @@ export class GitHealthService implements OnApplicationBootstrap {
       const result = await this.git.runRead(process.cwd(), ['--version'], { timeoutMs: 3_000 });
       this.version = result.stdout.toString('utf8').trim();
       this.ready = /^git version /u.test(this.version);
-      this.reason = this.ready ? null : 'git.exe 返回了无法识别的版本信息';
+      this.reason = this.ready ? null : 'Git 返回了无法识别的版本信息';
     } catch (error) {
       this.ready = false;
       this.reason = (error as Error).message;
