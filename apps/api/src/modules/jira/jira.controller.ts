@@ -99,7 +99,7 @@ export class JiraController {
         httpStatus: 409,
         suggestedAction: 'refresh',
       });
-    const dedupeKey = `jira.sync:${id}:${body.scope}`;
+    const dedupeKey = `jira.sync:${id}:${requestHash(body)}`;
     const existing = await this.prisma.job.findFirst({
       where: { dedupeKey, status: { in: ['queued', 'running'] } },
     });
@@ -120,7 +120,13 @@ export class JiraController {
     const job = await this.queue.enqueue({
       type: 'jira.sync',
       payloadRef: run.id,
-      payloadSummary: { connectionId: id, scope: body.scope, runId: run.id },
+      payloadSummary: {
+        connectionId: id,
+        scope: body.scope,
+        runId: run.id,
+        periodStart: body.periodStart ?? null,
+        periodEnd: body.periodEnd ?? null,
+      },
       priority: 40,
       maxAttempts: 3,
       dedupeKey,

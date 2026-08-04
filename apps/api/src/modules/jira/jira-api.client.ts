@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { DomainError } from '@auto-work/contracts';
 import type { SecureHttpResponse } from '../../infrastructure/http/secure-http.service.js';
 import { SecureHttpService } from '../../infrastructure/http/secure-http.service.js';
-import { jiraSearchPageSchema } from './jira.schemas.js';
+import { jiraSearchPageSchema, jiraWorklogPageSchema } from './jira.schemas.js';
 
 const MAX_GET_URL_LENGTH = 8_000;
 
@@ -63,6 +63,22 @@ export class JiraApiClient {
     const response = await this.requestWithRetry(input.baseUrl, input.credential, 'GET', url);
     if (response.status !== 200) throw this.statusError(response.status);
     return jiraSearchPageSchema.parse(response.body);
+  }
+
+  public async worklogPage(input: {
+    baseUrl: string;
+    credential: JiraCredential;
+    issueKey: string;
+    startAt: number;
+    maxResults: number;
+  }) {
+    const response = await this.get(
+      input.baseUrl,
+      input.credential,
+      `/issue/${encodeURIComponent(input.issueKey)}/worklog`,
+      { startAt: input.startAt, maxResults: input.maxResults },
+    );
+    return jiraWorklogPageSchema.parse(response.body);
   }
 
   private async requestWithRetry(

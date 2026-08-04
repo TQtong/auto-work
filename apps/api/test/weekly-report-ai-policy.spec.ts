@@ -109,6 +109,8 @@ describe('周报 AI 白名单净化与事实校验', () => {
     expect(request.userPrompt).toContain(weeklyAiPromptTemplateVersion);
     expect(request.userPrompt).toContain(weeklyAiSanitizationPolicyVersion);
     expect(request.systemPrompt).toContain('不能补充、推断或编造');
+    expect(request.systemPrompt).toContain('completionPercent');
+    expect(request.systemPrompt).toContain('parentTitle');
     expect(request.outputSchema).toMatchObject({
       type: 'object',
       additionalProperties: false,
@@ -225,8 +227,14 @@ describe('周报 AI 白名单净化与事实校验', () => {
     const result = validateWeeklyAiOutput(raw, sanitized, baseFields());
 
     expect(result.fields[1]?.paragraphs[0]?.projectName).toBeNull();
+    expect(result.fields[1]?.paragraphs[0]).toMatchObject({
+      parentTitle: 'Alpha 父任务',
+      completionPercent: 50,
+    });
     expect(result.fieldTexts.recentGoals).toBe(baseFields().recentGoals);
-    expect(result.fieldTexts.weeklyWork).toBe('1、推进 Alpha 项目 已投入 2 小时。');
+    expect(result.fieldTexts.weeklyWork).toBe(
+      '【Alpha 父任务】\n1、推进 Alpha 项目 已投入 2 小时（完成度 50%）',
+    );
   });
 
   it.each([
@@ -357,6 +365,7 @@ describe('周报 AI 白名单净化与事实校验', () => {
       issueKey: 'AW-12',
       projectId: 'project-1',
       projectName: 'Alpha',
+      parentTitle: 'Alpha 父任务',
       title: '实现完整周报 AI',
       normalizedStatus: 'in_progress',
       plannedStartDate: '2026-07-13',

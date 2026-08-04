@@ -51,7 +51,8 @@ export class JiraMappingService {
       ),
       dueDate: byId.has('duedate') ? 'duedate' : null,
       sprint: this.findField(fields, ['sprint'], ['array', 'string']),
-      parent: byId.has('parent') ? 'parent' : null,
+      // Jira's standard parent field is queryable even when the /field capability response omits it.
+      parent: 'parent',
       originalEstimateSeconds: byId.has('timeoriginalestimate') ? 'timeoriginalestimate' : null,
       remainingEstimateSeconds: byId.has('timeestimate') ? 'timeestimate' : null,
       timeSpentSeconds: byId.has('timespent') ? 'timespent' : null,
@@ -65,7 +66,11 @@ export class JiraMappingService {
       statuses.map((status) => [status.id, this.automaticStatus(status)]),
     );
     const parserRules = {
-      parentFallbackFieldId: null,
+      parentFallbackFieldId: this.findField(
+        fields.filter((field) => field.id !== 'parent'),
+        ['parent link', '父任务', '父级'],
+        ['issuelink', 'issue', 'any'],
+      ),
       sprintStringFallback: true,
       preserveUnknownStatus: true,
     };

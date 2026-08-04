@@ -77,4 +77,41 @@ describe('Jira REST 适配器', () => {
       }),
     ).rejects.toMatchObject({ code: 'JIRA_GET_QUERY_TOO_LONG' });
   });
+
+  it('按任务分页读取工时且解析 Jira 用户与秒数', async () => {
+    const getJson = vi.fn<SecureHttpService['getJson']>().mockResolvedValue({
+      status: 200,
+      headers: {},
+      body: {
+        startAt: 2,
+        maxResults: 2,
+        total: 3,
+        worklogs: [
+          {
+            id: 7001,
+            author: { accountId: 'current-user', displayName: '当前用户' },
+            started: '2026-07-31T09:15:00.000+0800',
+            updated: '2026-07-31T10:15:00.000+0800',
+            timeSpentSeconds: 3600,
+          },
+        ],
+      },
+    });
+    const client = new JiraApiClient({ getJson } as unknown as SecureHttpService);
+
+    const page = await client.worklogPage({
+      baseUrl: 'https://jira.example.com/company',
+      credential: { token: 'secret-token-value', authScheme: 'bearer' },
+      issueKey: 'PROJ-700',
+      startAt: 2,
+      maxResults: 2,
+    });
+
+    expect(page.worklogs[0]).toMatchObject({ id: '7001', timeSpentSeconds: 3600 });
+    const request = getJson.mock.calls[0]![0];
+    expect(request.url.toString()).toBe(
+      'https://jira.example.com/company/rest/api/2/issue/PROJ-700/worklog?startAt=2&maxResults=2',
+    );
+    expect(request.headers).toEqual({ Authorization: 'Bearer secret-token-value' });
+  });
 });

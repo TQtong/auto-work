@@ -13,6 +13,36 @@ import type {
 } from './repository.types.js';
 import { repositoryDirectoryPickerMode } from './repository-directory-picker.service.js';
 
+interface StoredRepositoryIdentity {
+  identityHash: string;
+  remoteName: string | null;
+  remoteHost: string | null;
+  remotePort: number | null;
+  remotePath: string | null;
+}
+
+export function repositoryIdentityMatches(
+  stored: StoredRepositoryIdentity,
+  observed: RepositoryIdentity,
+): boolean {
+  if (stored.identityHash === observed.identityHash) return true;
+  if (stored.identityHash === observed.legacyIdentityHash) return true;
+  if (!observed.identityHash.startsWith('v2:')) return false;
+
+  const remote = stored.remoteName
+    ? observed.remotes.find((item) => item.name === stored.remoteName)
+    : observed.defaultRemote;
+  return Boolean(
+    stored.remoteHost &&
+    stored.remotePath &&
+    remote?.host &&
+    remote.path &&
+    stored.remoteHost.toLowerCase() === remote.host.toLowerCase() &&
+    stored.remotePort === remote.port &&
+    stored.remotePath === remote.path,
+  );
+}
+
 @Injectable()
 export class RepositoryInspectorService {
   private readonly configuredRoot: string;
@@ -191,12 +221,36 @@ export class RepositoryInspectorService {
     const headSha = headResult.stdout.toString('utf8').trim() || null;
     const branchName = branchResult.stdout.toString('utf8').trim() || null;
     const defaultRemote = remotes.find((remote) => remote.name === 'origin') ?? remotes[0] ?? null;
+    const remoteAnchor = JSON.stringify(
+      remotes
+        .filter((remote) => remote.host && remote.path)
+        .map((remote) => [remote.name, remote.host, remote.port, remote.path])
+        .sort(([left], [right]) => String(left).localeCompare(String(right))),
+    );
+    const historyAnchor =
+      remoteAnchor === '[]'
+        ? (
+            await this.git.runRead(candidate, ['rev-list', '--max-parents=0', 'HEAD'], {
+              allowExitCodes: [0, 128],
+            })
+          ).stdout
+            .toString('utf8')
+            .split(/\r?\n/u)
+            .map((value) => value.trim())
+            .filter(Boolean)
+            .sort()
+            .join(',')
+        : '';
+    const legacyIdentityHash = sha256(
+      `${gitDirectory.toLowerCase()}\0${gitDirectoryStat.dev}\0${gitDirectoryStat.ino}\0${gitDirectoryStat.birthtimeMs}`,
+    );
+    const semanticAnchor =
+      remoteAnchor !== '[]' ? remoteAnchor : historyAnchor || legacyIdentityHash;
     return {
       canonicalPath: candidate,
       realPathHash: sha256(candidate.toLowerCase()),
-      identityHash: sha256(
-        `${gitDirectory.toLowerCase()}\0${gitDirectoryStat.dev}\0${gitDirectoryStat.ino}\0${gitDirectoryStat.birthtimeMs}`,
-      ),
+      identityHash: `v2:${sha256(`v2\0${gitDirKind}\0${semanticAnchor}`)}`,
+      legacyIdentityHash,
       displayName: basename(candidate),
       gitDirKind,
       headSha,

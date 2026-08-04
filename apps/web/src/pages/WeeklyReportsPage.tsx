@@ -69,6 +69,7 @@ import {
   deliveryRecoveryOutcomeLabel,
   deliveryRecoveryStatusLabel,
   eligibleSevereRiskWarnings,
+  latestUnresolvedLogDeliveryIntent,
 } from './weekly-report-delivery-view-model.js';
 import {
   compareWeeklyFields,
@@ -1158,6 +1159,9 @@ export function WeeklyReportsPage() {
     selectedRobotConnection?.config ?? null,
   );
   const logIntent = currentLogDeliveryIntent(deliveryItems, report?.currentConfirmation?.id);
+  const unresolvedLogIntent = latestUnresolvedLogDeliveryIntent(deliveryItems);
+  const historicalUnresolvedLogIntent =
+    unresolvedLogIntent && unresolvedLogIntent.id !== logIntent?.id ? unresolvedLogIntent : null;
   const directSubmitPending = directSubmitStage !== 'idle';
   const logDeliveryActive = Boolean(logIntent && ['pending', 'running'].includes(logIntent.status));
   const logDeliveryCanRetry = Boolean(logIntent && deliveryRecoveryActions(logIntent).canRetry);
@@ -1226,6 +1230,7 @@ export function WeeklyReportsPage() {
     !version ||
     version.attachments.length > 0 ||
     Boolean(logIntent && !logDeliveryCanRetry) ||
+    Boolean(historicalUnresolvedLogIntent) ||
     directSubmitPending ||
     editMutation.isPending ||
     confirmMutation.isPending ||
@@ -1419,6 +1424,19 @@ export function WeeklyReportsPage() {
       }
       return;
     }
+    let validatedValues: EditorValues;
+    try {
+      validatedValues = await form.validateFields();
+    } catch {
+      recordSubmissionOperation(
+        'validation',
+        'error',
+        '周报正文不完整',
+        '请补全页面标出的必填字段后再提交。',
+      );
+      void messageApi.error('请先补全周报六字段正文');
+      return;
+    }
     if (!selectedMappingId) {
       recordSubmissionOperation('validation', 'error', '未选择钉钉周报模板');
       void messageApi.error('请先选择钉钉周报模板');
@@ -1436,12 +1454,11 @@ export function WeeklyReportsPage() {
       let currentVersion = version;
       if (dirty) {
         recordSubmissionOperation('content', 'running', '正在保存六字段正文');
-        const values = await form.validateFields();
         const saved = await editMutation.mutateAsync({
           reportId: report.id,
           baseVersionId: version.id,
           reportVersion: report.version,
-          fields: editorFields(values),
+          fields: editorFields(validatedValues),
           changeReason: '提交前自动保存当前正文',
           source: 'autosave',
         });
@@ -1870,6 +1887,20 @@ export function WeeklyReportsPage() {
               showIcon
               message={deliveryAutomationTitle(logIntent)}
               description={deliveryAutomationDescription(logIntent)}
+            />
+          )}
+
+          {historicalUnresolvedLogIntent && (
+            <Alert
+              type="warning"
+              showIcon
+              message="此前自动提交结果仍未核对"
+              description={`交付任务 ${historicalUnresolvedLogIntent.id} 的结果为“${deliveryStatusLabel(historicalUnresolvedLogIntent.status)}”。为避免重复提交，完成钉钉人工核对前不能创建新的正式日志。`}
+              action={
+                <Button onClick={() => openManualResolution(historicalUnresolvedLogIntent)}>
+                  人工核对结果
+                </Button>
+              }
             />
           )}
 
@@ -2460,8 +2491,15 @@ export function WeeklyReportsPage() {
                       label={definition.label}
                       rules={
                         definition.key === 'reportDate'
-                          ? [{ required: true, message: '填写日期不能为空' }]
-                          : []
+                          ? [{ required: true, message: `${definition.label}不能为空` }]
+                          : [
+                              {
+                                type: 'string',
+                                required: true,
+                                whitespace: true,
+                                message: `${definition.label}不能为空`,
+                              },
+                            ]
                       }
                     >
                       {definition.key === 'reportDate' ? (

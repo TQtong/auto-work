@@ -88,6 +88,31 @@ const conflictQuerySchema = z
   })
   .strict();
 
+const taskListInclude = Prisma.validator<Prisma.TaskInclude>()({
+  project: { select: { id: true, name: true, jiraProjectKey: true } },
+  evidenceLinks: { select: { status: true, revalidationState: true } },
+  fieldProvenances: {
+    where: { active: true },
+    select: {
+      fieldName: true,
+      sourceType: true,
+      decision: true,
+      expiresAt: true,
+      conflictDetectedAt: true,
+    },
+  },
+  _count: {
+    select: { sourceObservations: true, statusEvents: true, evidenceLinks: true },
+  },
+});
+const taskListOrderBy: Prisma.TaskOrderByWithRelationInput[] = [
+  { plannedStartDate: 'desc' },
+  { dueDate: 'desc' },
+  { externalUpdatedAt: 'desc' },
+  { issueKey: 'asc' },
+  { id: 'asc' },
+];
+
 @Controller('tasks')
 export class TasksController {
   public constructor(
@@ -101,7 +126,58 @@ export class TasksController {
   public async list(@Query() rawQuery: Record<string, unknown>, @Req() request: FastifyRequest) {
     const query = taskQuerySchema.parse(rawQuery);
     const offset = this.decodeCursor(query.cursor);
-    const where: Prisma.TaskWhereInput = {
+    const hasDateFilter = Boolean(query.dateFrom || query.dateTo);
+    const worklogDateWhere: Prisma.TaskWorklogWhereInput = {
+      isCurrentUser: true,
+      businessDate: {
+        ...(query.dateFrom ? { gte: query.dateFrom } : {}),
+        ...(query.dateTo ? { lte: query.dateTo } : {}),
+      },
+    };
+    const scheduleDateWhere: Prisma.TaskWhereInput = {
+      OR: [
+        {
+          plannedStartDate: {
+            ...(query.dateFrom ? { gte: query.dateFrom } : {}),
+            ...(query.dateTo ? { lte: query.dateTo } : {}),
+          },
+        },
+        {
+          dueDate: {
+            ...(query.dateFrom ? { gte: query.dateFrom } : {}),
+            ...(query.dateTo ? { lte: query.dateTo } : {}),
+          },
+        },
+        ...(query.dateFrom && query.dateTo
+          ? [
+              {
+                AND: [
+                  { plannedStartDate: { lte: query.dateTo } },
+                  { dueDate: { gte: query.dateFrom } },
+                ],
+              },
+            ]
+          : []),
+      ],
+    };
+    const ownershipAndDateWhere: Prisma.TaskWhereInput =
+      query.currentUser === 'true'
+        ? hasDateFilter
+          ? {
+              OR: [
+                { isCurrentUser: true, ...scheduleDateWhere },
+                { worklogs: { some: worklogDateWhere } },
+              ],
+            }
+          : { isCurrentUser: true }
+        : query.currentUser === 'false'
+          ? { isCurrentUser: false, ...(hasDateFilter ? scheduleDateWhere : {}) }
+          : hasDateFilter
+            ? {
+                OR: [scheduleDateWhere, { worklogs: { some: worklogDateWhere } }],
+              }
+            : {};
+    const commonWhere: Prisma.TaskWhereInput = {
       visibilityState: query.visibility,
       ...(query.connectionId ? { connectionId: query.connectionId } : {}),
       ...(query.projectId ? { projectId: query.projectId } : {}),
@@ -112,7 +188,6 @@ export class TasksController {
       ...(query.parentIssueKey ? { parentIssueKey: query.parentIssueKey } : {}),
       // Sprint 以 JSON 字符串持久化；连同 JSON 引号匹配可避免筛选 "12" 时误命中 "112"。
       ...(query.sprintId ? { sprintIdsJson: { contains: JSON.stringify(query.sprintId) } } : {}),
-      ...(query.currentUser ? { isCurrentUser: query.currentUser === 'true' } : {}),
       ...(query.evidenceState
         ? {
             evidenceLinks:
@@ -145,71 +220,77 @@ export class TasksController {
                   },
           }
         : {}),
-      ...(query.dateFrom || query.dateTo
-        ? {
-            OR: [
-              {
-                plannedStartDate: {
-                  ...(query.dateFrom ? { gte: query.dateFrom } : {}),
-                  ...(query.dateTo ? { lte: query.dateTo } : {}),
-                },
-              },
-              {
-                dueDate: {
-                  ...(query.dateFrom ? { gte: query.dateFrom } : {}),
-                  ...(query.dateTo ? { lte: query.dateTo } : {}),
-                },
-              },
-              ...(query.dateFrom && query.dateTo
-                ? [
-                    {
-                      AND: [
-                        { plannedStartDate: { lte: query.dateTo } },
-                        { dueDate: { gte: query.dateFrom } },
-                      ],
-                    },
-                  ]
-                : []),
-            ],
-          }
-        : {}),
     };
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.task.findMany({
-        where,
-        orderBy: [
-          { plannedStartDate: 'desc' },
-          { dueDate: 'desc' },
-          { externalUpdatedAt: 'desc' },
-          { issueKey: 'asc' },
-          { id: 'asc' },
-        ],
-        skip: offset,
-        take: query.limit,
-        include: {
-          project: { select: { id: true, name: true, jiraProjectKey: true } },
-          evidenceLinks: { select: { status: true, revalidationState: true } },
-          fieldProvenances: {
-            where: { active: true },
-            select: {
-              fieldName: true,
-              sourceType: true,
-              decision: true,
-              expiresAt: true,
-              conflictDetectedAt: true,
-            },
-          },
-          _count: {
-            select: { sourceObservations: true, statusEvents: true, evidenceLinks: true },
-          },
-        },
-      }),
-      this.prisma.task.count({ where }),
-    ]);
+    const where: Prisma.TaskWhereInput = { ...commonWhere, ...ownershipAndDateWhere };
+    let items: Prisma.TaskGetPayload<{ include: typeof taskListInclude }>[];
+    let total: number;
+    if (query.currentUser === 'true' && hasDateFilter) {
+      const worklogWhere: Prisma.TaskWhereInput = {
+        ...commonWhere,
+        worklogs: { some: worklogDateWhere },
+      };
+      const scheduleSupplementWhere: Prisma.TaskWhereInput = {
+        ...commonWhere,
+        isCurrentUser: true,
+        ...scheduleDateWhere,
+        worklogs: { none: worklogDateWhere },
+      };
+      const [worklogTotal, scheduleSupplementTotal] = await this.prisma.$transaction([
+        this.prisma.task.count({ where: worklogWhere }),
+        this.prisma.task.count({ where: scheduleSupplementWhere }),
+      ]);
+      const worklogSkip = Math.min(offset, worklogTotal);
+      const worklogTake = Math.min(query.limit, Math.max(0, worklogTotal - offset));
+      const scheduleSkip = Math.max(0, offset - worklogTotal);
+      const scheduleTake = query.limit - worklogTake;
+      const [worklogItems, scheduleItems] = await this.prisma.$transaction([
+        this.prisma.task.findMany({
+          where: worklogWhere,
+          orderBy: taskListOrderBy,
+          skip: worklogSkip,
+          take: worklogTake,
+          include: taskListInclude,
+        }),
+        this.prisma.task.findMany({
+          where: scheduleSupplementWhere,
+          orderBy: taskListOrderBy,
+          skip: scheduleSkip,
+          take: scheduleTake,
+          include: taskListInclude,
+        }),
+      ]);
+      // 两组通过 worklogs.some / none 互斥：实际工时任务优先，排期仅补充且不会重复。
+      items = [...worklogItems, ...scheduleItems];
+      total = worklogTotal + scheduleSupplementTotal;
+    } else {
+      [items, total] = await this.prisma.$transaction([
+        this.prisma.task.findMany({
+          where,
+          orderBy: taskListOrderBy,
+          skip: offset,
+          take: query.limit,
+          include: taskListInclude,
+        }),
+        this.prisma.task.count({ where }),
+      ]);
+    }
+    const periodTotals =
+      hasDateFilter && items.length > 0
+        ? await this.prisma.taskWorklog.groupBy({
+            by: ['taskId'],
+            where: { taskId: { in: items.map((item) => item.id) }, ...worklogDateWhere },
+            _sum: { timeSpentSeconds: true },
+          })
+        : [];
+    const periodTimeByTaskId = new Map(
+      periodTotals.map((total) => [total.taskId, total._sum.timeSpentSeconds ?? 0]),
+    );
     const nextOffset = offset + items.length;
     return {
       ...apiResponse(
-        items.map((item) => this.summary(item)),
+        items.map((item) =>
+          this.summary(item, hasDateFilter ? (periodTimeByTaskId.get(item.id) ?? 0) : null),
+        ),
         request.autoWork.correlationId,
         {
           asOf: new Date().toISOString(),
@@ -475,44 +556,47 @@ export class TasksController {
     );
   }
 
-  private summary(task: {
-    id: string;
-    primarySource: string;
-    issueKey: string | null;
-    projectKey: string | null;
-    issueType: string | null;
-    parentIssueKey: string | null;
-    parentTitle: string | null;
-    title: string;
-    priority: string | null;
-    assigneeName: string | null;
-    isCurrentUser: boolean;
-    rawStatusId: string | null;
-    rawStatusName: string | null;
-    normalizedStatus: string;
-    plannedStartDate: string | null;
-    dueDate: string | null;
-    originalEstimateSeconds: number | null;
-    remainingEstimateSeconds: number | null;
-    timeSpentSeconds: number | null;
-    sprintIdsJson: string;
-    labelsJson: string;
-    componentsJson: string;
-    externalUpdatedAt: Date | null;
-    lastObservedAt: Date;
-    visibilityState: string;
-    version: number;
-    project?: { id: string; name: string; jiraProjectKey: string | null } | null;
-    _count?: { sourceObservations: number; statusEvents: number; evidenceLinks: number };
-    evidenceLinks?: Array<{ status: string; revalidationState: string }>;
-    fieldProvenances?: Array<{
-      fieldName: string;
-      sourceType: string;
-      decision: string;
-      expiresAt: Date | null;
-      conflictDetectedAt: Date | null;
-    }>;
-  }) {
+  private summary(
+    task: {
+      id: string;
+      primarySource: string;
+      issueKey: string | null;
+      projectKey: string | null;
+      issueType: string | null;
+      parentIssueKey: string | null;
+      parentTitle: string | null;
+      title: string;
+      priority: string | null;
+      assigneeName: string | null;
+      isCurrentUser: boolean;
+      rawStatusId: string | null;
+      rawStatusName: string | null;
+      normalizedStatus: string;
+      plannedStartDate: string | null;
+      dueDate: string | null;
+      originalEstimateSeconds: number | null;
+      remainingEstimateSeconds: number | null;
+      timeSpentSeconds: number | null;
+      sprintIdsJson: string;
+      labelsJson: string;
+      componentsJson: string;
+      externalUpdatedAt: Date | null;
+      lastObservedAt: Date;
+      visibilityState: string;
+      version: number;
+      project?: { id: string; name: string; jiraProjectKey: string | null } | null;
+      _count?: { sourceObservations: number; statusEvents: number; evidenceLinks: number };
+      evidenceLinks?: Array<{ status: string; revalidationState: string }>;
+      fieldProvenances?: Array<{
+        fieldName: string;
+        sourceType: string;
+        decision: string;
+        expiresAt: Date | null;
+        conflictDetectedAt: Date | null;
+      }>;
+    },
+    periodTimeSpentSeconds: number | null = null,
+  ) {
     return {
       id: task.id,
       source: task.primarySource,
@@ -535,6 +619,7 @@ export class TasksController {
         originalEstimateSeconds: task.originalEstimateSeconds,
         remainingEstimateSeconds: task.remainingEstimateSeconds,
         timeSpentSeconds: task.timeSpentSeconds,
+        periodTimeSpentSeconds,
       },
       sprints: JSON.parse(task.sprintIdsJson) as unknown,
       labels: JSON.parse(task.labelsJson) as unknown,

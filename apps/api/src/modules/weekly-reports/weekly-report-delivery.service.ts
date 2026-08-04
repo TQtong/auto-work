@@ -5,6 +5,7 @@ import { newId, requestHash } from '@auto-work/domain';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import { LocalSecurityService } from '../../infrastructure/http/local-security.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { DingTalkDesktopClient } from '../dingtalk/dingtalk-desktop.client.js';
 import { SessionService } from '../session/session.service.js';
 import { WeeklyReportNotificationLedgerService } from './weekly-report-notification-ledger.service.js';
 import {
@@ -30,6 +31,7 @@ export class WeeklyReportDeliveryService {
     private readonly audit: AuditService,
     private readonly security: LocalSecurityService,
     private readonly notificationLedger: WeeklyReportNotificationLedgerService,
+    private readonly desktopClient: DingTalkDesktopClient,
   ) {}
 
   public async submitLog(
@@ -51,12 +53,35 @@ export class WeeklyReportDeliveryService {
     });
     if (existing) return this.replayExisting(existing, context.idempotencyRecordId);
 
+    const unresolved = await this.prisma.deliveryIntent.findFirst({
+      where: {
+        reportId,
+        channel: 'dingtalk_log',
+        status: { in: ['unknown', 'needs_review'] },
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true, status: true },
+    });
+    if (unresolved) {
+      throw new DomainError(
+        'DINGTALK_DELIVERY_REVIEW_REQUIRED',
+        '此前自动提交结果仍未核对，为避免重复周报，完成人工裁决前禁止再次提交',
+        {
+          httpStatus: 409,
+          suggestedAction: 'manual_review',
+          details: { deliveryIntentId: unresolved.id, status: unresolved.status },
+        },
+      );
+    }
+
     this.assertSubmissionFacts(facts, input, connection);
+    this.assertRequiredReportFields(facts.confirmedVersion);
     const scope = this.parseObject(facts.confirmedVersion.recipientScopeJson);
     const recipients = Array.isArray(scope.recipients) ? scope.recipients : [];
     await this.assertRecipientFacts(connection.id, recipients);
     if (connection.type === 'dingtalk_desktop') {
       this.assertDesktopRecipientScope(connection.configJson, recipients);
+      await this.desktopClient.assertReady();
     }
     const attachmentFacts = this.parseArray(facts.confirmedVersion.attachmentsJson);
     if (attachmentFacts.length > 0) {
@@ -460,6 +485,37 @@ export class WeeklyReportDeliveryService {
         { httpStatus: 422, suggestedAction: 'reconfirm' },
       );
     }
+  }
+
+  private assertRequiredReportFields(version: {
+    reportDateText: string;
+    recentGoalsText: string;
+    weeklyWorkText: string;
+    nextWeekPlansText: string;
+    problemsText: string;
+    otherText: string;
+  }): void {
+    const values = {
+      reportDate: version.reportDateText,
+      recentGoals: version.recentGoalsText,
+      weeklyWork: version.weeklyWorkText,
+      nextWeekPlans: version.nextWeekPlansText,
+      problems: version.problemsText,
+      other: version.otherText,
+    };
+    const missingFields = Object.entries(values)
+      .filter(([, value]) => value.trim().length === 0)
+      .map(([field]) => field);
+    if (missingFields.length === 0) return;
+    throw new DomainError(
+      'WEEKLY_REPORT_REQUIRED_FIELDS_EMPTY',
+      '周报存在空的必填字段，不能进入钉钉自动填写；请先补全正文后重新确认',
+      {
+        httpStatus: 422,
+        suggestedAction: 'reconfirm',
+        details: { missingFields },
+      },
+    );
   }
 
   private resolveDeliverySchedule(

@@ -1,7 +1,7 @@
 import { DomainError } from '@auto-work/contracts';
 import { requestHash } from './hash.js';
 
-export const weeklyReportRuleVersion = 'weekly-report-rule-v1';
+export const weeklyReportRuleVersion = 'weekly-report-rule-v2';
 
 export type WeeklyReportField =
   'recentGoals' | 'weeklyWork' | 'nextWeekPlans' | 'problems' | 'other';
@@ -211,7 +211,7 @@ function buildGoalBlocks(tasks: WeeklyTaskFact[], periodEnd: number): WeeklyRepo
         makeBlock(
           'recentGoals',
           task.projectName,
-          task.parentTitle ?? task.title,
+          taskGroupTitle(task),
           `推进${displayTask(task)}${expected}`,
           [{ type: 'task', id: task.id }],
           null,
@@ -256,8 +256,8 @@ function buildWorkBlocks(
       makeBlock(
         'weeklyWork',
         task.projectName,
-        task.parentTitle ?? task.title,
-        `${displayTask(task)}：${statusText}${evidenceText}`,
+        taskGroupTitle(task),
+        `${displayTask(task)}：${statusText}${evidenceText}（完成度 ${weeklyTaskCompletionPercent(task)}%）`,
         [
           { type: 'task', id: task.id },
           ...taskEvidence.map((item): WeeklyReportSourceRef => ({ type: 'evidence', id: item.id })),
@@ -302,7 +302,7 @@ function buildPlanBlocks(tasks: WeeklyTaskFact[], periodEnd: number): WeeklyRepo
       return makeBlock(
         'nextWeekPlans',
         task.projectName,
-        task.parentTitle ?? task.title,
+        taskGroupTitle(task),
         `${verb}${displayTask(task)}${completion}`,
         [{ type: 'task', id: task.id }],
         null,
@@ -330,7 +330,7 @@ function buildProblemBlocks(
       makeBlock(
         'problems',
         task.projectName,
-        task.parentTitle ?? task.title,
+        taskGroupTitle(task),
         `${problem}：${displayTask(task)}；影响：可能影响计划完成时间；所需协助/下一步：请人工补充具体依赖与责任方`,
         [{ type: 'task', id: task.id }],
         null,
@@ -545,6 +545,40 @@ function sourceTypeLabel(type: WeeklyEvidenceFact['sourceType']): string {
 
 function displayTask(task: WeeklyTaskFact): string {
   return task.title;
+}
+
+function taskGroupTitle(task: WeeklyTaskFact): string {
+  return task.parentTitle?.trim() || task.projectName;
+}
+
+/**
+ * 周报完成度优先使用 Jira 估算与剩余工时计算；缺少估算时才按状态给出保守值。
+ * 未完成状态最多为 99%，避免仅因工时耗尽就误报已完成。
+ */
+export function weeklyTaskCompletionPercent(task: WeeklyTaskFact): number {
+  if (task.normalizedStatus === 'done') return 100;
+  if (task.normalizedStatus === 'planned' || task.normalizedStatus === 'cancelled') return 0;
+
+  const estimated = validNonNegative(task.originalEstimateSeconds);
+  const remaining = validNonNegative(task.remainingEstimateSeconds);
+  const spent = validNonNegative(task.timeSpentSeconds);
+  if (estimated !== null && estimated > 0) {
+    const calculated =
+      remaining !== null
+        ? ((estimated - Math.min(estimated, remaining)) / estimated) * 100
+        : spent !== null
+          ? (spent / estimated) * 100
+          : null;
+    if (calculated !== null) return Math.min(99, Math.max(0, Math.round(calculated)));
+  }
+  if (task.normalizedStatus === 'in_progress' || task.normalizedStatus === 'blocked') {
+    return spent !== null && spent > 0 ? 50 : 0;
+  }
+  return 0;
+}
+
+function validNonNegative(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 function taskSortKey(task: WeeklyTaskFact): string {

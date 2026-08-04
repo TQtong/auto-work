@@ -108,7 +108,15 @@ export function TasksPage() {
           ['healthy', 'degraded'].includes(connection.status)
             ? apiRequest(`/api/v1/integrations/${connection.id}/jira/sync`, {
                 method: 'POST',
-                body: JSON.stringify({ scope: 'full' }),
+                body: JSON.stringify(
+                  dateRange
+                    ? {
+                        scope: 'weekly',
+                        periodStart: dateRange[0],
+                        periodEnd: dateRange[1],
+                      }
+                    : { scope: 'full' },
+                ),
               })
             : apiRequest(`/api/v1/integrations/${connection.id}/test`, { method: 'POST' }),
         ),
@@ -193,7 +201,18 @@ export function TasksPage() {
             预估 {seconds(row.worklog.originalEstimateSeconds)}{' '}
             {fieldSourceTag(row, 'originalEstimateSeconds')}
           </Typography.Text>
-          <Typography.Text>已耗 {seconds(row.worklog.timeSpentSeconds)}</Typography.Text>
+          {dateRange ? (
+            <>
+              <Typography.Text>
+                区间已填 {seconds(row.worklog.periodTimeSpentSeconds)}
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                Jira 累计 {seconds(row.worklog.timeSpentSeconds)}
+              </Typography.Text>
+            </>
+          ) : (
+            <Typography.Text>累计已耗 {seconds(row.worklog.timeSpentSeconds)}</Typography.Text>
+          )}
         </Space>
       ),
     },
@@ -328,7 +347,7 @@ export function TasksPage() {
             allowClear
             value={dateRange ? [dayjs(dateRange[0]), dayjs(dateRange[1])] : null}
             format="YYYY-MM-DD"
-            placeholder={['到期日期开始', '到期日期结束']}
+            placeholder={['任务范围开始', '任务范围结束']}
             onChange={(dates) => {
               setDateRange(
                 dates?.[0] && dates[1]

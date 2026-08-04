@@ -566,6 +566,31 @@ function Test-OcrText([object]$Snapshot, [string[]]$Names) {
     return $false
 }
 
+function Get-RecipientOcrAliases([string]$Recipient) {
+    $aliases = [System.Collections.Generic.List[string]]::new()
+    $normalized = Normalize-Text $Recipient
+    if ($normalized) { $aliases.Add($normalized) }
+    # DingTalk's group tag can render its Latin prefix and Chinese name as separate OCR
+    # fragments. A sufficiently long CJK-only alias is safe only when it is also bounded by
+    # the "Send to group" heading and Submit button below.
+    $cjk = ([regex]::Matches($Recipient, '[\p{IsCJKUnifiedIdeographs}]') | ForEach-Object Value) -join ''
+    if ($cjk.Length -ge 4 -and -not $aliases.Contains($cjk)) { $aliases.Add($cjk) }
+    return $aliases.ToArray()
+}
+
+function Test-OcrRecipientInSubmitArea([object]$Snapshot, [string]$Recipient, [object]$Submit) {
+    if (-not $Recipient -or -not $Submit) { return -not $Recipient }
+    $heading = Find-OcrHit $Snapshot @('Send to group', '发送到群', '发送到群聊')
+    if (-not $heading -or $heading.Top -ge $Submit.Top) { return $false }
+    $aliases = Get-RecipientOcrAliases $Recipient
+    foreach ($hit in @(Get-OcrHits $Snapshot $aliases)) {
+        if ($hit.Top -gt ($heading.Top - 4) -and $hit.Bottom -lt ($Submit.Top + 4)) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Invoke-WindowPoint([object]$Snapshot, [double]$X, [double]$Y) {
     $screenX = [int]($Snapshot.WindowRect.Left + $X)
     $screenY = [int]($Snapshot.WindowRect.Top + $Y)
@@ -732,10 +757,63 @@ function Open-ReportFormWithOcr([System.Diagnostics.Process]$Process, [object]$R
 
 function Get-OcrInputHint([object]$Snapshot, [object]$LabelHit, [switch]$DateField) {
     $names = if ($DateField) { @('Choose time', '选择时间', '请选择日期') } else { @('Please enter', '请输入') }
-    $candidates = Get-OcrHits $Snapshot $names -Exact | Where-Object {
-        $_.Top -ge ($LabelHit.Bottom - 4) -and $_.Top -le ($LabelHit.Bottom + 150)
-    } | Sort-Object Top, Left
-    return $candidates | Select-Object -First 1
+    foreach ($exactMatch in @($true, $false)) {
+        $candidates = Get-OcrHits $Snapshot $names -Exact:$exactMatch | Where-Object {
+            $_.Top -ge ($LabelHit.Bottom - 4) -and
+            $_.Top -le ($LabelHit.Bottom + 150) -and
+            $_.Right -ge ($LabelHit.Left - 20) -and
+            $_.Left -le ($LabelHit.Right + 520)
+        } | Sort-Object @{
+            Expression = { [Math]::Abs($_.Top - ($LabelHit.Bottom + 42)) }
+        }, Left
+        $candidate = $candidates | Select-Object -First 1
+        if ($candidate) {
+            return [pscustomobject]@{
+                Hit = $candidate
+                ExactMatch = $exactMatch
+            }
+        }
+    }
+    return $null
+}
+
+function Get-OcrInputTarget(
+    [object]$Snapshot,
+    [object]$LabelHit,
+    [object]$Hint,
+    [switch]$DateField,
+    [switch]$AllowInferred
+) {
+    if ($Hint -and $Hint.ExactMatch) {
+        return [pscustomobject]@{
+            Left = $Hint.Hit.Left
+            Top = $Hint.Hit.Top
+            Width = $Hint.Hit.Width
+            Height = $Hint.Hit.Height
+            Inferred = $false
+        }
+    }
+    # Watermarks in the DingTalk report canvas frequently merge with "Please enter" into one
+    # OCR line. Clicking that merged line's bounds is unreliable, so anchor the click to the
+    # field label and the stable editor spacing visible in the real create form.
+    if (-not $Hint -and -not $AllowInferred) { return $null }
+    $targetX = $LabelHit.Left + $(if ($DateField) { 80 } else { 42 })
+    $targetY = $LabelHit.Bottom + 48
+    if (
+        $targetX -lt 0 -or
+        $targetX -gt ($Snapshot.WindowRect.Width * 0.82) -or
+        $targetY -lt 0 -or
+        $targetY -gt ($Snapshot.WindowRect.Height - 28)
+    ) {
+        return $null
+    }
+    return [pscustomobject]@{
+        Left = [double]($targetX - 2)
+        Top = [double]($targetY - 2)
+        Width = 4.0
+        Height = 4.0
+        Inferred = $true
+    }
 }
 
 function Get-CalendarMonthInfo([object]$Snapshot) {
@@ -828,8 +906,8 @@ function Select-OcrCalendarDate([System.Diagnostics.Process]$Process, [DateTime]
     throw 'DINGTALK_DESKTOP_DATE_OUT_OF_RANGE|目标日期超出自动日期控件支持范围'
 }
 
-function Set-OcrInputValue([object]$Snapshot, [object]$Hint, [string]$Value, [switch]$DateField) {
-    Invoke-WindowPoint $Snapshot ($Hint.Left + [Math]::Min(35, $Hint.Width / 2)) ($Hint.Top + ($Hint.Height / 2))
+function Set-OcrInputValue([object]$Snapshot, [object]$Target, [string]$Value, [switch]$DateField) {
+    Invoke-WindowPoint $Snapshot ($Target.Left + [Math]::Min(35, $Target.Width / 2)) ($Target.Top + ($Target.Height / 2))
     if ($DateField) {
         try { $requestedDate = [DateTime]::ParseExact($Value, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture) }
         catch { throw 'DINGTALK_DESKTOP_REPORT_DATE_INVALID|周报填写日期必须是 yyyy-MM-dd' }
@@ -838,9 +916,49 @@ function Set-OcrInputValue([object]$Snapshot, [object]$Hint, [string]$Value, [sw
         return
     }
     [System.Windows.Forms.Clipboard]::SetText($Value)
+    Set-Variable -Name ClipboardUsed -Scope Script -Value $true
     [System.Windows.Forms.SendKeys]::SendWait('^a')
     [System.Windows.Forms.SendKeys]::SendWait('^v')
     Start-Sleep -Milliseconds 180
+}
+
+function Test-OcrInputChanged(
+    [object]$BeforeSnapshot,
+    [object]$AfterSnapshot,
+    [string]$Value,
+    [string[]]$Labels,
+    [switch]$HadHint
+) {
+    $firstLine = @($Value -split '\r?\n' | Where-Object { $_.Trim() }) | Select-Object -First 1
+    if ($firstLine) {
+        $normalized = Normalize-Text $firstLine
+        $candidateLength = [Math]::Min(18, $normalized.Length)
+        if ($candidateLength -ge 2 -and (Test-OcrText $AfterSnapshot @($normalized.Substring(0, $candidateLength)))) {
+            return $true
+        }
+    }
+    $currentLabel = Find-OcrHit $AfterSnapshot $Labels
+    if ($HadHint -and $currentLabel -and -not (Get-OcrInputHint $AfterSnapshot $currentLabel)) {
+        return $true
+    }
+    # For the coordinate fallback there was no reliable placeholder to compare. Requiring
+    # OCR output to change prevents a wrong click followed by a silent paste and submit.
+    return (Normalize-Text $BeforeSnapshot.Text) -ne (Normalize-Text $AfterSnapshot.Text)
+}
+
+function Assert-SubmitRequestFields([object]$Request) {
+    $values = [ordered]@{
+        reportDate = [string](Get-ConfigValue $Request 'reportDate' '')
+        recentGoals = [string](Get-ConfigValue $Request 'recentGoals' '')
+        weeklyWork = [string](Get-ConfigValue $Request 'weeklyWork' '')
+        nextWeekPlans = [string](Get-ConfigValue $Request 'nextWeekPlans' '')
+        problems = [string](Get-ConfigValue $Request 'problems' '')
+        other = [string](Get-ConfigValue $Request 'other' '')
+    }
+    $missing = @($values.GetEnumerator() | Where-Object { -not $_.Value.Trim() } | ForEach-Object Key)
+    if ($missing.Count -gt 0) {
+        throw "WEEKLY_REPORT_REQUIRED_FIELDS_EMPTY|周报存在空的必填字段，未打开钉钉：$($missing -join '、')"
+    }
 }
 
 function Resolve-FormWithOcr(
@@ -858,6 +976,7 @@ function Resolve-FormWithOcr(
         [string](Get-ConfigValue $Request 'other' '')
     )
     $completed = [System.Collections.Generic.HashSet[int]]::new()
+    $stalledPages = 0
 
     $snapshot = Get-WindowOcrSnapshot $Process
     Invoke-WindowPoint $snapshot ($snapshot.WindowRect.Width * 0.87) ($snapshot.WindowRect.Height * 0.52)
@@ -872,10 +991,18 @@ function Resolve-FormWithOcr(
             $label = Find-OcrHit $snapshot $labels[$index]
             if (-not $label) { continue }
             $hint = Get-OcrInputHint $snapshot $label -DateField:($index -eq 0)
-            if (-not $hint) { continue }
+            $target = Get-OcrInputTarget $snapshot $label $hint -DateField:($index -eq 0) -AllowInferred:$SetValues
+            if (-not $target) { continue }
             if ($SetValues) {
-                Set-OcrInputValue $snapshot $hint $values[$index] -DateField:($index -eq 0)
+                Set-OcrInputValue $snapshot $target $values[$index] -DateField:($index -eq 0)
+                if ($index -ne 0) {
+                    $afterInput = Get-WindowOcrSnapshot $Process
+                    if (-not (Test-OcrInputChanged $snapshot $afterInput $values[$index] $labels[$index] -HadHint:($null -ne $hint))) {
+                        throw "DINGTALK_DESKTOP_INPUT_UNVERIFIED|字段点击并粘贴后页面内容未变化：$($labels[$index][0])"
+                    }
+                }
                 $filledOnThisPass = $true
+                $stalledPages = 0
             }
             $completed.Add($index) | Out-Null
             # Multiline values can expand the form and move every following field. Capture a
@@ -884,6 +1011,13 @@ function Resolve-FormWithOcr(
         }
         if ($completed.Count -eq $labels.Count) { break }
         if ($filledOnThisPass) { continue }
+        $stalledPages += 1
+        if ($stalledPages -ge 3) {
+            $missing = for ($index = 0; $index -lt $labels.Count; $index += 1) {
+                if (-not $completed.Contains($index)) { $labels[$index][0] }
+            }
+            throw "DINGTALK_DESKTOP_FIELD_INPUT_NOT_FOUND|连续 $stalledPages 次未找到可填写控件：$($missing -join '、')"
+        }
         Invoke-WindowPoint $snapshot ($snapshot.WindowRect.Width * 0.87) ($snapshot.WindowRect.Height * 0.75)
         [System.Windows.Forms.SendKeys]::SendWait('{PGDN}')
         Start-Sleep -Milliseconds 350
@@ -904,16 +1038,36 @@ function Resolve-FormWithOcr(
 function Find-RecipientSubmitAreaWithOcr(
     [System.Diagnostics.Process]$Process,
     [string]$Recipient,
-    [int]$TimeoutSeconds
+    [int]$TimeoutSeconds,
+    [System.Windows.Automation.AutomationElement]$Root = $null
 ) {
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
+    $recipientMisses = 0
     do {
         $snapshot = Get-WindowOcrSnapshot $Process
-        $recipientVisible = (-not $Recipient) -or (Test-OcrText $snapshot @($Recipient))
         $submit = Find-OcrHit $snapshot @('Submit', '提交') -Exact
+        $recipientVisible = (-not $Recipient) -or (Test-OcrText $snapshot @($Recipient))
+        if (-not $recipientVisible -and $submit) {
+            $recipientVisible = Test-OcrRecipientInSubmitArea $snapshot $Recipient $submit
+        }
+        if (-not $recipientVisible -and $Root -and $Recipient) {
+            $recipientVisible = $null -ne (Find-NamedElement $Root @($Recipient) -Contains)
+        }
         if ($recipientVisible -and $submit) {
             return [pscustomobject]@{ Snapshot = $snapshot; Submit = $submit; RecipientVisible = $recipientVisible }
         }
+        # Once the submit section is visible, continuing to page down cannot make a
+        # mismatched default group appear. Stop immediately instead of leaving the user
+        # at the bottom of the form with no useful error.
+        if ($submit -and $Recipient -and -not $recipientVisible) {
+            $recipientMisses += 1
+            if ($recipientMisses -ge 3) {
+                throw "DINGTALK_DESKTOP_RECIPIENT_NOT_VISIBLE|已进入提交区域，但连续 $recipientMisses 次未识别到配置的默认群：$Recipient"
+            }
+            Start-Sleep -Milliseconds 450
+            continue
+        }
+        $recipientMisses = 0
         Invoke-WindowPoint $snapshot ($snapshot.WindowRect.Width * 0.87) ($snapshot.WindowRect.Height * 0.78)
         [System.Windows.Forms.SendKeys]::SendWait('{PGDN}')
         Start-Sleep -Milliseconds 350
@@ -1022,6 +1176,7 @@ try {
         if ($requestedRunId -notmatch '^[A-Za-z0-9._-]{1,120}$') {
             throw 'DINGTALK_DESKTOP_RUN_ID_INVALID|提交运行标识格式无效'
         }
+        Assert-SubmitRequestFields $request
     }
     $timeoutSeconds = [int](Get-ConfigValue $request 'timeoutSeconds' 30)
     if ($timeoutSeconds -lt 5 -or $timeoutSeconds -gt 180) { $timeoutSeconds = 30 }
@@ -1034,7 +1189,7 @@ try {
     $observedFields = Resolve-FormWithOcr $context.Process $request -SetValues:($operation -eq 'submit')
     $recipient = [string](Get-ConfigValue $request 'recipientGroupName' '')
     $submitArea = @(
-        Find-RecipientSubmitAreaWithOcr $context.Process $recipient $timeoutSeconds
+        Find-RecipientSubmitAreaWithOcr $context.Process $recipient $timeoutSeconds $context.Root
     ) | Where-Object { $_.PSObject.Properties['RecipientVisible'] } | Select-Object -Last 1
     if (-not $submitArea) {
         throw 'DINGTALK_DESKTOP_SUBMIT_AREA_INVALID|接收群与提交区域识别结果无效'

@@ -15,7 +15,10 @@ import {
   sha256,
 } from '@auto-work/domain';
 import { GitProcessService } from '../../infrastructure/git/git-process.service.js';
-import { RepositoryInspectorService } from '../repositories/repository-inspector.service.js';
+import {
+  repositoryIdentityMatches,
+  RepositoryInspectorService,
+} from '../repositories/repository-inspector.service.js';
 import type {
   GitExecutionResult,
   GitItemPreview,
@@ -159,7 +162,7 @@ export class GitBatchEngineService {
       });
     }
     const identity = await this.inspector.inspect(repository.canonicalPath);
-    if (identity.identityHash !== repository.identityHash) {
+    if (!repositoryIdentityMatches(repository, identity)) {
       throw new DomainError('REPOSITORY_IDENTITY_CHANGED', '仓库身份已变化，必须重新确认', {
         httpStatus: 412,
         suggestedAction: 'reconfirm',

@@ -531,6 +531,7 @@ model Task {
   parentTask               Task?                   @relation("TaskHierarchy", fields: [parentTaskId], references: [id], onDelete: Restrict)
   childTasks               Task[]                  @relation("TaskHierarchy")
   statusEvents             TaskStatusEvent[]
+  worklogs                 TaskWorklog[]
   sourceObservations       TaskSourceObservation[]
   matchedExcelRows         ExcelImportRow[]        @relation("ExcelMatchedTask")
   committedExcelRows       ExcelImportRow[]        @relation("ExcelCommittedTask")
@@ -544,6 +545,26 @@ model Task {
   @@index([connectionId, visibilityState, externalUpdatedAt])
   @@index([parentTaskId])
   @@map("task")
+}
+
+model TaskWorklog {
+  id                String    @id
+  taskId            String    @map("task_id")
+  externalId        String    @map("external_id")
+  authorExternalId  String?   @map("author_external_id")
+  authorName        String?   @map("author_name")
+  isCurrentUser     Boolean   @default(false) @map("is_current_user")
+  startedAt         DateTime  @map("started_at")
+  businessDate      String    @map("business_date")
+  timeSpentSeconds  Int       @map("time_spent_seconds")
+  externalUpdatedAt DateTime? @map("external_updated_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  task              Task      @relation(fields: [taskId], references: [id], onDelete: Restrict)
+
+  @@unique([taskId, externalId])
+  @@index([taskId, isCurrentUser, businessDate])
+  @@map("task_worklog")
 }
 
 model TaskStatusEvent {
