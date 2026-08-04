@@ -139,6 +139,27 @@ describe('六字段周报确定性规则', () => {
     );
   });
 
+  it('仅记录本周期工时时也应生成本周工作', () => {
+    const draft = generateWeeklyReportRuleDraft(
+      input({
+        tasks: [
+          task('worklog-only', {
+            lastObservedAt: '2026-07-01T09:00:00+08:00',
+            timeSpentSeconds: 3_600,
+          }),
+        ],
+      }),
+    );
+
+    const work = draft.fields.weeklyWork.find((block) =>
+      block.sourceRefs.some(
+        (reference) => reference.type === 'task' && reference.id === 'worklog-only',
+      ),
+    );
+    expect(work?.body).toContain('任务 worklog-only');
+    expect(work?.actualHours).toBe(1);
+  });
+
   it('聚合同一任务的多个 Commit，不逐条复制 message，并把失败 Pipeline 放入问题字段', () => {
     const draft = generateWeeklyReportRuleDraft(
       input({

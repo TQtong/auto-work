@@ -247,7 +247,10 @@ function buildWorkBlocks(
     const changedThisWeek =
       changedAt !== null && changedAt >= periodStart && changedAt < periodEndExclusive;
     const observedThisWeek = observedAt >= periodStart && observedAt < periodEndExclusive;
-    if (!changedThisWeek && !observedThisWeek && taskEvidence.length === 0) continue;
+    // Service 层将本周期工时汇总到 timeSpentSeconds；即使 Jira 任务本身没有同步更新，工时也代表本周有实际工作。
+    const workedThisWeek = typeof task.timeSpentSeconds === 'number' && task.timeSpentSeconds > 0;
+    if (!changedThisWeek && !observedThisWeek && !workedThisWeek && taskEvidence.length === 0)
+      continue;
     const evidenceKinds = summarizeEvidenceKinds(taskEvidence);
     const statusText =
       task.normalizedStatus === 'done'
