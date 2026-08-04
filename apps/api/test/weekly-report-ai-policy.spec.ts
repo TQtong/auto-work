@@ -237,6 +237,52 @@ describe('周报 AI 白名单净化与事实校验', () => {
     );
   });
 
+  it('优先使用 Sprint 父级分组，并保留 Jira 父任务与具体子任务层级', () => {
+    const sanitized = sanitizeWeeklyAiInput(
+      input({
+        selectedFields: ['weeklyWork'],
+        tasks: [
+          {
+            ...task(),
+            parentTitle: '运营后台重制密码功能',
+            sprintNames: ['P_uTwin_20260727_HQ_【空间联通交互升级】'],
+            title: '[前端] + [ ] 前端界面开发',
+          },
+        ],
+      }),
+    );
+    const taskSource = sanitized.sanitizedInput.sources.find((source) => source.kind === 'task');
+    const taskRef = sanitized.storedReferences.find((item) => item.sourceType === 'task')!.refId;
+
+    expect(taskSource).toMatchObject({
+      parentTitle: '空间联通交互升级',
+      taskParentTitle: '运营后台重制密码功能',
+      title: '前端界面开发',
+    });
+
+    const result = validateWeeklyAiOutput(
+      JSON.stringify({
+        fields: [
+          {
+            field: 'weeklyWork',
+            paragraphs: [
+              {
+                text: '运营后台重制密码功能——前端界面开发本周持续推进',
+                citations: [taskRef],
+              },
+            ],
+          },
+        ],
+      }),
+      sanitized,
+      baseFields(),
+    );
+
+    expect(result.fieldTexts.weeklyWork).toBe(
+      '【空间联通交互升级】\n1、运营后台重制密码功能——前端界面开发本周持续推进（完成度 50%）',
+    );
+  });
+
   it.each([
     ['AI_OUTPUT_CITATION_UNKNOWN', { citations: ['ref_not_in_this_request'] }],
     ['AI_OUTPUT_NUMBER_UNSUPPORTED', { text: '推进 Alpha 项目 AW-12，已投入 3 小时。' }],

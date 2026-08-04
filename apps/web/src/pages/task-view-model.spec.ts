@@ -65,4 +65,26 @@ describe('任务中心筛选与父任务分组', () => {
       [null, ['orphan-b']],
     ]);
   });
+
+  it('存在 Sprint 父级标记时优先按 Sprint 的【父级】分组', () => {
+    const task = (id: string, parent: TaskSummary['parent']): TaskSummary =>
+      ({
+        id,
+        parent,
+        project: { id: 'project-a', name: 'project-a', jiraProjectKey: null },
+        sprints: [{ id: 'sprint-1', name: 'P_uTwin_20260727_HQ_【空间联通交互升级】' }],
+      }) as TaskSummary;
+
+    const groups = groupTasksByParent([
+      task('child-a', { issueKey: 'PROJ-1', title: '运营后台重制密码功能' }),
+      task('child-b', { issueKey: 'PROJ-2', title: '右键菜单交互优化' }),
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      issueKey: null,
+      title: '空间联通交互升级',
+      tasks: [{ id: 'child-a' }, { id: 'child-b' }],
+    });
+  });
 });

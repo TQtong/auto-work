@@ -104,6 +104,41 @@ describe('六字段周报确定性规则', () => {
     expect(draft.sourceIds.taskIds).toEqual(['1', '2', '3']);
   });
 
+  it('为周报本周工作保留根父级分组，并输出子任务层级和完成度', () => {
+    const draft = generateWeeklyReportRuleDraft(
+      input({
+        tasks: [
+          task('child-1', {
+            title: '[前端] + [ ] 前端界面开发',
+            parentTitle: '运营后台重制密码功能',
+            sprintNames: ['P_uTwin_20260727_HQ_【空间联通交互升级】'],
+            normalizedStatus: 'done',
+          }),
+          task('child-2', {
+            title: '右键菜单重构-分组',
+            parentTitle: '右键菜单交互优化',
+            sprintNames: ['P_uTwin_20260727_HQ_【空间联通交互升级】'],
+            normalizedStatus: 'in_progress',
+            timeSpentSeconds: 3_600,
+          }),
+        ],
+      }),
+    );
+
+    expect(draft.fields.weeklyWork).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: '空间联通交互升级',
+          body: '运营后台重制密码功能——前端界面开发已完成并形成结果（完成度 100%）',
+        }),
+        expect.objectContaining({
+          title: '空间联通交互升级',
+          body: '右键菜单交互优化——右键菜单重构-分组本周持续推进（完成度 50%）',
+        }),
+      ]),
+    );
+  });
+
   it('聚合同一任务的多个 Commit，不逐条复制 message，并把失败 Pipeline 放入问题字段', () => {
     const draft = generateWeeklyReportRuleDraft(
       input({

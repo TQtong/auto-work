@@ -36,12 +36,17 @@ export function groupTasksByParent(tasks: TaskSummary[]) {
     { key: string; issueKey: string | null; title: string; tasks: TaskSummary[] }
   >();
   for (const task of tasks) {
-    const key =
-      task.parent.issueKey ?? `unparented:${task.project?.id ?? task.projectKey ?? 'none'}`;
+    const sprintParentTitle = sprintParentTitleFromTask(task);
+    const key = sprintParentTitle
+      ? `sprint:${task.project?.id ?? task.projectKey ?? 'none'}:${sprintParentTitle}`
+      : (task.parent.issueKey ?? `unparented:${task.project?.id ?? task.projectKey ?? 'none'}`);
     const group = groups.get(key) ?? {
       key,
-      issueKey: task.parent.issueKey,
-      title: task.parent.title ?? (task.parent.issueKey ? '未返回父任务标题' : '无父任务'),
+      issueKey: sprintParentTitle ? null : task.parent.issueKey,
+      title:
+        sprintParentTitle ??
+        task.parent.title ??
+        (task.parent.issueKey ? '未返回父任务标题' : '无父任务'),
       tasks: [],
     };
     group.tasks.push(task);
@@ -52,4 +57,13 @@ export function groupTasksByParent(tasks: TaskSummary[]) {
     if (left.issueKey !== null && right.issueKey === null) return -1;
     return (left.issueKey ?? left.title).localeCompare(right.issueKey ?? right.title, 'zh-CN');
   });
+}
+
+function sprintParentTitleFromTask(task: TaskSummary): string | null {
+  for (const sprint of task.sprints ?? []) {
+    const name = sprint.name ?? '';
+    const match = /【([^】]+)】/u.exec(name);
+    if (match?.[1]?.trim()) return match[1].trim();
+  }
+  return null;
 }

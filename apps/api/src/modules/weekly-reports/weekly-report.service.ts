@@ -1871,6 +1871,24 @@ export class WeeklyReportService {
       },
       include: {
         project: { select: { id: true, name: true } },
+        parentTask: {
+          select: {
+            id: true,
+            issueKey: true,
+            title: true,
+            parentTaskId: true,
+            parentTitle: true,
+            parentTask: {
+              select: {
+                id: true,
+                issueKey: true,
+                title: true,
+                parentTaskId: true,
+                parentTitle: true,
+              },
+            },
+          },
+        },
         statusEvents: { orderBy: { observedAt: 'desc' }, take: 1 },
         sourceObservations: {
           orderBy: { observedAt: 'desc' },
@@ -1888,6 +1906,7 @@ export class WeeklyReportService {
       orderBy: { id: 'asc' },
     });
     const tasks: WeeklyTaskFact[] = taskRows.map((task) => {
+      const rootParent = task.parentTask?.parentTask ?? null;
       const latestObservation = task.sourceObservations[0];
       const observedAt = latestObservation?.observedAt ?? task.lastObservedAt;
       const sourceUnavailable =
@@ -1913,6 +1932,10 @@ export class WeeklyReportService {
         projectName: task.project?.name ?? task.projectKey ?? '未归属项目',
         parentTaskId: task.parentTaskId,
         parentTitle: task.parentTitle,
+        rootParentTaskId: rootParent?.id ?? null,
+        rootParentIssueKey: rootParent?.issueKey ?? null,
+        rootParentTitle: rootParent?.title ?? null,
+        sprintNames: this.sprintNames(task.sprintIdsJson),
         title: task.title,
         normalizedStatus: this.normalizeTaskStatus(task.normalizedStatus),
         priority: task.priority,
@@ -2504,6 +2527,17 @@ export class WeeklyReportService {
           'state' in item &&
           String((item as { state: unknown }).state).toLowerCase() === 'active'),
     );
+  }
+
+  private sprintNames(value: string): string[] {
+    return this.parseArray(value).flatMap((item) => {
+      if (typeof item === 'string') return [item];
+      if (item && typeof item === 'object' && !Array.isArray(item) && 'name' in item) {
+        const name = (item as { name?: unknown }).name;
+        return typeof name === 'string' && name.trim() ? [name.trim()] : [];
+      }
+      return [];
+    });
   }
 
   private parseObject(value: unknown): Record<string, unknown> {

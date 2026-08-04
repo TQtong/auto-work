@@ -15,6 +15,10 @@ export interface WeeklyTaskFact {
   projectName: string;
   parentTaskId?: string | null;
   parentTitle?: string | null;
+  rootParentTaskId?: string | null;
+  rootParentIssueKey?: string | null;
+  rootParentTitle?: string | null;
+  sprintNames?: string[];
   title: string;
   normalizedStatus: WeeklyTaskStatus;
   priority?: string | null;
@@ -252,12 +256,15 @@ function buildWorkBlocks(
           ? '已推进但当前受阻'
           : '本周持续推进';
     const evidenceText = evidenceKinds ? `，关联${evidenceKinds}` : '';
+    const groupTitle = workGroupTitle(task);
+    const workTitle = workItemTitle(task, groupTitle);
+    const completion = weeklyTaskCompletionPercent(task);
     blocks.push(
       makeBlock(
         'weeklyWork',
         task.projectName,
-        taskGroupTitle(task),
-        `${displayTask(task)}：${statusText}${evidenceText}（完成度 ${weeklyTaskCompletionPercent(task)}%）`,
+        groupTitle ?? task.projectName,
+        `${workTitle}${statusText}${evidenceText}（完成度 ${completion}%）`,
         [
           { type: 'task', id: task.id },
           ...taskEvidence.map((item): WeeklyReportSourceRef => ({ type: 'evidence', id: item.id })),
@@ -549,6 +556,34 @@ function displayTask(task: WeeklyTaskFact): string {
 
 function taskGroupTitle(task: WeeklyTaskFact): string {
   return task.parentTitle?.trim() || task.projectName;
+}
+
+export function weeklyTaskGroupTitle(task: WeeklyTaskFact): string | null {
+  const sprintParent = (task.sprintNames ?? [])
+    .map((name) => /【([^】]+)】/u.exec(name)?.[1]?.trim() ?? '')
+    .find(Boolean);
+  return sprintParent || task.rootParentTitle?.trim() || task.parentTitle?.trim() || null;
+}
+
+export function weeklyTaskDisplayTitle(task: WeeklyTaskFact): string {
+  return cleanTaskTitle(task.title);
+}
+
+function workGroupTitle(task: WeeklyTaskFact): string | null {
+  return weeklyTaskGroupTitle(task);
+}
+
+function workItemTitle(task: WeeklyTaskFact, groupTitle: string | null): string {
+  const immediateParent = task.parentTitle?.trim();
+  const cleanedTitle = weeklyTaskDisplayTitle(task);
+  if (groupTitle && immediateParent && groupTitle !== immediateParent) {
+    return `${cleanTaskTitle(immediateParent)}——${cleanedTitle}`;
+  }
+  return cleanedTitle;
+}
+
+function cleanTaskTitle(value: string): string {
+  return value.replace(/^\s*(?:\[[^\]]*\]\s*(?:\+\s*)?)+/u, '').trim();
 }
 
 /**

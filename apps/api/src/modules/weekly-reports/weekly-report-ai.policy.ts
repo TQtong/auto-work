@@ -3,6 +3,8 @@ import { DomainError } from '@auto-work/contracts';
 import {
   requestHash,
   weeklyTaskCompletionPercent,
+  weeklyTaskDisplayTitle,
+  weeklyTaskGroupTitle,
   type WeeklyEvidenceFact,
   type WeeklyManualInput,
   type WeeklyReportField,
@@ -66,6 +68,9 @@ interface WeeklyAiSanitizedSource {
   issueKey?: string;
   projectName?: string;
   parentTitle?: string;
+  taskParentTitle?: string;
+  rootParentTitle?: string;
+  sprintNames?: string[];
   title?: string;
   status?: string;
   text?: string;
@@ -186,15 +191,25 @@ export function sanitizeWeeklyAiInput(
     const actualHours = secondsToHours(task.timeSpentSeconds);
     const estimatedHours = secondsToHours(task.originalEstimateSeconds);
     const remainingHours = secondsToHours(task.remainingEstimateSeconds);
+    const groupTitle = weeklyTaskGroupTitle(task);
     const source: WeeklyAiSanitizedSource = {
       refId: referenceId(),
       kind: 'task',
       ...(task.issueKey ? { issueKey: requireSafeText(task.issueKey, 'task.issueKey') } : {}),
       projectName: requireSafeText(task.projectName, 'task.projectName'),
+      ...(groupTitle ? { parentTitle: requireSafeText(groupTitle, 'task.groupTitle') } : {}),
       ...(task.parentTitle
-        ? { parentTitle: requireSafeText(task.parentTitle, 'task.parentTitle') }
+        ? { taskParentTitle: requireSafeText(task.parentTitle, 'task.parentTitle') }
         : {}),
-      title: requireSafeText(task.title, 'task.title'),
+      ...(task.rootParentTitle
+        ? { rootParentTitle: requireSafeText(task.rootParentTitle, 'task.rootParentTitle') }
+        : {}),
+      ...(task.sprintNames?.length
+        ? {
+            sprintNames: task.sprintNames.map((name) => requireSafeText(name, 'task.sprintNames')),
+          }
+        : {}),
+      title: requireSafeText(weeklyTaskDisplayTitle(task), 'task.title'),
       status: task.normalizedStatus,
       completionPercent: weeklyTaskCompletionPercent(task),
       ...(task.plannedStartDate ? { plannedStartDate: task.plannedStartDate } : {}),
@@ -317,8 +332,9 @@ export function buildWeeklyAiGenerationRequest(policy: WeeklyAiSanitizationResul
     'projectName 只能填写当前段落 citations 明确支持的项目名；没有项目依据时必须返回 null。',
     'weeklyWork 必须每个 Jira 子任务单独返回一个段落，并填写该任务来源中的 parentTitle 与 completionPercent；不得把不同父任务合并成一个段落。',
     'completionPercent 是完成度百分比，必须原样使用任务来源给出的 0 到 100 整数；正文应说明任务进展，但系统会统一追加“完成度 N%”。',
-    'parentTitle 必须原样使用任务来源中的父任务名称；没有父任务时返回 null，系统会按父任务或项目名称分组展示。',
-    '周报正文必须以 Jira 任务标题 title 为主体，不要输出工单号、refId 或 [citation:...] 等内部引用标记。',
+    'parentTitle 是已解析的周报分组名称，优先取 sprintNames 中的【父级】，其次取根父任务和 Jira 父任务；必须原样返回，没有时返回 null。',
+    'taskParentTitle 是当前 Jira 任务的直接父任务；当它与 parentTitle 不同时，正文必须保留 taskParentTitle——title 层级。',
+    '周报正文必须以已清理前缀的 Jira 任务标题 title 为主体，不要输出工单号、refId 或 [citation:...] 等内部引用标记。',
     '某个栏位没有可靠的新内容或无法安全优化时，返回该栏位但将 paragraphs 设为空数组，系统会保留原文；不要填写“暂无”“无明确问题”等占位句。',
     '不得输出动作、工具调用、代码、HTML、Markdown 代码块、源码、diff、凭证或附件内容。',
     '不要使用带数字的列表编号；无法可靠改写时，应忠实复述已引用的原文。',

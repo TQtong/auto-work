@@ -159,6 +159,9 @@ export function TasksPage() {
               父任务：{row.parent.issueKey} · {row.parent.title}
             </Typography.Text>
           )}
+          {sprintParentTitle(row) && (
+            <Typography.Text type="secondary">父级：{sprintParentTitle(row)}</Typography.Text>
+          )}
           {row.sprints.length > 0 && (
             <Typography.Text type="secondary">
               Sprint：
@@ -373,7 +376,7 @@ export function TasksPage() {
             onChange={(value) => setViewMode(value as 'list' | 'parent')}
             options={[
               { value: 'list', label: '任务列表' },
-              { value: 'parent', label: '按父任务分组' },
+              { value: 'parent', label: '按父级分组' },
             ]}
           />
           {viewMode === 'list' ? (
@@ -466,6 +469,14 @@ export function TasksPage() {
 function currentWorkWeekRange(now = dayjs()): [string, string] {
   const monday = now.subtract((now.day() + 6) % 7, 'day');
   return [monday.format('YYYY-MM-DD'), monday.add(4, 'day').format('YYYY-MM-DD')];
+}
+
+function sprintParentTitle(task: TaskSummary): string | null {
+  for (const sprint of task.sprints ?? []) {
+    const match = /【([^】]+)】/u.exec(sprint.name ?? '');
+    if (match?.[1]?.trim()) return match[1].trim();
+  }
+  return null;
 }
 
 function TaskDetailView({ task }: { task: TaskDetail }) {
