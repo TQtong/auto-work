@@ -10,17 +10,16 @@ export interface JiraQueryInput {
   plannedStartFieldId?: string | null;
 }
 
+const WEEKLY_ORDER = 'ORDER BY project ASC, updated ASC, key ASC';
+
 /** 只从结构化范围生成 JQL，调用方不能把任意文本拼接进后台同步查询。 */
 export function buildJiraQuery(input: JiraQueryInput): string {
   switch (input.scope) {
     case 'default':
       return 'assignee = currentUser() ORDER BY updated DESC';
     case 'weekly': {
-      const { start, end } = assertPeriod(input.periodStart, input.periodEnd, '周报', true);
-      const plannedStart = input.plannedStartFieldId
-        ? ` OR (${assertFieldId(input.plannedStartFieldId)} >= "${start}" AND ${input.plannedStartFieldId} <= "${end}")`
-        : '';
-      return `assignee = currentUser() AND ((updated >= "${start}" AND updated <= "${end}") OR (duedate >= "${start}" AND duedate <= "${end}")${plannedStart}) ORDER BY project ASC, updated ASC, key ASC`;
+      const { worklogged, scheduled } = weeklyClauses(input);
+      return `(${worklogged} OR ${scheduled}) ${WEEKLY_ORDER}`;
     }
     case 'quarterly': {
       const { start, end } = assertPeriod(input.periodStart, input.periodEnd, '季度', false);
@@ -33,6 +32,32 @@ export function buildJiraQuery(input: JiraQueryInput): string {
     case 'full':
       return 'assignee = currentUser() ORDER BY updated ASC, key ASC';
   }
+}
+
+/**
+ * 周范围同步必须先读取本人实际填写的工时，再用本人排期补充。
+ * 调用方按 issueKey 合并两个查询；这样来源优先级清晰，重复任务只处理一次。
+ */
+export function buildJiraQueryPlan(input: JiraQueryInput): string[] {
+  if (input.scope !== 'weekly') return [buildJiraQuery(input)];
+  const { worklogged, scheduled } = weeklyClauses(input);
+  return [`${worklogged} ${WEEKLY_ORDER}`, `${scheduled} ${WEEKLY_ORDER}`];
+}
+
+function weeklyClauses(input: JiraQueryInput): { worklogged: string; scheduled: string } {
+  const { start, end } = assertPeriod(input.periodStart, input.periodEnd, '周报', true);
+  const scheduleParts = [`(duedate >= "${start}" AND duedate <= "${end}")`];
+  if (input.plannedStartFieldId) {
+    const plannedStart = assertFieldId(input.plannedStartFieldId);
+    scheduleParts.push(
+      `(${plannedStart} >= "${start}" AND ${plannedStart} <= "${end}")`,
+      `(${plannedStart} <= "${end}" AND duedate >= "${start}")`,
+    );
+  }
+  return {
+    worklogged: `(worklogAuthor = currentUser() AND worklogDate >= "${start}" AND worklogDate <= "${end}")`,
+    scheduled: `(assignee = currentUser() AND (${scheduleParts.join(' OR ')}))`,
+  };
 }
 
 function jiraDateTime(value: Date): string {

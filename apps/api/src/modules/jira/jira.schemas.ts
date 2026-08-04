@@ -81,4 +81,31 @@ export const jiraSearchPageSchema = z
   })
   .passthrough();
 
+export const jiraWorklogSchema = z
+  .object({
+    id: z.union([z.string(), z.number()]).transform(String),
+    author: z
+      .object({
+        accountId: nullableString,
+        key: nullableString,
+        name: nullableString,
+        displayName: nullableString,
+      })
+      .passthrough(),
+    started: z.string().min(1),
+    updated: nullableString,
+    timeSpentSeconds: z.number().int().nonnegative(),
+  })
+  .passthrough();
+
+export const jiraWorklogPageSchema = z
+  .object({
+    startAt: z.number().int().nonnegative().optional(),
+    maxResults: z.number().int().positive().optional(),
+    total: z.number().int().nonnegative().optional(),
+    worklogs: z.array(jiraWorklogSchema),
+  })
+  .passthrough();
+
 export type JiraIssue = z.infer<typeof jiraIssueSchema>;
+export type JiraWorklog = z.infer<typeof jiraWorklogSchema>;

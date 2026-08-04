@@ -511,6 +511,240 @@ export class WeeklyReportService {
     };
   }
 
+  public async refreshSourceSnapshotForAi(
+    reportId: string,
+    baseVersionId: string,
+    reportVersion: number,
+    context: RequestContext,
+    now = new Date(),
+  ): Promise<{ baseVersionId: string; reportVersion: number; refreshed: boolean }> {
+    const report = await this.prisma.weeklyReport.findFirst({
+      where: { id: reportId, ownerProfileId: this.sessions.currentProfileId, archivedAt: null },
+      include: {
+        currentVersion: { include: { sourceSnapshot: true, sourceLinks: true } },
+        currentConfirmation: true,
+      },
+    });
+    if (!report?.currentVersion) {
+      throw new DomainError(errorCodes.notFound, '周报或当前版本不存在', { httpStatus: 404 });
+    }
+    this.assertEditBase(report, baseVersionId, reportVersion);
+
+    const current = report.currentVersion;
+    const previousSnapshot = current.sourceSnapshot;
+    const jiraQueryValue = this.parseObject(previousSnapshot.jiraQueryJson);
+    const freshnessValue = this.parseObject(previousSnapshot.freshnessPolicyJson);
+    const previousEvidence = this.parseArray(previousSnapshot.evidenceFactsJson) as Array<{
+      relationStatus?: unknown;
+    }>;
+    const manualInputs = (
+      this.parseArray(previousSnapshot.manualInputsJson) as WeeklyManualInput[]
+    ).map((item) => ({ ...item, pinned: item.pinned ?? false }));
+    const stringArray = (value: unknown): string[] =>
+      Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+    const refreshInput: GenerateWeeklyReportInput = {
+      periodStart: report.periodStart,
+      periodEnd: report.periodEnd,
+      reportDate: report.reportDate,
+      timezone: 'Asia/Shanghai',
+      ...(previousSnapshot.calendarVersionId
+        ? { calendarVersionId: previousSnapshot.calendarVersionId }
+        : {}),
+      freshnessPolicy: {
+        mode: freshnessValue.mode === 'allow_stale' ? 'allow_stale' : 'require_fresh',
+        taskMaxAgeMinutes:
+          typeof freshnessValue.taskMaxAgeMinutes === 'number'
+            ? freshnessValue.taskMaxAgeMinutes
+            : 1_440,
+        evidenceMaxAgeMinutes:
+          typeof freshnessValue.evidenceMaxAgeMinutes === 'number'
+            ? freshnessValue.evidenceMaxAgeMinutes
+            : 1_440,
+      },
+      includeUnconfirmedEvidence: previousEvidence.some(
+        (item) => item.relationStatus === 'suggested',
+      ),
+      aiProviderConfigId: null,
+      manualInputs,
+      jiraQuery: {
+        connectionIds: stringArray(jiraQueryValue.connectionIds),
+        projectIds: stringArray(jiraQueryValue.projectIds),
+      },
+      templateMappingVersionId: current.templateMappingVersionId,
+      existingReportPolicy: 'create_version',
+    };
+    const period = {
+      periodStart: report.periodStart,
+      periodEnd: report.periodEnd,
+      reportDate: report.reportDate,
+    };
+    const sources = await this.collectSources(refreshInput, period, now);
+    const previousFactsHash = requestHash({
+      jiraSyncRunIds: this.parseArray(previousSnapshot.jiraSyncRunIdsJson),
+      tasks: this.parseArray(previousSnapshot.taskFactsJson),
+      evidence: previousEvidence,
+    });
+    const refreshedFactsHash = requestHash({
+      jiraSyncRunIds: sources.jiraSyncRunIds,
+      tasks: sources.tasks,
+      evidence: sources.evidence,
+    });
+    if (previousFactsHash === refreshedFactsHash) {
+      return { baseVersionId: current.id, reportVersion: report.version, refreshed: false };
+    }
+
+    const jiraQuery = {
+      scope: 'weekly',
+      currentUser: true,
+      visibility: 'visible',
+      connectionIds: refreshInput.jiraQuery.connectionIds ?? [],
+      projectIds: refreshInput.jiraQuery.projectIds ?? [],
+    };
+    const sourceContentHash = requestHash({
+      period,
+      timezone: report.timezone,
+      calendarVersionId: previousSnapshot.calendarVersionId,
+      profile: {
+        id: previousSnapshot.profileId,
+        version: previousSnapshot.profileVersion,
+      },
+      jiraQuery,
+      jiraSyncRunIds: sources.jiraSyncRunIds,
+      tasks: sources.tasks,
+      evidence: sources.evidence,
+      manualInputs,
+      freshnessPolicy: refreshInput.freshnessPolicy,
+      includeUnconfirmedEvidence: refreshInput.includeUnconfirmedEvidence,
+      ruleVersion: previousSnapshot.ruleVersion,
+      templateMappingVersionId: current.templateMappingVersionId,
+      sanitizationPolicyVersion: previousSnapshot.sanitizationPolicyVersion,
+    });
+    const generationHash = requestHash({
+      kind: 'ai_source_refresh_v1',
+      reportId,
+      previousSnapshotId: previousSnapshot.id,
+      sourceContentHash,
+    });
+
+    return this.prisma.$transaction(async (tx) => {
+      const snapshot = await tx.reportSourceSnapshot.create({
+        data: {
+          id: newId(),
+          reportId,
+          ...period,
+          timezone: report.timezone,
+          calendarVersionId: previousSnapshot.calendarVersionId,
+          profileId: previousSnapshot.profileId,
+          profileVersion: previousSnapshot.profileVersion,
+          jiraQueryJson: JSON.stringify(jiraQuery),
+          jiraSyncRunIdsJson: JSON.stringify(sources.jiraSyncRunIds),
+          taskFactsJson: JSON.stringify(sources.tasks),
+          evidenceFactsJson: JSON.stringify(sources.evidence),
+          manualInputsJson: JSON.stringify(manualInputs),
+          freshnessPolicyJson: JSON.stringify(refreshInput.freshnessPolicy),
+          warningsJson: previousSnapshot.warningsJson,
+          ruleVersion: previousSnapshot.ruleVersion,
+          templateMappingVersionId: current.templateMappingVersionId,
+          sanitizationPolicyVersion: previousSnapshot.sanitizationPolicyVersion,
+          generationHash,
+          sourceContentHash,
+          createdBy: this.sessions.currentProfileId,
+        },
+      });
+      const latest = await tx.weeklyReportVersion.aggregate({
+        where: { reportId },
+        _max: { versionNo: true },
+      });
+      const version = await tx.weeklyReportVersion.create({
+        data: {
+          id: newId(),
+          reportId,
+          versionNo: (latest._max.versionNo ?? 0) + 1,
+          origin: 'manual',
+          parentVersionId: current.id,
+          reportDateText: current.reportDateText,
+          recentGoalsText: current.recentGoalsText,
+          weeklyWorkText: current.weeklyWorkText,
+          nextWeekPlansText: current.nextWeekPlansText,
+          problemsText: current.problemsText,
+          otherText: current.otherText,
+          fieldsJson: current.fieldsJson,
+          warningsJson: current.warningsJson,
+          attachmentsJson: current.attachmentsJson,
+          recipientScopeJson: current.recipientScopeJson,
+          templateMappingVersionId: current.templateMappingVersionId,
+          scheduleAt: current.scheduleAt,
+          sourceSnapshotId: snapshot.id,
+          contentHash: requestHash({
+            fields: fieldsFromVersion(current),
+            structured: this.parseObject(current.fieldsJson),
+            warnings: this.parseArray(current.warningsJson),
+            attachments: this.parseArray(current.attachmentsJson),
+            recipientScope: this.parseObject(current.recipientScopeJson),
+            templateMappingVersionId: current.templateMappingVersionId,
+            scheduleAt: current.scheduleAt?.toISOString() ?? null,
+            sourceContentHash,
+          }),
+          changeSummaryJson: JSON.stringify({
+            kind: 'source_refreshed_before_ai',
+            previousSnapshotId: previousSnapshot.id,
+            sourceContentHash,
+          }),
+          createdBy: this.sessions.currentProfileId,
+        },
+      });
+      await this.copySourceLinks(tx, current, version.id, this.parseObject(current.fieldsJson), []);
+      await this.invalidateConfirmation(
+        tx,
+        report.currentConfirmation,
+        'AI 生成前重新采集了最新任务来源',
+      );
+      const changed = await tx.weeklyReport.updateMany({
+        where: {
+          id: reportId,
+          version: report.version,
+          currentVersionId: current.id,
+          archivedAt: null,
+        },
+        data: {
+          currentVersionId: version.id,
+          confirmedVersionId: null,
+          currentConfirmationId: null,
+          status: 'editing',
+          logDeliveryState: 'not_started',
+          robotDeliveryState: 'not_started',
+          version: { increment: 1 },
+        },
+      });
+      if (changed.count !== 1) this.throwVersionConflict();
+      await this.audit.recordInTransaction(tx, {
+        actorId: this.sessions.currentProfileId,
+        action: 'weekly_report.source_refreshed_before_ai',
+        targetType: 'weekly_report',
+        targetId: reportId,
+        correlationId: context.correlationId,
+        outcome: 'succeeded',
+        before: {
+          aggregateVersion: report.version,
+          versionId: current.id,
+          sourceSnapshotId: previousSnapshot.id,
+        },
+        after: {
+          aggregateVersion: report.version + 1,
+          versionId: version.id,
+          sourceSnapshotId: snapshot.id,
+          taskCount: sources.tasks.length,
+        },
+        clientSessionHash: this.security.sessionHash(context.sessionId),
+      });
+      return {
+        baseVersionId: version.id,
+        reportVersion: report.version + 1,
+        refreshed: true,
+      };
+    });
+  }
+
   public async archive(reportId: string, context: RequestContext) {
     const archivedAt = new Date();
     return this.prisma.$transaction(async (tx) => {
@@ -1604,15 +1838,27 @@ export class WeeklyReportService {
     const taskRows = await this.prisma.task.findMany({
       where: {
         primarySource: 'jira',
-        isCurrentUser: true,
         visibilityState: 'visible',
         OR: [
-          { plannedStartDate: { gte: period.periodStart, lte: period.periodEnd } },
-          { dueDate: { gte: period.periodStart, lte: period.periodEnd } },
           {
-            AND: [
-              { plannedStartDate: { lte: period.periodEnd } },
-              { dueDate: { gte: period.periodStart } },
+            worklogs: {
+              some: {
+                isCurrentUser: true,
+                businessDate: { gte: period.periodStart, lte: period.periodEnd },
+              },
+            },
+          },
+          {
+            isCurrentUser: true,
+            OR: [
+              { plannedStartDate: { gte: period.periodStart, lte: period.periodEnd } },
+              { dueDate: { gte: period.periodStart, lte: period.periodEnd } },
+              {
+                AND: [
+                  { plannedStartDate: { lte: period.periodEnd } },
+                  { dueDate: { gte: period.periodStart } },
+                ],
+              },
             ],
           },
         ],
@@ -1631,6 +1877,13 @@ export class WeeklyReportService {
           take: 1,
           include: { syncRun: { select: { id: true, status: true } } },
         },
+        worklogs: {
+          where: {
+            isCurrentUser: true,
+            businessDate: { gte: period.periodStart, lte: period.periodEnd },
+          },
+          select: { timeSpentSeconds: true },
+        },
       },
       orderBy: { id: 'asc' },
     });
@@ -1648,6 +1901,10 @@ export class WeeklyReportService {
           ? 'fresh'
           : 'stale';
       const lastStatus = task.statusEvents[0];
+      const periodTimeSpentSeconds = task.worklogs.reduce(
+        (total, worklog) => total + worklog.timeSpentSeconds,
+        0,
+      );
       // 这里只构造明确白名单字段；Jira description、源码、diff 和附件从未进入快照对象。
       return {
         id: task.id,
@@ -1661,11 +1918,11 @@ export class WeeklyReportService {
         priority: task.priority,
         plannedStartDate: task.plannedStartDate,
         dueDate: task.dueDate,
-        timeSpentSeconds: task.timeSpentSeconds,
+        timeSpentSeconds: task.worklogs.length > 0 ? periodTimeSpentSeconds : null,
         originalEstimateSeconds: task.originalEstimateSeconds,
         remainingEstimateSeconds: task.remainingEstimateSeconds,
         sprintActive: this.hasActiveSprint(task.sprintIdsJson),
-        isCurrentUser: task.isCurrentUser,
+        isCurrentUser: task.isCurrentUser || task.worklogs.length > 0,
         visibilityState: this.normalizeVisibility(task.visibilityState),
         lastObservedAt: task.lastObservedAt.toISOString(),
         statusChangedAt: lastStatus
@@ -1904,13 +2161,42 @@ export class WeeklyReportService {
     return Object.fromEntries(
       weeklyFields.map((field) => [
         field,
-        fields[field]
-          .map((block) => block.body.trim())
-          .filter(Boolean)
-          .map((text, index) => `${index + 1}、${text.replace(/^\s*\d+[、.．]\s*/u, '')}`)
-          .join('\n'),
+        field === 'weeklyWork'
+          ? this.renderGroupedWeeklyWork(fields[field])
+          : this.renderNumberedBlocks(fields[field]),
       ]),
     ) as Record<WeeklyReportField, string>;
+  }
+
+  private renderGroupedWeeklyWork(blocks: WeeklyReportBlock[]): string {
+    const standalone = blocks.filter(
+      (block) => !block.sourceRefs.some((reference) => reference.type === 'task'),
+    );
+    const groups = new Map<string, { title: string; blocks: WeeklyReportBlock[] }>();
+    for (const block of blocks) {
+      if (!block.sourceRefs.some((reference) => reference.type === 'task')) continue;
+      const title = block.title.trim() || block.projectName?.trim() || '未归属父任务';
+      const key = `${block.projectName ?? ''}:${title}`;
+      const group = groups.get(key) ?? { title, blocks: [] };
+      group.blocks.push(block);
+      groups.set(key, group);
+    }
+    return [
+      ...(standalone.length > 0 ? [this.renderNumberedBlocks(standalone)] : []),
+      ...[...groups.values()].map(
+        (group) => `【${group.title}】\n${this.renderNumberedBlocks(group.blocks)}`,
+      ),
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+  }
+
+  private renderNumberedBlocks(blocks: WeeklyReportBlock[]): string {
+    return blocks
+      .map((block) => block.body.trim())
+      .filter(Boolean)
+      .map((text, index) => `${index + 1}、${text.replace(/^\s*\d+[、.．]\s*/u, '')}`)
+      .join('\n');
   }
 
   private buildSourceLinks(

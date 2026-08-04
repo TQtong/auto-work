@@ -824,7 +824,7 @@ export class WeeklyReportAiService {
           id,
           field: field.field,
           projectName: paragraph.projectName,
-          title: paragraph.projectName ?? 'AI 建议',
+          title: paragraph.parentTitle ?? paragraph.projectName ?? 'AI 建议',
           body: paragraph.text,
           sourceRefs: paragraph.citations.map((citation) => {
             const reference = references.get(citation)!;

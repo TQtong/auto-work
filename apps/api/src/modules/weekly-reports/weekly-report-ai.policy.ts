@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { DomainError } from '@auto-work/contracts';
 import {
   requestHash,
+  weeklyTaskCompletionPercent,
   type WeeklyEvidenceFact,
   type WeeklyManualInput,
   type WeeklyReportField,
@@ -9,7 +10,7 @@ import {
 } from '@auto-work/domain';
 import { z } from 'zod';
 
-export const weeklyAiPromptTemplateVersion = 'weekly-report-ai-prompt-v3';
+export const weeklyAiPromptTemplateVersion = 'weekly-report-ai-prompt-v4';
 export const weeklyAiSanitizationPolicyVersion = 'weekly-report-ai-sanitization-v2';
 export const weeklyAiMaximumRawOutputBytes = 2 * 1024 * 1024;
 
@@ -54,6 +55,8 @@ interface WeeklyAiValidationReference extends WeeklyAiStoredReference {
   numbers: Set<string>;
   projectNames: Set<string>;
   sourceTexts: Set<string>;
+  parentTitle: string | null;
+  completionPercent: number | null;
 }
 
 interface WeeklyAiSanitizedSource {
@@ -62,6 +65,7 @@ interface WeeklyAiSanitizedSource {
   field?: WeeklyReportField;
   issueKey?: string;
   projectName?: string;
+  parentTitle?: string;
   title?: string;
   status?: string;
   text?: string;
@@ -72,6 +76,7 @@ interface WeeklyAiSanitizedSource {
   actualHours?: number;
   estimatedHours?: number;
   remainingHours?: number;
+  completionPercent?: number;
   pipelineStatus?: string;
   url?: string;
 }
@@ -102,6 +107,8 @@ export interface WeeklyAiSanitizationResult {
 
 export interface WeeklyAiValidatedParagraph {
   projectName: string | null;
+  parentTitle: string | null;
+  completionPercent: number | null;
   text: string;
   citations: string[];
 }
@@ -119,6 +126,8 @@ export interface WeeklyAiValidatedOutput {
 const outputParagraphSchema = z
   .object({
     projectName: z.string().trim().min(1).max(200).nullable(),
+    parentTitle: z.string().trim().min(1).max(500).nullable().optional().default(null),
+    completionPercent: z.number().int().min(0).max(100).nullable().optional().default(null),
     text: z.string().trim().min(1).max(20_000),
     citations: z.array(z.string().trim().min(8).max(100)).min(1).max(20),
   })
@@ -182,8 +191,12 @@ export function sanitizeWeeklyAiInput(
       kind: 'task',
       ...(task.issueKey ? { issueKey: requireSafeText(task.issueKey, 'task.issueKey') } : {}),
       projectName: requireSafeText(task.projectName, 'task.projectName'),
+      ...(task.parentTitle
+        ? { parentTitle: requireSafeText(task.parentTitle, 'task.parentTitle') }
+        : {}),
       title: requireSafeText(task.title, 'task.title'),
       status: task.normalizedStatus,
+      completionPercent: weeklyTaskCompletionPercent(task),
       ...(task.plannedStartDate ? { plannedStartDate: task.plannedStartDate } : {}),
       ...(task.dueDate ? { dueDate: task.dueDate } : {}),
       ...(actualHours !== undefined ? { actualHours } : {}),
@@ -285,6 +298,8 @@ export function sanitizeWeeklyAiInput(
       numbers: extractNumbers(source),
       projectNames: source.projectName ? new Set([normalizeFact(source.projectName)]) : new Set(),
       sourceTexts: extractProjectSupportingTexts(source),
+      parentTitle: source.parentTitle ?? null,
+      completionPercent: source.completionPercent ?? null,
     });
   }
 }
@@ -300,6 +315,9 @@ export function buildWeeklyAiGenerationRequest(policy: WeeklyAiSanitizationResul
     '必须以 base_field 中的当前周报正文为基础进行优化，保留其中已有的有效信息；任务和证据只用于补充或改善表达。',
     '每个段落必须给出至少一个 citations 引用；日期、数字、工单号和项目名必须被所引引用直接支持。',
     'projectName 只能填写当前段落 citations 明确支持的项目名；没有项目依据时必须返回 null。',
+    'weeklyWork 必须每个 Jira 子任务单独返回一个段落，并填写该任务来源中的 parentTitle 与 completionPercent；不得把不同父任务合并成一个段落。',
+    'completionPercent 是完成度百分比，必须原样使用任务来源给出的 0 到 100 整数；正文应说明任务进展，但系统会统一追加“完成度 N%”。',
+    'parentTitle 必须原样使用任务来源中的父任务名称；没有父任务时返回 null，系统会按父任务或项目名称分组展示。',
     '周报正文必须以 Jira 任务标题 title 为主体，不要输出工单号、refId 或 [citation:...] 等内部引用标记。',
     '某个栏位没有可靠的新内容或无法安全优化时，返回该栏位但将 paragraphs 设为空数组，系统会保留原文；不要填写“暂无”“无明确问题”等占位句。',
     '不得输出动作、工具调用、代码、HTML、Markdown 代码块、源码、diff、凭证或附件内容。',
@@ -384,12 +402,53 @@ export function validateWeeklyAiOutput(
         // 本地直接丢弃无依据标签，正文仍必须继续通过逐项事实与引用校验。
         paragraph.projectName = null;
       }
+      const citedParentTitles = [
+        ...new Set(
+          cited
+            .map((reference) => reference.parentTitle)
+            .filter((value): value is string => Boolean(value)),
+        ),
+      ];
+      if (
+        paragraph.parentTitle &&
+        !citedParentTitles.some(
+          (parentTitle) => normalizeFact(parentTitle) === normalizeFact(paragraph.parentTitle!),
+        )
+      ) {
+        paragraph.parentTitle = null;
+      }
+      if (!paragraph.parentTitle && citedParentTitles.length === 1) {
+        paragraph.parentTitle = citedParentTitles[0] ?? null;
+      }
+      const citedCompletionPercents = [
+        ...new Set(
+          cited
+            .map((reference) => reference.completionPercent)
+            .filter((value): value is number => value !== null),
+        ),
+      ];
+      if (
+        paragraph.completionPercent !== null &&
+        !citedCompletionPercents.includes(paragraph.completionPercent)
+      ) {
+        throw outputError('AI_OUTPUT_COMPLETION_UNSUPPORTED', 'AI 输出中的完成度没有对应任务依据');
+      }
+      if (paragraph.completionPercent === null && citedCompletionPercents.length === 1) {
+        paragraph.completionPercent = citedCompletionPercents[0] ?? null;
+      }
       assertFactsSupported('issue', extractIssueKeys(paragraph.text), cited);
       assertFactsSupported('date', extractDates(paragraph.text), cited);
       assertFactsSupported('number', extractNumbers(paragraph.text), cited);
       paragraph.text = cleanWeeklyAiTaskKeys(paragraph.text);
       if (!paragraph.text) {
         throw outputError('AI_OUTPUT_TEXT_EMPTY', 'AI 输出清理内部标记后正文为空');
+      }
+      if (
+        field.field === 'weeklyWork' &&
+        paragraph.completionPercent !== null &&
+        !/完成度\s*\d{1,3}\s*%/u.test(paragraph.text)
+      ) {
+        paragraph.text = `${paragraph.text.replace(/[。；;]\s*$/u, '')}（完成度 ${paragraph.completionPercent}%）`;
       }
     }
   }
@@ -401,14 +460,37 @@ export function validateWeeklyAiOutput(
     );
     field.paragraphs = meaningful;
     if (meaningful.length > 0) {
-      fieldTexts[field.field] = meaningful
-        .map(
-          (paragraph, index) => `${index + 1}、${paragraph.text.replace(/^\s*\d+[、.．]\s*/u, '')}`,
-        )
-        .join('\n');
+      fieldTexts[field.field] =
+        field.field === 'weeklyWork'
+          ? renderGroupedWeeklyAiWork(meaningful)
+          : meaningful
+              .map(
+                (paragraph, index) =>
+                  `${index + 1}、${paragraph.text.replace(/^\s*\d+[、.．]\s*/u, '')}`,
+              )
+              .join('\n');
     }
   }
   return { fields: result.data.fields, fieldTexts };
+}
+
+function renderGroupedWeeklyAiWork(paragraphs: WeeklyAiValidatedParagraph[]): string {
+  const groups = new Map<string, WeeklyAiValidatedParagraph[]>();
+  for (const paragraph of paragraphs) {
+    const title = paragraph.parentTitle ?? paragraph.projectName ?? '未归属父任务';
+    groups.set(title, [...(groups.get(title) ?? []), paragraph]);
+  }
+  return [...groups.entries()]
+    .map(
+      ([title, items]) =>
+        `【${title}】\n${items
+          .map(
+            (paragraph, index) =>
+              `${index + 1}、${paragraph.text.replace(/^\s*\d+[、.．]\s*/u, '')}`,
+          )
+          .join('\n')}`,
+    )
+    .join('\n\n');
 }
 
 function normalizeWeeklyAiOutputShape(
@@ -447,8 +529,15 @@ function normalizeWeeklyAiFieldShape(value: unknown): unknown {
   return {
     ...value,
     paragraphs: paragraphs.map((paragraph) => {
-      if (!isPlainObject(paragraph) || Object.hasOwn(paragraph, 'projectName')) return paragraph;
-      return { ...paragraph, projectName: null };
+      if (!isPlainObject(paragraph)) return paragraph;
+      return {
+        ...paragraph,
+        projectName: Object.hasOwn(paragraph, 'projectName') ? paragraph.projectName : null,
+        parentTitle: Object.hasOwn(paragraph, 'parentTitle') ? paragraph.parentTitle : null,
+        completionPercent: Object.hasOwn(paragraph, 'completionPercent')
+          ? paragraph.completionPercent
+          : null,
+      };
     }),
   };
 }
@@ -508,6 +597,12 @@ function weeklyAiOutputJsonSchema(selectedFields: WeeklyReportField[]): Record<s
                 type: 'object',
                 properties: {
                   projectName: { type: ['string', 'null'], maxLength: 200 },
+                  parentTitle: { type: ['string', 'null'], maxLength: 500 },
+                  completionPercent: {
+                    type: ['integer', 'null'],
+                    minimum: 0,
+                    maximum: 100,
+                  },
                   text: { type: 'string', minLength: 1, maxLength: 20_000 },
                   citations: {
                     type: 'array',
@@ -516,7 +611,7 @@ function weeklyAiOutputJsonSchema(selectedFields: WeeklyReportField[]): Record<s
                     items: { type: 'string', minLength: 8, maxLength: 100 },
                   },
                 },
-                required: ['projectName', 'text', 'citations'],
+                required: ['projectName', 'parentTitle', 'completionPercent', 'text', 'citations'],
                 additionalProperties: false,
               },
             },
@@ -655,7 +750,7 @@ function extractNumbers(value: unknown): Set<string> {
 
 function extractProjectSupportingTexts(source: WeeklyAiSanitizedSource): Set<string> {
   return new Set(
-    [source.projectName, source.title, source.text]
+    [source.projectName, source.parentTitle, source.title, source.text]
       .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
       .map(normalizeFact),
   );

@@ -49,14 +49,17 @@ describe('六字段周报确定性规则', () => {
         tasks: [
           task('1', {
             normalizedStatus: 'done',
+            parentTitle: '贵安漏洞修复',
             sprintActive: false,
             statusChangedAt: '2026-07-17T00:30:00+08:00',
           }),
           task('2', {
             normalizedStatus: 'blocked',
+            parentTitle: '编辑器交互调整',
             priority: 'highest',
             dueDate: '2026-07-16',
             timeSpentSeconds: 14_400,
+            originalEstimateSeconds: 57_600,
             remainingEstimateSeconds: 28_800,
           }),
           task('3', {
@@ -85,6 +88,12 @@ describe('六字段周报确定性规则', () => {
     expect(
       draft.fields.weeklyWork.find((block) => block.body.includes('任务 2'))?.actualHours,
     ).toBe(4);
+    const completedWork = draft.fields.weeklyWork.find((block) => block.body.includes('任务 1'));
+    expect(completedWork?.title).toBe('贵安漏洞修复');
+    expect(completedWork?.body).toContain('完成度 100%');
+    const blockedWork = draft.fields.weeklyWork.find((block) => block.body.includes('任务 2'));
+    expect(blockedWork?.title).toBe('编辑器交互调整');
+    expect(blockedWork?.body).toContain('完成度 50%');
     expect(draft.fields.nextWeekPlans.some((block) => block.body.includes('任务 3'))).toBe(false);
     expect(draft.fields.nextWeekPlans.find((block) => block.body.includes('任务 2'))).toMatchObject(
       {

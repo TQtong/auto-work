@@ -196,7 +196,24 @@ export class WeeklyReportController {
       key,
       { id, ...input },
       request,
-      (recordId) => this.ai.createSuggestion(id, input, this.context(request, recordId)),
+      async (recordId) => {
+        const context = this.context(request, recordId);
+        const refreshed = await this.reports.refreshSourceSnapshotForAi(
+          id,
+          input.baseVersionId,
+          input.reportVersion,
+          context,
+        );
+        return this.ai.createSuggestion(
+          id,
+          {
+            ...input,
+            baseVersionId: refreshed.baseVersionId,
+            reportVersion: refreshed.reportVersion,
+          },
+          context,
+        );
+      },
     );
   }
 

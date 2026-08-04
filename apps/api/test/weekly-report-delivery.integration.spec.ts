@@ -136,6 +136,31 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     ).toMatchObject({ logDeliveryState: 'submitted' });
   });
 
+  it('rejects an empty required field before opening DingTalk', async () => {
+    const fixture = await seedConfirmedReport({ desktop: true, emptyWeeklyWork: true });
+    const desktopSubmit = vi.fn();
+    const runtime = createRuntime(vi.fn(), vi.fn(), undefined, desktopSubmit);
+    const idempotency = await seedIdempotency(fixture.suffix, 'desktop-empty-required-field');
+
+    await expect(
+      runtime.service.submitLog(
+        fixture.reportId,
+        {
+          confirmationId: fixture.confirmationId,
+          confirmedVersionId: fixture.versionId,
+          recipientScopeHash: recipientHash,
+          reportVersion: fixture.reportVersion,
+        },
+        context(idempotency),
+      ),
+    ).rejects.toMatchObject({
+      code: 'WEEKLY_REPORT_REQUIRED_FIELDS_EMPTY',
+      options: { details: { missingFields: ['weeklyWork'] } },
+    });
+    expect(desktopSubmit).not.toHaveBeenCalled();
+    expect(await prisma.deliveryIntent.count({ where: { reportId: fixture.reportId } })).toBe(0);
+  });
+
   it('rejects a desktop delivery when the frozen recipient differs from the configured default group', async () => {
     const fixture = await seedConfirmedReport({
       desktop: true,
@@ -792,6 +817,66 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     ).rejects.toMatchObject({ code: 'DINGTALK_LOG_FAILURE_FACT_REQUIRED' });
   });
 
+  it('历史 unknown 属于旧确认时仍阻止新确认创建第二份正式日志', async () => {
+    const fixture = await seedConfirmedReport();
+    const oldConfirmationId = `delivery-old-confirmation-${fixture.suffix}`;
+    const oldIdempotency = await seedIdempotency(fixture.suffix, 'old-unknown-intent');
+    await prisma.weeklyReportConfirmation.create({
+      data: {
+        id: oldConfirmationId,
+        reportId: fixture.reportId,
+        versionId: fixture.versionId,
+        reportAggregateVersion: 1,
+        contentHash: '8'.repeat(64),
+        templateMappingVersionId: (
+          await prisma.weeklyReport.findUniqueOrThrow({ where: { id: fixture.reportId } })
+        ).templateMappingVersionId!,
+        warningAcknowledgementsJson: '[]',
+        recipientScopeHash: recipientHash,
+        attachmentsHash: emptyAttachmentsHash,
+        status: 'invalidated',
+        confirmedBy: 'local-user',
+        invalidatedAt: new Date(),
+        invalidationReason: '测试历史未知交付',
+      },
+    });
+    await prisma.deliveryIntent.create({
+      data: {
+        id: `delivery-old-unknown-${fixture.suffix}`,
+        reportId: fixture.reportId,
+        confirmationId: oldConfirmationId,
+        confirmedVersionId: fixture.versionId,
+        connectionId: fixture.logConnectionId,
+        channel: 'dingtalk_log',
+        idempotencyRecordId: oldIdempotency,
+        requestHash: '7'.repeat(64),
+        status: 'unknown',
+        lastErrorCode: 'DINGTALK_DESKTOP_SUBMISSION_RESULT_UNKNOWN',
+        lastErrorSummary: '旧提交结果未知',
+        recoveryStatus: 'pending',
+      },
+    });
+    const runtime = createRuntime(vi.fn(), vi.fn());
+    const nextIdempotency = await seedIdempotency(fixture.suffix, 'blocked-by-old-unknown');
+
+    await expect(
+      runtime.service.submitLog(
+        fixture.reportId,
+        {
+          confirmationId: fixture.confirmationId,
+          confirmedVersionId: fixture.versionId,
+          recipientScopeHash: recipientHash,
+          reportVersion: fixture.reportVersion,
+        },
+        context(nextIdempotency),
+      ),
+    ).rejects.toMatchObject({
+      code: 'DINGTALK_DELIVERY_REVIEW_REQUIRED',
+      options: { suggestedAction: 'manual_review' },
+    });
+    expect(await prisma.deliveryIntent.count({ where: { reportId: fixture.reportId } })).toBe(1);
+  });
+
   it('未知结果只在六字段唯一匹配时恢复成功，并保留原尝试的 unknown 事实', async () => {
     const fixture = await seedConfirmedReport();
     const createReport = vi.fn().mockRejectedValue(
@@ -1153,12 +1238,17 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       sessionHash: () => 'delivery-session-hash',
     } as unknown as LocalSecurityService;
     const notificationLedger = new WeeklyReportNotificationLedgerService(prismaService);
+    const desktopClient = {
+      assertReady: vi.fn().mockResolvedValue(undefined),
+      submit: desktopSubmit,
+    } as unknown as DingTalkDesktopClient;
     const service = new WeeklyReportDeliveryService(
       prismaService,
       sessions,
       audit,
       security,
       notificationLedger,
+      desktopClient,
     );
     const notifications = new WeeklyReportNotificationService(
       prismaService,
@@ -1176,7 +1266,6 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       listReports,
     } as unknown as DingTalkLogClient;
     const robotClient = { sendText } as unknown as DingTalkRobotClient;
-    const desktopClient = { submit: desktopSubmit } as unknown as DingTalkDesktopClient;
     const vault = {
       get: vi.fn((reference: string) =>
         Promise.resolve(
@@ -1252,6 +1341,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
     expiredMapping?: boolean;
     desktop?: boolean;
     desktopRecipientGroupName?: string;
+    emptyWeeklyWork?: boolean;
     warnings?: Array<Record<string, unknown>>;
     severeRiskCodes?: string[];
     quietWindowMinutes?: number;
@@ -1418,7 +1508,7 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
         origin: 'rule',
         reportDateText: '2026-07-18',
         recentGoalsText: '完成迭代目标',
-        weeklyWorkText: '仅正式日志可见的完整工作正文',
+        weeklyWorkText: options?.emptyWeeklyWork ? '' : '仅正式日志可见的完整工作正文',
         nextWeekPlansText: '继续交付',
         problemsText: '暂无',
         otherText: '无',

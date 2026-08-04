@@ -7,7 +7,7 @@ import {
   type Task,
 } from '@prisma/client';
 import { DomainError, type NormalizedTaskStatus } from '@auto-work/contracts';
-import { buildJiraQuery, newId, requestHash } from '@auto-work/domain';
+import { buildJiraQueryPlan, newId, requestHash } from '@auto-work/domain';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import { JiraApiClient, type JiraCredential } from './jira-api.client.js';
 import {
@@ -15,6 +15,7 @@ import {
   type JiraFieldMappings,
   type NormalizedJiraTask,
 } from './jira-task-normalizer.js';
+import type { JiraWorklog } from './jira.schemas.js';
 
 const MAX_PAGES = 500;
 
@@ -86,7 +87,7 @@ export class JiraSyncService {
     const updatedFloor = cursor.lastUpdatedAt
       ? new Date(cursor.lastUpdatedAt.getTime() - cursor.overlapSeconds * 1_000)
       : new Date(0);
-    const jql = buildJiraQuery({
+    const jqlPlan = buildJiraQueryPlan({
       scope: request.scope,
       ...(request.periodStart ? { periodStart: request.periodStart } : {}),
       ...(request.periodEnd ? { periodEnd: request.periodEnd } : {}),
@@ -94,7 +95,7 @@ export class JiraSyncService {
       plannedStartFieldId: mappings.plannedStartDate,
     });
     const fields = this.requestedFields(mappings, parserRules);
-    const queryHash = requestHash({ jql, fields, mappingVersionId: mapping.id });
+    const queryHash = requestHash({ jqlPlan, fields, mappingVersionId: mapping.id });
     const counts: SyncCounts = { pages: 0, read: 0, created: 0, updated: 0, unchanged: 0 };
     const seenIssueKeys = new Set<string>();
     let maxTuple: { updatedAt: Date; issueKey: string } | null = null;
@@ -115,84 +116,100 @@ export class JiraSyncService {
     try {
       const method = this.searchMethod(capabilities);
       const maxResults = this.pageSize(config);
-      let startAt = 0;
-      let paginationCompleted = false;
-      const visitedStarts = new Set<number>();
-      for (let pageIndex = 0; pageIndex < MAX_PAGES; pageIndex += 1) {
-        if (visitedStarts.has(startAt)) {
-          throw new DomainError('JIRA_PAGINATION_LOOP', 'Jira 分页起点形成循环', {
-            httpStatus: 502,
-          });
-        }
-        visitedStarts.add(startAt);
-        const page = await this.client.searchPage({
-          baseUrl: connection.baseUrl,
-          credential,
-          jql,
-          fields,
-          startAt,
-          maxResults,
-          method,
-        });
-        const actualStart = page.startAt ?? startAt;
-        if (actualStart < startAt) {
-          throw new DomainError('JIRA_PAGINATION_REGRESSED', 'Jira 分页起点倒退', {
-            httpStatus: 502,
-          });
-        }
-        if (page.issues.length === 0) {
-          if (page.total !== undefined && actualStart < page.total) {
-            throw new DomainError('JIRA_PAGINATION_EMPTY_PAGE', 'Jira 在总数结束前返回空页', {
+      for (const [queryIndex, jql] of jqlPlan.entries()) {
+        let startAt = 0;
+        let paginationCompleted = false;
+        const visitedStarts = new Set<number>();
+        for (let pageIndex = 0; pageIndex < MAX_PAGES; pageIndex += 1) {
+          if (visitedStarts.has(startAt)) {
+            throw new DomainError('JIRA_PAGINATION_LOOP', 'Jira 分页起点形成循环', {
               httpStatus: 502,
-              retryable: true,
             });
           }
-          paginationCompleted = true;
-          break;
-        }
-        const normalized = page.issues.map((issue) =>
-          normalizeJiraIssue({
-            issue,
-            mappings,
-            statusMappings,
-            currentIdentity: identity,
-            parentFallbackFieldId:
-              typeof parserRules.parentFallbackFieldId === 'string'
-                ? parserRules.parentFallbackFieldId
-                : null,
-          }),
-        );
-        for (const task of normalized) {
-          seenIssueKeys.add(task.issueKey);
-          const outcome = await this.saveTask(connection.id, mapping, run.id, task);
-          counts[outcome] += 1;
-          if (
-            !maxTuple ||
-            task.externalUpdatedAt > maxTuple.updatedAt ||
-            (task.externalUpdatedAt.getTime() === maxTuple.updatedAt.getTime() &&
-              task.issueKey.localeCompare(maxTuple.issueKey) > 0)
-          ) {
-            maxTuple = { updatedAt: task.externalUpdatedAt, issueKey: task.issueKey };
+          visitedStarts.add(startAt);
+          const page = await this.client.searchPage({
+            baseUrl: connection.baseUrl,
+            credential,
+            jql,
+            fields,
+            startAt,
+            maxResults,
+            method,
+          });
+          const actualStart = page.startAt ?? startAt;
+          if (actualStart < startAt) {
+            throw new DomainError('JIRA_PAGINATION_REGRESSED', 'Jira 分页起点倒退', {
+              httpStatus: 502,
+            });
           }
+          if (page.issues.length === 0) {
+            if (page.total !== undefined && actualStart < page.total) {
+              throw new DomainError('JIRA_PAGINATION_EMPTY_PAGE', 'Jira 在总数结束前返回空页', {
+                httpStatus: 502,
+                retryable: true,
+              });
+            }
+            paginationCompleted = true;
+            break;
+          }
+          const normalized = page.issues.map((issue) =>
+            normalizeJiraIssue({
+              issue,
+              mappings,
+              statusMappings,
+              currentIdentity: identity,
+              parentFallbackFieldId:
+                typeof parserRules.parentFallbackFieldId === 'string'
+                  ? parserRules.parentFallbackFieldId
+                  : null,
+            }),
+          );
+          let uniqueRead = 0;
+          for (const task of normalized) {
+            // 周范围的第二个排期查询可能再次命中工时任务；实际工时优先，只同步一次。
+            if (seenIssueKeys.has(task.issueKey)) continue;
+            seenIssueKeys.add(task.issueKey);
+            uniqueRead += 1;
+            const saved = await this.saveTask(connection.id, mapping, run.id, task);
+            counts[saved.outcome] += 1;
+            await this.syncCurrentUserWorklogs({
+              taskId: saved.taskId,
+              issueKey: task.issueKey,
+              baseUrl: connection.baseUrl,
+              credential,
+              identity,
+              maxResults,
+            });
+            if (
+              !maxTuple ||
+              task.externalUpdatedAt > maxTuple.updatedAt ||
+              (task.externalUpdatedAt.getTime() === maxTuple.updatedAt.getTime() &&
+                task.issueKey.localeCompare(maxTuple.issueKey) > 0)
+            ) {
+              maxTuple = { updatedAt: task.externalUpdatedAt, issueKey: task.issueKey };
+            }
+          }
+          counts.pages += 1;
+          counts.read += uniqueRead;
+          const queryProgress =
+            page.total && page.total > 0
+              ? Math.min(1, (actualStart + page.issues.length) / page.total)
+              : Math.min(1, (pageIndex + 1) / MAX_PAGES);
+          await input.reportProgress(
+            Math.min(95, Math.round(((queryIndex + queryProgress) / jqlPlan.length) * 95)),
+          );
+          const nextStart = actualStart + page.issues.length;
+          if (page.total !== undefined && nextStart >= page.total) {
+            paginationCompleted = true;
+            break;
+          }
+          startAt = nextStart;
         }
-        counts.pages += 1;
-        counts.read += normalized.length;
-        await input.reportProgress(
-          page.total && page.total > 0
-            ? Math.min(95, Math.round(((actualStart + normalized.length) / page.total) * 95))
-            : Math.min(95, Math.round(((pageIndex + 1) / MAX_PAGES) * 95)),
-        );
-        const nextStart = actualStart + page.issues.length;
-        if (page.total !== undefined && nextStart >= page.total) {
-          paginationCompleted = true;
-          break;
+        if (!paginationCompleted) {
+          throw new DomainError('JIRA_PAGINATION_LIMIT', 'Jira 分页超过安全上限', {
+            httpStatus: 502,
+          });
         }
-        startAt = nextStart;
-      }
-      if (!paginationCompleted) {
-        throw new DomainError('JIRA_PAGINATION_LIMIT', 'Jira 分页超过安全上限', {
-          httpStatus: 502,
-        });
       }
       await this.linkParents(connection.id);
       if (request.scope === 'full') {
@@ -201,6 +218,7 @@ export class JiraSyncService {
             connectionId: connection.id,
             primarySource: 'jira',
             issueKey: { notIn: [...seenIssueKeys] },
+            worklogs: { none: { isCurrentUser: true } },
           },
           data: { visibilityState: 'out_of_scope', version: { increment: 1 } },
         });
@@ -287,7 +305,7 @@ export class JiraSyncService {
     mapping: FieldMappingVersion,
     runId: string,
     value: NormalizedJiraTask,
-  ): Promise<'created' | 'updated' | 'unchanged'> {
+  ): Promise<{ outcome: 'created' | 'updated' | 'unchanged'; taskId: string }> {
     return this.prisma.$transaction(async (tx) => {
       const existing = await tx.task.findUnique({
         where: { connectionId_issueKey: { connectionId, issueKey: value.issueKey } },
@@ -435,8 +453,168 @@ export class JiraSyncService {
           observedAt,
         );
       }
-      return existing ? (unchanged ? 'unchanged' : 'updated') : 'created';
+      return {
+        outcome: existing ? (unchanged ? 'unchanged' : 'updated') : 'created',
+        taskId: task.id,
+      };
     });
+  }
+
+  private async syncCurrentUserWorklogs(input: {
+    taskId: string;
+    issueKey: string;
+    baseUrl: string;
+    credential: JiraCredential;
+    identity: { id: string; username: string | null; name: string | null };
+    maxResults: number;
+  }): Promise<void> {
+    const worklogs = new Map<
+      string,
+      {
+        externalId: string;
+        authorExternalId: string | null;
+        authorName: string | null;
+        startedAt: Date;
+        businessDate: string;
+        timeSpentSeconds: number;
+        externalUpdatedAt: Date | null;
+      }
+    >();
+    let startAt = 0;
+    let paginationCompleted = false;
+    const visitedStarts = new Set<number>();
+    for (let pageIndex = 0; pageIndex < MAX_PAGES; pageIndex += 1) {
+      if (visitedStarts.has(startAt)) {
+        throw new DomainError('JIRA_WORKLOG_PAGINATION_LOOP', 'Jira 工时分页起点形成循环', {
+          httpStatus: 502,
+        });
+      }
+      visitedStarts.add(startAt);
+      const page = await this.client.worklogPage({
+        baseUrl: input.baseUrl,
+        credential: input.credential,
+        issueKey: input.issueKey,
+        startAt,
+        maxResults: input.maxResults,
+      });
+      const actualStart = page.startAt ?? startAt;
+      if (actualStart < startAt) {
+        throw new DomainError('JIRA_WORKLOG_PAGINATION_REGRESSED', 'Jira 工时分页起点倒退', {
+          httpStatus: 502,
+        });
+      }
+      if (page.worklogs.length === 0) {
+        if (page.total !== undefined && actualStart < page.total) {
+          throw new DomainError(
+            'JIRA_WORKLOG_PAGINATION_EMPTY_PAGE',
+            'Jira 在工时总数结束前返回空页',
+            { httpStatus: 502, retryable: true },
+          );
+        }
+        paginationCompleted = true;
+        break;
+      }
+      for (const worklog of page.worklogs) {
+        if (!this.isCurrentUserWorklog(worklog, input.identity)) continue;
+        const normalized = this.normalizeWorklog(worklog, input.issueKey);
+        worklogs.set(normalized.externalId, normalized);
+      }
+      const nextStart = actualStart + page.worklogs.length;
+      if (page.total !== undefined && nextStart >= page.total) {
+        paginationCompleted = true;
+        break;
+      }
+      startAt = nextStart;
+    }
+    if (!paginationCompleted) {
+      throw new DomainError('JIRA_WORKLOG_PAGINATION_LIMIT', 'Jira 工时分页超过安全上限', {
+        httpStatus: 502,
+      });
+    }
+
+    const values = [...worklogs.values()];
+    await this.prisma.$transaction([
+      ...values.map((worklog) =>
+        this.prisma.taskWorklog.upsert({
+          where: {
+            taskId_externalId: { taskId: input.taskId, externalId: worklog.externalId },
+          },
+          create: {
+            id: newId(),
+            taskId: input.taskId,
+            ...worklog,
+            isCurrentUser: true,
+          },
+          update: { ...worklog, isCurrentUser: true },
+        }),
+      ),
+      this.prisma.taskWorklog.deleteMany({
+        where: {
+          taskId: input.taskId,
+          isCurrentUser: true,
+          ...(values.length > 0
+            ? { externalId: { notIn: values.map((value) => value.externalId) } }
+            : {}),
+        },
+      }),
+    ]);
+  }
+
+  private isCurrentUserWorklog(
+    worklog: JiraWorklog,
+    identity: { id: string; username: string | null; name: string | null },
+  ): boolean {
+    const identityCandidates = new Set(
+      [identity.id, identity.username, identity.name]
+        .filter((value): value is string => Boolean(value))
+        .map((value) => value.toLocaleLowerCase()),
+    );
+    return [
+      worklog.author.accountId,
+      worklog.author.key,
+      worklog.author.name,
+      worklog.author.displayName,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .some((value) => identityCandidates.has(value.toLocaleLowerCase()));
+  }
+
+  private normalizeWorklog(worklog: JiraWorklog, issueKey: string) {
+    const startedAt = new Date(worklog.started);
+    const businessDate = worklog.started.slice(0, 10);
+    const businessDateValue = /^\d{4}-\d{2}-\d{2}$/u.test(businessDate)
+      ? new Date(`${businessDate}T00:00:00.000Z`)
+      : null;
+    if (
+      Number.isNaN(startedAt.getTime()) ||
+      !businessDateValue ||
+      Number.isNaN(businessDateValue.getTime()) ||
+      businessDateValue.toISOString().slice(0, 10) !== businessDate
+    ) {
+      throw new DomainError(
+        'JIRA_WORKLOG_DATE_INVALID',
+        `Jira 任务 ${issueKey} 的工时开始日期无效`,
+        { httpStatus: 502 },
+      );
+    }
+    const externalUpdatedAt = worklog.updated ? new Date(worklog.updated) : null;
+    if (externalUpdatedAt && Number.isNaN(externalUpdatedAt.getTime())) {
+      throw new DomainError(
+        'JIRA_WORKLOG_UPDATED_INVALID',
+        `Jira 任务 ${issueKey} 的工时更新时间无效`,
+        { httpStatus: 502 },
+      );
+    }
+    return {
+      externalId: worklog.id,
+      authorExternalId:
+        worklog.author.accountId ?? worklog.author.key ?? worklog.author.name ?? null,
+      authorName: worklog.author.displayName ?? worklog.author.name ?? null,
+      startedAt,
+      businessDate,
+      timeSpentSeconds: worklog.timeSpentSeconds,
+      externalUpdatedAt,
+    };
   }
 
   private async observeJiraProvenance(

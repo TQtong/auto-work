@@ -7,6 +7,7 @@ import {
   canNotifyFormalLogFailure,
   currentLogDeliveryIntent,
   eligibleSevereRiskWarnings,
+  latestUnresolvedLogDeliveryIntent,
 } from './weekly-report-delivery-view-model.js';
 
 describe('周报交付恢复视图模型', () => {
@@ -19,6 +20,29 @@ describe('周报交付恢复视图模型', () => {
     const current = intent({ id: 'current', confirmationId: 'confirmation-current' });
     expect(currentLogDeliveryIntent([oldFailure, current], 'confirmation-current')).toBe(current);
     expect(currentLogDeliveryIntent([oldFailure], 'confirmation-current')).toBeNull();
+  });
+
+  it('保留最新的历史未知交付事实供页面告警和防重复门禁使用', () => {
+    const older = intent({
+      id: 'older-unknown',
+      confirmationId: 'confirmation-old',
+      status: 'unknown',
+      updatedAt: '2026-07-18T00:00:00.000Z',
+    });
+    const latest = intent({
+      id: 'latest-review',
+      confirmationId: 'confirmation-newer',
+      status: 'needs_review',
+      updatedAt: '2026-07-19T00:00:00.000Z',
+    });
+    const resolved = intent({
+      id: 'resolved',
+      status: 'failed',
+      updatedAt: '2026-07-20T00:00:00.000Z',
+    });
+
+    expect(latestUnresolvedLogDeliveryIntent([older, resolved, latest])).toBe(latest);
+    expect(latestUnresolvedLogDeliveryIntent([resolved])).toBeNull();
   });
 
   it('unknown 正式日志只允许查询或人工裁决，绝不出现直接重试', () => {

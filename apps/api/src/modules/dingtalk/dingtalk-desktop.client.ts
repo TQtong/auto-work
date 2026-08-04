@@ -9,6 +9,15 @@ import { newId } from '@auto-work/domain';
 import { z } from 'zod';
 
 const execFileAsync = promisify(execFile);
+const BRIDGE_HEARTBEAT_MAX_AGE_MS = 15_000;
+
+const bridgeHeartbeatSchema = z
+  .object({
+    version: z.literal(1),
+    processId: z.number().int().positive(),
+    updatedAt: z.string().datetime({ offset: true }),
+  })
+  .strict();
 
 export const dingTalkDesktopConfigSchema = z
   .object({
@@ -65,6 +74,46 @@ export interface DingTalkDesktopSubmission {
 
 @Injectable()
 export class DingTalkDesktopClient {
+  public async assertReady(
+    platform: NodeJS.Platform = process.platform,
+    bridgeRoot = process.env.AUTO_WORK_DINGTALK_DESKTOP_BRIDGE_DIR,
+    now = Date.now(),
+  ): Promise<void> {
+    if (platform === 'win32') return;
+    if (!bridgeRoot) {
+      throw new DomainError(
+        'DINGTALK_DESKTOP_BRIDGE_REQUIRED',
+        '当前运行在 Docker/Linux 中，必须启动 Windows 钉钉桌面桥接程序',
+        { httpStatus: 503, retryable: true, suggestedAction: 'reconfigure' },
+      );
+    }
+
+    let heartbeat: unknown;
+    try {
+      heartbeat = JSON.parse(await readFile(join(bridgeRoot, 'heartbeat.json'), 'utf8'));
+    } catch {
+      throw new DomainError(
+        'DINGTALK_DESKTOP_BRIDGE_UNAVAILABLE',
+        'Windows 钉钉桌面桥接未运行，或 Docker 无法访问桥接目录',
+        { httpStatus: 503, retryable: true, suggestedAction: 'reconfigure' },
+      );
+    }
+    const parsed = bridgeHeartbeatSchema.safeParse(heartbeat);
+    const heartbeatAt = parsed.success ? Date.parse(parsed.data.updatedAt) : Number.NaN;
+    if (
+      !parsed.success ||
+      !Number.isFinite(heartbeatAt) ||
+      heartbeatAt > now + BRIDGE_HEARTBEAT_MAX_AGE_MS ||
+      now - heartbeatAt > BRIDGE_HEARTBEAT_MAX_AGE_MS
+    ) {
+      throw new DomainError(
+        'DINGTALK_DESKTOP_BRIDGE_UNAVAILABLE',
+        'Windows 钉钉桌面桥接心跳已失效，请恢复桥接后再提交',
+        { httpStatus: 503, retryable: true, suggestedAction: 'reconfigure' },
+      );
+    }
+  }
+
   public async probe(config: DingTalkDesktopConfig): Promise<DingTalkDesktopRunnerResult> {
     return this.run({ operation: 'probe', ...config });
   }
@@ -156,13 +205,8 @@ export class DingTalkDesktopClient {
     timeoutMs: number,
   ): Promise<unknown> {
     const bridgeRoot = process.env.AUTO_WORK_DINGTALK_DESKTOP_BRIDGE_DIR;
-    if (!bridgeRoot) {
-      throw new DomainError(
-        'DINGTALK_DESKTOP_BRIDGE_REQUIRED',
-        '当前运行在 Docker/Linux 中，必须启动 Windows 钉钉桌面桥接程序',
-        { retryable: false, suggestedAction: 'reconfigure' },
-      );
-    }
+    await this.assertReady(process.platform, bridgeRoot);
+    if (!bridgeRoot) throw new Error('Bridge root must exist after readiness validation.');
     const requestRoot = join(bridgeRoot, 'requests');
     const responseRoot = join(bridgeRoot, 'responses');
     await mkdir(requestRoot, { recursive: true });
@@ -171,9 +215,18 @@ export class DingTalkDesktopClient {
     const temporaryPath = join(requestRoot, `.${id}.tmp`);
     const requestPath = join(requestRoot, `${id}.json`);
     const responsePath = join(responseRoot, `${id}.json`);
-    await writeFile(temporaryPath, JSON.stringify(request), { encoding: 'utf8', mode: 0o600 });
+    const requestedAt = Date.now();
+    const deadline = requestedAt + timeoutMs;
+    await writeFile(
+      temporaryPath,
+      JSON.stringify({
+        ...request,
+        bridgeRequestedAt: new Date(requestedAt).toISOString(),
+        bridgeExpiresAt: new Date(deadline).toISOString(),
+      }),
+      { encoding: 'utf8', mode: 0o600 },
+    );
     await rename(temporaryPath, requestPath);
-    const deadline = Date.now() + timeoutMs;
     try {
       while (Date.now() < deadline) {
         const response = await readFile(responsePath, 'utf8').catch(() => null);

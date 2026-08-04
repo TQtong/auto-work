@@ -6,7 +6,10 @@ import { newId } from '@auto-work/domain';
 import type { GitSnapshot, Prisma, Project, Repository } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/database/prisma.service.js';
 import { deriveGitLabFreshness } from '../gitlab/gitlab-freshness.js';
-import { RepositoryInspectorService } from './repository-inspector.service.js';
+import {
+  repositoryIdentityMatches,
+  RepositoryInspectorService,
+} from './repository-inspector.service.js';
 import type { DiscoveryWarning, RepositoryIdentity } from './repository.types.js';
 
 type RepositoryViewSource = Repository & {
@@ -88,7 +91,7 @@ export class RepositoryService {
       throw new DomainError('REPOSITORY_DISABLED', '仓库已移出本机白名单', { httpStatus: 409 });
     }
     const identity = await this.inspector.inspect(repository.canonicalPath);
-    if (identity.identityHash !== repository.identityHash) {
+    if (!repositoryIdentityMatches(repository, identity)) {
       await this.prisma.repository.update({
         where: { id: repository.id },
         data: {
@@ -160,7 +163,7 @@ export class RepositoryService {
       );
     }
     const identity = await this.inspector.inspect(repository.canonicalPath);
-    if (identity.identityHash !== repository.identityHash) {
+    if (!repositoryIdentityMatches(repository, identity)) {
       throw new DomainError('REPOSITORY_IDENTITY_CHANGED', '仓库身份与发现快照不一致', {
         httpStatus: 412,
         suggestedAction: 'reconfirm',
@@ -381,7 +384,7 @@ export class RepositoryService {
         },
       });
     }
-    const identityChanged = existing.identityHash !== identity.identityHash;
+    const identityChanged = !repositoryIdentityMatches(existing, identity);
     const gitlabRemoteChanged = Boolean(
       existing.gitlabProjectRef &&
       (existing.remoteHost?.toLowerCase() !== remote?.host?.toLowerCase() ||

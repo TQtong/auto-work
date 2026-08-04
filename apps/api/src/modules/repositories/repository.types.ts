@@ -2,6 +2,7 @@ export interface RepositoryIdentity {
   canonicalPath: string;
   realPathHash: string;
   identityHash: string;
+  legacyIdentityHash: string;
   displayName: string;
   gitDirKind: 'normal' | 'worktree';
   headSha: string | null;

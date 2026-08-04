@@ -1,11 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../src/config/config.module.js';
 import { gitExecutable, GitProcessService } from '../src/infrastructure/git/git-process.service.js';
-import { RepositoryInspectorService } from '../src/modules/repositories/repository-inspector.service.js';
+import {
+  repositoryIdentityMatches,
+  RepositoryInspectorService,
+} from '../src/modules/repositories/repository-inspector.service.js';
 
 const temporaryDirectories: string[] = [];
 let rootDirectory = '';
@@ -127,6 +130,52 @@ describe.runIf(process.platform === 'win32')('仓库发现与只读状态', () =
       path: 'group/repo',
     });
     expect(JSON.stringify(identity.remotes)).not.toContain('not-a-real-secret');
+  });
+
+  it('提交和 Git 元数据目录重建不改变仓库身份指纹', async () => {
+    const before = await inspector.inspect(repositoryDirectory);
+    await writeFile(join(repositoryDirectory, '第二次提交.txt'), '继续前进\n', 'utf8');
+    git(repositoryDirectory, ['add', '--', '第二次提交.txt']);
+    git(repositoryDirectory, ['commit', '-m', '继续前进']);
+
+    const afterCommit = await inspector.inspect(repositoryDirectory);
+    expect(afterCommit.identityHash).toBe(before.identityHash);
+
+    const copiedGitDirectory = join(repositoryDirectory, '.git-recreated');
+    await cp(join(repositoryDirectory, '.git'), copiedGitDirectory, { recursive: true });
+    await rm(join(repositoryDirectory, '.git'), { recursive: true, force: true });
+    await rename(copiedGitDirectory, join(repositoryDirectory, '.git'));
+
+    const afterRecreate = await inspector.inspect(repositoryDirectory);
+
+    expect(afterRecreate.identityHash).toBe(before.identityHash);
+    expect(afterRecreate.legacyIdentityHash).not.toBe(before.legacyIdentityHash);
+    expect(
+      repositoryIdentityMatches(
+        {
+          identityHash: before.legacyIdentityHash,
+          remoteName: 'origin',
+          remoteHost: 'git.example.com',
+          remotePort: null,
+          remotePath: 'group/repo',
+        },
+        afterRecreate,
+      ),
+    ).toBe(true);
+  }, 15_000);
+
+  it('远端仓库变化时身份指纹随之变化', async () => {
+    const before = await inspector.inspect(repositoryDirectory);
+    git(repositoryDirectory, [
+      'remote',
+      'set-url',
+      'origin',
+      'https://git.example.com/group/replacement.git',
+    ]);
+
+    const after = await inspector.inspect(repositoryDirectory);
+
+    expect(after.identityHash).not.toBe(before.identityHash);
   });
 
   it('按 porcelain v2 -z 统计暂存、修改、未跟踪和 Unicode/空格路径', async () => {

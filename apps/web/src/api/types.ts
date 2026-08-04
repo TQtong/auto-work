@@ -285,6 +285,7 @@ export interface TaskSummary {
     originalEstimateSeconds: number | null;
     remainingEstimateSeconds: number | null;
     timeSpentSeconds: number | null;
+    periodTimeSpentSeconds: number | null;
   };
   sprints: Array<{ id: string | null; name: string | null; raw?: string }>;
   labels: string[];

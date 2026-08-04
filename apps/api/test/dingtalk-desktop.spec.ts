@@ -1,7 +1,12 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../src/infrastructure/database/prisma.service.js';
-import { dingTalkDesktopConfigSchema } from '../src/modules/dingtalk/dingtalk-desktop.client.js';
-import type { DingTalkDesktopClient } from '../src/modules/dingtalk/dingtalk-desktop.client.js';
+import {
+  DingTalkDesktopClient,
+  dingTalkDesktopConfigSchema,
+} from '../src/modules/dingtalk/dingtalk-desktop.client.js';
 import { DingTalkDesktopProbeService } from '../src/modules/dingtalk/dingtalk-desktop-probe.service.js';
 import { IntegrationProbeRegistry } from '../src/modules/integrations/integration-probe.registry.js';
 
@@ -21,6 +26,35 @@ describe('钉钉桌面正式日志适配器', () => {
         recipientGroupName: '研发中心',
       }).success,
     ).toBe(false);
+  });
+
+  it('Docker 模式在排队前拒绝缺失或过期的 Windows 桥接心跳', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'auto-work-desktop-heartbeat-'));
+    const client = new DingTalkDesktopClient();
+    const now = Date.now();
+    try {
+      await expect(client.assertReady('linux', root, now)).rejects.toMatchObject({
+        code: 'DINGTALK_DESKTOP_BRIDGE_UNAVAILABLE',
+      });
+      await writeFile(
+        join(root, 'heartbeat.json'),
+        JSON.stringify({
+          version: 1,
+          processId: 1234,
+          updatedAt: new Date(now - 16_000).toISOString(),
+        }),
+      );
+      await expect(client.assertReady('linux', root, now)).rejects.toMatchObject({
+        code: 'DINGTALK_DESKTOP_BRIDGE_UNAVAILABLE',
+      });
+      await writeFile(
+        join(root, 'heartbeat.json'),
+        JSON.stringify({ version: 1, processId: 1234, updatedAt: new Date(now).toISOString() }),
+      );
+      await expect(client.assertReady('linux', root, now)).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('从真实桌面探测结果构造六字段模板事实和接收群缓存', async () => {

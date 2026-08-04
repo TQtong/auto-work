@@ -20,6 +20,20 @@ export function currentLogDeliveryIntent(
   );
 }
 
+export function latestUnresolvedLogDeliveryIntent(
+  intents: WeeklyReportDeliveryIntent[],
+): WeeklyReportDeliveryIntent | null {
+  return (
+    intents
+      .filter(
+        (intent) =>
+          intent.channel === 'dingtalk_log' &&
+          (intent.status === 'unknown' || intent.status === 'needs_review'),
+      )
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0] ?? null
+  );
+}
+
 /** 页面动作矩阵与后端门禁保持同向：unknown 永远不能直接重试。 */
 export function deliveryRecoveryActions(
   intent: WeeklyReportDeliveryIntent,

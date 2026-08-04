@@ -4,11 +4,13 @@ import { join, resolve } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { DomainError } from '@auto-work/contracts';
 import { newId, requestHash } from '@auto-work/domain';
+import type { FastifyRequest } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { PrismaService } from '../src/infrastructure/database/prisma.service.js';
 import type { JiraApiClient } from '../src/modules/jira/jira-api.client.js';
 import { JiraMappingService } from '../src/modules/jira/jira-mapping.service.js';
 import { JiraSyncService } from '../src/modules/jira/jira-sync.service.js';
+import { TasksController } from '../src/modules/jira/tasks.controller.js';
 import type { SessionService } from '../src/modules/session/session.service.js';
 import type { LocalSecurityService } from '../src/infrastructure/http/local-security.service.js';
 import { AuditService } from '../src/modules/audit/audit.service.js';
@@ -123,8 +125,11 @@ describe('Jira 防漏增量同步', () => {
     await rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
-  async function createRun(scope: 'incremental' | 'full' = 'incremental') {
-    const request = { scope };
+  async function createRun(
+    scope: 'default' | 'weekly' | 'quarterly' | 'incremental' | 'full' = 'incremental',
+    period?: { periodStart: string; periodEnd: string },
+  ) {
+    const request = { scope, ...period };
     return prisma.jiraSyncRun.create({
       data: {
         id: newId(),
@@ -144,19 +149,29 @@ describe('Jira 防漏增量同步', () => {
     implementation: (
       startAt: number,
       call: number,
+      jql: string,
     ) => Record<string, unknown> | Promise<Record<string, unknown>>,
+    worklogImplementation: (input: {
+      issueKey: string;
+      startAt: number;
+    }) => Record<string, unknown> | Promise<Record<string, unknown>> = (input) => ({
+      startAt: input.startAt,
+      total: 0,
+      worklogs: [],
+    }),
   ) {
     let call = 0;
-    const searchPage = vi.fn(async (input: { startAt: number }) => {
-      const result = await implementation(input.startAt, call);
+    const searchPage = vi.fn(async (input: { startAt: number; jql: string }) => {
+      const result = await implementation(input.startAt, call, input.jql);
       call += 1;
       return result;
     });
+    const worklogPage = vi.fn(worklogImplementation);
     const service = new JiraSyncService(
       prisma as unknown as PrismaService,
-      { searchPage } as unknown as JiraApiClient,
+      { searchPage, worklogPage } as unknown as JiraApiClient,
     );
-    return { service, searchPage };
+    return { service, searchPage, worklogPage };
   }
 
   async function execute(service: JiraSyncService, runId: string) {
@@ -599,5 +614,144 @@ describe('Jira 防漏增量同步', () => {
     });
     expect(history[0]?.supersededAt).not.toBeNull();
     expect(history[1]).toMatchObject({ sourceType: 'jira', decision: 'source_fact', active: true });
+  });
+
+  it('先取本人区间工时、再按当前经办排期补充，重复任务只同步并展示一次', async () => {
+    await prisma.integrationConnection.update({
+      where: { id: connectionId },
+      data: { status: 'healthy' },
+    });
+    const range = { periodStart: '2026-09-01', periodEnd: '2026-09-05' };
+    const issues = [
+      issue('PROJ-700', '2026-09-01T01:00:00.000Z', {
+        assignee: { accountId: 'another-user', displayName: '其他用户' },
+        customfield_start: '2026-10-01',
+        duedate: '2026-10-10',
+        timespent: 32_400,
+      }),
+      issue('PROJ-701', '2026-09-01T02:00:00.000Z', {
+        customfield_start: '2026-08-28',
+        duedate: '2026-09-03',
+      }),
+      issue('PROJ-702', '2026-09-01T03:00:00.000Z', {
+        customfield_start: '2026-09-02',
+        duedate: '2026-09-10',
+        timespent: 18_000,
+      }),
+    ];
+    const worklogsByIssue = new Map<string, Array<Record<string, unknown>>>([
+      [
+        'PROJ-700',
+        [
+          {
+            id: 'worklog-700-current',
+            author: { accountId: 'current-user', displayName: '当前用户' },
+            started: '2026-09-03T09:00:00.000+0800',
+            updated: '2026-09-03T10:00:00.000+0800',
+            timeSpentSeconds: 3600,
+          },
+          {
+            id: 'worklog-700-other',
+            author: { accountId: 'another-user', displayName: '其他用户' },
+            started: '2026-09-03T11:00:00.000+0800',
+            updated: '2026-09-03T12:00:00.000+0800',
+            timeSpentSeconds: 7200,
+          },
+        ],
+      ],
+      [
+        'PROJ-702',
+        [
+          {
+            id: 'worklog-702-current',
+            author: { name: 'current-user', displayName: '当前用户' },
+            started: '2026-09-04T09:00:00.000+0800',
+            updated: '2026-09-04T11:00:00.000+0800',
+            timeSpentSeconds: 7200,
+          },
+        ],
+      ],
+    ]);
+    const { service, searchPage, worklogPage } = serviceWithPages(
+      (startAt, _call, jql) => {
+        const matched = jql.includes('worklogAuthor')
+          ? [issues[0], issues[2]]
+          : [issues[1], issues[2]];
+        return { startAt, total: matched.length, issues: startAt === 0 ? matched : [] };
+      },
+      ({ issueKey, startAt }) => {
+        const worklogs = worklogsByIssue.get(issueKey) ?? [];
+        const page = worklogs.slice(startAt, startAt + 1);
+        return { startAt, maxResults: 1, total: worklogs.length, worklogs: page };
+      },
+    );
+    const run = await createRun('weekly', range);
+    const synchronized = await execute(service, run.id);
+
+    expect(synchronized.counts.read).toBe(3);
+    expect(searchPage.mock.calls.map((call) => call[0].jql)).toEqual([
+      expect.stringContaining('worklogAuthor = currentUser()'),
+      expect.stringContaining('assignee = currentUser()'),
+    ]);
+    expect(worklogPage.mock.calls.filter((call) => call[0].issueKey === 'PROJ-700')).toHaveLength(
+      2,
+    );
+    expect(worklogPage.mock.calls.filter((call) => call[0].issueKey === 'PROJ-702')).toHaveLength(
+      1,
+    );
+    expect(await prisma.taskWorklog.count()).toBe(2);
+    const worklogOnlyTask = await prisma.task.findUniqueOrThrow({
+      where: { connectionId_issueKey: { connectionId, issueKey: 'PROJ-700' } },
+    });
+    expect(worklogOnlyTask.isCurrentUser).toBe(false);
+
+    const tasks = new TasksController(prisma as unknown as PrismaService);
+    const response = await tasks.list(
+      {
+        source: 'jira',
+        currentUser: 'true',
+        visibility: 'visible',
+        dateFrom: range.periodStart,
+        dateTo: range.periodEnd,
+        limit: '100',
+      },
+      {
+        autoWork: { correlationId: 'worklog-union', sessionId: 'worklog-union' },
+      } as FastifyRequest,
+    );
+    const byKey = new Map(response.data.map((task) => [task.issueKey, task]));
+    expect(response.data.map((task) => task.issueKey)).toEqual([
+      'PROJ-700',
+      'PROJ-702',
+      'PROJ-701',
+    ]);
+    expect([...byKey.keys()].sort()).toEqual(['PROJ-700', 'PROJ-701', 'PROJ-702']);
+    expect(response.total).toBe(3);
+    expect(byKey.get('PROJ-700')?.worklog).toMatchObject({
+      periodTimeSpentSeconds: 3600,
+      timeSpentSeconds: 32_400,
+    });
+    expect(byKey.get('PROJ-701')?.worklog.periodTimeSpentSeconds).toBe(0);
+    expect(byKey.get('PROJ-702')?.worklog.periodTimeSpentSeconds).toBe(7200);
+
+    const fullSync = serviceWithPages(
+      (startAt) => ({
+        startAt,
+        total: 2,
+        issues: startAt === 0 ? issues.slice(1) : [],
+      }),
+      ({ issueKey, startAt }) => {
+        const worklogs = worklogsByIssue.get(issueKey) ?? [];
+        return { startAt, total: worklogs.length, worklogs: worklogs.slice(startAt, startAt + 1) };
+      },
+    ).service;
+    await execute(fullSync, (await createRun('full')).id);
+    expect(
+      (
+        await prisma.task.findUniqueOrThrow({
+          where: { connectionId_issueKey: { connectionId, issueKey: 'PROJ-700' } },
+        })
+      ).visibilityState,
+    ).toBe('visible');
   });
 });

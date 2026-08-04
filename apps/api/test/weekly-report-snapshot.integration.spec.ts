@@ -249,7 +249,9 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
         fields: { reportDate: '2026-07-17', problems: '' },
       },
     });
+    expect(result.version.fields.weeklyWork).toContain('【周报能力建设】');
     expect(result.version.fields.weeklyWork).toContain('1、完成周报快照');
+    expect(result.version.fields.weeklyWork).toContain('完成度 50%');
     expect(result.version.fields.weeklyWork).not.toContain('PROJ-1');
     expect(result.version.fields.weeklyWork).not.toContain('PROJ-OLD 往期任务');
     const snapshotSources = result.sourceSnapshot.sources as {
@@ -841,11 +843,15 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
         primarySource: 'jira',
         issueKey: 'PROJ-1',
         projectKey: 'PROJ',
+        parentIssueKey: 'PROJ-EPIC',
+        parentTitle: '周报能力建设',
         title: '完成周报快照',
         normalizedStatus: 'in_progress',
         isCurrentUser: true,
         plannedStartDate: '2026-07-13',
         dueDate: '2026-07-20',
+        originalEstimateSeconds: 57_600,
+        remainingEstimateSeconds: 28_800,
         sprintIdsJson: JSON.stringify([{ id: 'sprint-1', state: 'active' }]),
         lastObservedAt: new Date('2026-07-17T01:00:00.000Z'),
       },
