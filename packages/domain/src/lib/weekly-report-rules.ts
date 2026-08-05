@@ -163,9 +163,7 @@ export function generateWeeklyReportRuleDraft(
 
   appendManualBlocks(fields, input.manualInputs);
   fields.recentGoals.push(...buildGoalBlocks(tasks, periodEnd.time));
-  fields.weeklyWork.push(
-    ...buildWorkBlocks(tasks, evidence, periodStart.time, addDays(periodEnd.time, 1)),
-  );
+  fields.weeklyWork.push(...buildWorkBlocks(tasks, evidence));
   fields.nextWeekPlans.push(...buildPlanBlocks(tasks, periodEnd.time));
   fields.problems.push(...buildProblemBlocks(tasks, evidence, periodEnd.time));
 
@@ -232,25 +230,14 @@ function buildGoalBlocks(tasks: WeeklyTaskFact[], periodEnd: number): WeeklyRepo
 function buildWorkBlocks(
   tasks: WeeklyTaskFact[],
   evidence: WeeklyEvidenceFact[],
-  periodStart: number,
-  periodEndExclusive: number,
 ): WeeklyReportBlock[] {
   const blocks: WeeklyReportBlock[] = [];
   for (const task of tasks) {
-    const changedAt = task.statusChangedAt
-      ? parseBusinessTimestamp(task.statusChangedAt, 'statusChangedAt')
-      : null;
-    const observedAt = parseBusinessTimestamp(task.lastObservedAt, 'lastObservedAt');
+    // timeSpentSeconds 是服务层按当前周报周期、当前用户汇总后的工时；本周工作严格以它为准。
+    if (!weeklyTaskHasWorklog(task)) continue;
     const taskEvidence = evidence
       .filter((item) => item.taskId === task.id && item.relationStatus === 'confirmed')
       .sort((left, right) => left.id.localeCompare(right.id));
-    const changedThisWeek =
-      changedAt !== null && changedAt >= periodStart && changedAt < periodEndExclusive;
-    const observedThisWeek = observedAt >= periodStart && observedAt < periodEndExclusive;
-    // Service 层将本周期工时汇总到 timeSpentSeconds；即使 Jira 任务本身没有同步更新，工时也代表本周有实际工作。
-    const workedThisWeek = typeof task.timeSpentSeconds === 'number' && task.timeSpentSeconds > 0;
-    if (!changedThisWeek && !observedThisWeek && !workedThisWeek && taskEvidence.length === 0)
-      continue;
     const evidenceKinds = summarizeEvidenceKinds(taskEvidence);
     const statusText =
       task.normalizedStatus === 'done'
@@ -570,6 +557,10 @@ export function weeklyTaskGroupTitle(task: WeeklyTaskFact): string | null {
 
 export function weeklyTaskDisplayTitle(task: WeeklyTaskFact): string {
   return cleanTaskTitle(task.title);
+}
+
+export function weeklyTaskHasWorklog(task: WeeklyTaskFact): boolean {
+  return typeof task.timeSpentSeconds === 'number' && task.timeSpentSeconds > 0;
 }
 
 function workGroupTitle(task: WeeklyTaskFact): string | null {

@@ -108,6 +108,7 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
     await prisma.evidence.deleteMany();
     await prisma.taskStatusEvent.deleteMany();
     await prisma.taskSourceObservation.deleteMany();
+    await prisma.taskWorklog.deleteMany();
     await prisma.task.deleteMany();
     await prisma.project.deleteMany();
     await prisma.dingTalkTemplateMapping.updateMany({ data: { currentVersionId: null } });
@@ -854,6 +855,19 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
         remainingEstimateSeconds: 28_800,
         sprintIdsJson: JSON.stringify([{ id: 'sprint-1', state: 'active' }]),
         lastObservedAt: new Date('2026-07-17T01:00:00.000Z'),
+      },
+    });
+    await prisma.taskWorklog.create({
+      data: {
+        id: 'worklog-task-1',
+        taskId: 'task-1',
+        externalId: 'jira-worklog-task-1',
+        authorExternalId: 'local-user',
+        authorName: '当前用户',
+        isCurrentUser: true,
+        startedAt: new Date('2026-07-16T01:00:00.000Z'),
+        businessDate: '2026-07-16',
+        timeSpentSeconds: 14_400,
       },
     });
     await prisma.task.create({

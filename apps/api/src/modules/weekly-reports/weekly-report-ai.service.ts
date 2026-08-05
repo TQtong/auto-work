@@ -4,6 +4,7 @@ import { DomainError, errorCodes } from '@auto-work/contracts';
 import {
   newId,
   requestHash,
+  weeklyTaskHasWorklog,
   type WeeklyEvidenceFact,
   type WeeklyManualInput,
   type WeeklyReportField,
@@ -1062,6 +1063,7 @@ export class WeeklyReportAiService {
     const dateInPeriod = (value: string | null) =>
       Boolean(value && value >= periodStart && value <= periodEnd);
     return (
+      weeklyTaskHasWorklog(task) ||
       dateInPeriod(plannedStart) ||
       dateInPeriod(dueDate) ||
       dateInPeriod(statusChangedDate) ||

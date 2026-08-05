@@ -51,6 +51,7 @@ describe('六字段周报确定性规则', () => {
             normalizedStatus: 'done',
             parentTitle: '贵安漏洞修复',
             sprintActive: false,
+            timeSpentSeconds: 3_600,
             statusChangedAt: '2026-07-17T00:30:00+08:00',
           }),
           task('2', {
@@ -64,6 +65,7 @@ describe('六字段周报确定性规则', () => {
           }),
           task('3', {
             normalizedStatus: 'cancelled',
+            timeSpentSeconds: 1_800,
             statusChangedAt: '2026-07-16T10:00:00+08:00',
           }),
           task('4', { isCurrentUser: false }),
@@ -84,7 +86,7 @@ describe('六字段周报确定性规则', () => {
     );
     expect(
       draft.fields.weeklyWork.find((block) => block.body.includes('任务 1'))?.actualHours,
-    ).toBeNull();
+    ).toBe(1);
     expect(
       draft.fields.weeklyWork.find((block) => block.body.includes('任务 2'))?.actualHours,
     ).toBe(4);
@@ -113,6 +115,7 @@ describe('六字段周报确定性规则', () => {
             parentTitle: '运营后台重制密码功能',
             sprintNames: ['P_uTwin_20260727_HQ_【空间联通交互升级】'],
             normalizedStatus: 'done',
+            timeSpentSeconds: 7_200,
           }),
           task('child-2', {
             title: '右键菜单重构-分组',
@@ -160,10 +163,37 @@ describe('六字段周报确定性规则', () => {
     expect(work?.actualHours).toBe(1);
   });
 
+  it('没有本周期工时的任务即使同步、变更状态或关联证据也不进入本周工作', () => {
+    const draft = generateWeeklyReportRuleDraft(
+      input({
+        tasks: [
+          task('unlogged', {
+            statusChangedAt: '2026-07-16T10:00:00+08:00',
+            timeSpentSeconds: null,
+          }),
+        ],
+        evidence: [
+          {
+            id: 'unlogged-commit',
+            taskId: 'unlogged',
+            sourceType: 'commit',
+            title: '未填写工时任务的提交',
+            eventAt: '2026-07-16T09:00:00+08:00',
+            relationStatus: 'confirmed',
+            revalidationState: 'valid',
+            availabilityState: 'available',
+          },
+        ],
+      }),
+    );
+
+    expect(draft.fields.weeklyWork).toEqual([]);
+  });
+
   it('聚合同一任务的多个 Commit，不逐条复制 message，并把失败 Pipeline 放入问题字段', () => {
     const draft = generateWeeklyReportRuleDraft(
       input({
-        tasks: [task('1')],
+        tasks: [task('1', { timeSpentSeconds: 3_600 })],
         evidence: [
           {
             id: 'commit-b',
@@ -328,7 +358,12 @@ describe('六字段周报确定性规则', () => {
   it('使用上海零点作为周期边界，不遗漏周一凌晨或纳入下周数据', () => {
     const draft = generateWeeklyReportRuleDraft(
       input({
-        tasks: [task('1', { lastObservedAt: '2026-07-13T00:15:00+08:00' })],
+        tasks: [
+          task('1', {
+            lastObservedAt: '2026-07-13T00:15:00+08:00',
+            timeSpentSeconds: 3_600,
+          }),
+        ],
         evidence: [
           {
             id: 'inside',

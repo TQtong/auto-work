@@ -233,7 +233,7 @@ describe('周报 AI 白名单净化与事实校验', () => {
     });
     expect(result.fieldTexts.recentGoals).toBe(baseFields().recentGoals);
     expect(result.fieldTexts.weeklyWork).toBe(
-      '【Alpha 父任务】\n1、推进 Alpha 项目 已投入 2 小时（完成度 50%）',
+      '【Alpha 父任务】\n1、实现完整周报 AI本周持续推进（完成度 50%）',
     );
   });
 
@@ -245,6 +245,7 @@ describe('周报 AI 白名单净化与事实校验', () => {
           {
             ...task(),
             parentTitle: '运营后台重制密码功能',
+            rootParentTitle: '编辑器交互调整',
             sprintNames: ['P_uTwin_20260727_HQ_【空间联通交互升级】'],
             title: '[前端] + [ ] 前端界面开发',
           },
@@ -258,7 +259,10 @@ describe('周报 AI 白名单净化与事实校验', () => {
       parentTitle: '空间联通交互升级',
       taskParentTitle: '运营后台重制密码功能',
       title: '前端界面开发',
+      weeklyWorkEligible: true,
     });
+    expect(taskSource).not.toHaveProperty('rootParentTitle');
+    expect(taskSource).not.toHaveProperty('sprintNames');
 
     const result = validateWeeklyAiOutput(
       JSON.stringify({
@@ -267,7 +271,7 @@ describe('周报 AI 白名单净化与事实校验', () => {
             field: 'weeklyWork',
             paragraphs: [
               {
-                text: '运营后台重制密码功能——前端界面开发本周持续推进',
+                text: '错误父级：前端界面开发本周持续推进',
                 citations: [taskRef],
               },
             ],
@@ -280,6 +284,70 @@ describe('周报 AI 白名单净化与事实校验', () => {
 
     expect(result.fieldTexts.weeklyWork).toBe(
       '【空间联通交互升级】\n1、运营后台重制密码功能——前端界面开发本周持续推进（完成度 50%）',
+    );
+  });
+
+  it('拒绝把未填写本周期工时的任务写入本周工作', () => {
+    const unloggedTask = {
+      ...task(),
+      id: 'task-unlogged',
+      issueKey: 'AW-13',
+      title: '未填写工时的任务',
+      timeSpentSeconds: null,
+    } satisfies WeeklyTaskFact;
+    const sanitized = sanitizeWeeklyAiInput(
+      input({ selectedFields: ['weeklyWork'], tasks: [task(), unloggedTask] }),
+    );
+    const references = sanitized.storedReferences.filter((item) => item.sourceType === 'task');
+    const loggedRef = references.find((item) => item.sourceId === 'task-1')!.refId;
+    const unloggedRef = references.find((item) => item.sourceId === 'task-unlogged')!.refId;
+    const raw = JSON.stringify({
+      fields: [
+        {
+          field: 'weeklyWork',
+          paragraphs: [
+            { text: '实现完整周报 AI本周持续推进', citations: [loggedRef] },
+            { text: '未填写工时的任务本周持续推进', citations: [unloggedRef] },
+          ],
+        },
+      ],
+    });
+
+    expect(
+      sanitized.sanitizedInput.sources.find(
+        (source) => source.kind === 'task' && source.issueKey === 'AW-13',
+      ),
+    ).toMatchObject({ weeklyWorkEligible: false });
+
+    expect(() => validateWeeklyAiOutput(raw, sanitized, baseFields())).toThrowError(
+      expect.objectContaining({ code: 'AI_OUTPUT_WEEKLY_WORK_WITHOUT_WORKLOG' }),
+    );
+  });
+
+  it('AI 非空本周工作必须完整覆盖全部工时任务', () => {
+    const secondLoggedTask = {
+      ...task(),
+      id: 'task-2',
+      issueKey: 'AW-13',
+      title: '第二个工时任务',
+    } satisfies WeeklyTaskFact;
+    const sanitized = sanitizeWeeklyAiInput(
+      input({ selectedFields: ['weeklyWork'], tasks: [task(), secondLoggedTask] }),
+    );
+    const loggedRef = sanitized.storedReferences.find(
+      (item) => item.sourceType === 'task' && item.sourceId === 'task-1',
+    )!.refId;
+    const raw = JSON.stringify({
+      fields: [
+        {
+          field: 'weeklyWork',
+          paragraphs: [{ text: '实现完整周报 AI本周持续推进', citations: [loggedRef] }],
+        },
+      ],
+    });
+
+    expect(() => validateWeeklyAiOutput(raw, sanitized, baseFields())).toThrowError(
+      expect.objectContaining({ code: 'AI_OUTPUT_WEEKLY_WORK_TASK_SET_INVALID' }),
     );
   });
 

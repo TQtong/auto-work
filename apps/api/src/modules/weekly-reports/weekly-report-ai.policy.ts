@@ -5,6 +5,7 @@ import {
   weeklyTaskCompletionPercent,
   weeklyTaskDisplayTitle,
   weeklyTaskGroupTitle,
+  weeklyTaskHasWorklog,
   type WeeklyEvidenceFact,
   type WeeklyManualInput,
   type WeeklyReportField,
@@ -12,8 +13,8 @@ import {
 } from '@auto-work/domain';
 import { z } from 'zod';
 
-export const weeklyAiPromptTemplateVersion = 'weekly-report-ai-prompt-v4';
-export const weeklyAiSanitizationPolicyVersion = 'weekly-report-ai-sanitization-v2';
+export const weeklyAiPromptTemplateVersion = 'weekly-report-ai-prompt-v5';
+export const weeklyAiSanitizationPolicyVersion = 'weekly-report-ai-sanitization-v3';
 export const weeklyAiMaximumRawOutputBytes = 2 * 1024 * 1024;
 
 export const weeklyAiFields = [
@@ -58,6 +59,10 @@ interface WeeklyAiValidationReference extends WeeklyAiStoredReference {
   projectNames: Set<string>;
   sourceTexts: Set<string>;
   parentTitle: string | null;
+  taskParentTitle: string | null;
+  taskTitle: string | null;
+  taskStatus: WeeklyTaskFact['normalizedStatus'] | null;
+  weeklyWorkEligible: boolean;
   completionPercent: number | null;
 }
 
@@ -69,16 +74,15 @@ interface WeeklyAiSanitizedSource {
   projectName?: string;
   parentTitle?: string;
   taskParentTitle?: string;
-  rootParentTitle?: string;
-  sprintNames?: string[];
   title?: string;
-  status?: string;
+  status?: WeeklyTaskFact['normalizedStatus'];
   text?: string;
   sourceType?: WeeklyEvidenceFact['sourceType'];
   eventAt?: string;
   plannedStartDate?: string;
   dueDate?: string;
   actualHours?: number;
+  weeklyWorkEligible?: boolean;
   estimatedHours?: number;
   remainingHours?: number;
   completionPercent?: number;
@@ -201,16 +205,9 @@ export function sanitizeWeeklyAiInput(
       ...(task.parentTitle
         ? { taskParentTitle: requireSafeText(task.parentTitle, 'task.parentTitle') }
         : {}),
-      ...(task.rootParentTitle
-        ? { rootParentTitle: requireSafeText(task.rootParentTitle, 'task.rootParentTitle') }
-        : {}),
-      ...(task.sprintNames?.length
-        ? {
-            sprintNames: task.sprintNames.map((name) => requireSafeText(name, 'task.sprintNames')),
-          }
-        : {}),
       title: requireSafeText(weeklyTaskDisplayTitle(task), 'task.title'),
       status: task.normalizedStatus,
+      weeklyWorkEligible: weeklyTaskHasWorklog(task),
       completionPercent: weeklyTaskCompletionPercent(task),
       ...(task.plannedStartDate ? { plannedStartDate: task.plannedStartDate } : {}),
       ...(task.dueDate ? { dueDate: task.dueDate } : {}),
@@ -314,6 +311,10 @@ export function sanitizeWeeklyAiInput(
       projectNames: source.projectName ? new Set([normalizeFact(source.projectName)]) : new Set(),
       sourceTexts: extractProjectSupportingTexts(source),
       parentTitle: source.parentTitle ?? null,
+      taskParentTitle: source.kind === 'task' ? (source.taskParentTitle ?? null) : null,
+      taskTitle: source.kind === 'task' ? (source.title ?? null) : null,
+      taskStatus: source.kind === 'task' ? (source.status ?? null) : null,
+      weeklyWorkEligible: source.kind === 'task' && source.weeklyWorkEligible === true,
       completionPercent: source.completionPercent ?? null,
     });
   }
@@ -330,10 +331,11 @@ export function buildWeeklyAiGenerationRequest(policy: WeeklyAiSanitizationResul
     '必须以 base_field 中的当前周报正文为基础进行优化，保留其中已有的有效信息；任务和证据只用于补充或改善表达。',
     '每个段落必须给出至少一个 citations 引用；日期、数字、工单号和项目名必须被所引引用直接支持。',
     'projectName 只能填写当前段落 citations 明确支持的项目名；没有项目依据时必须返回 null。',
-    'weeklyWork 必须每个 Jira 子任务单独返回一个段落，并填写该任务来源中的 parentTitle 与 completionPercent；不得把不同父任务合并成一个段落。',
+    'weeklyWork 只允许使用 weeklyWorkEligible=true 的 task 来源；每个这类工时任务必须且只能返回一个段落，其他任务严禁写入。',
+    'weeklyWork 每段必须引用且只能引用一个 task，并填写该任务来源中的 parentTitle 与 completionPercent；可以同时引用该任务的 evidence。',
     'completionPercent 是完成度百分比，必须原样使用任务来源给出的 0 到 100 整数；正文应说明任务进展，但系统会统一追加“完成度 N%”。',
-    'parentTitle 是已解析的周报分组名称，优先取 sprintNames 中的【父级】，其次取根父任务和 Jira 父任务；必须原样返回，没有时返回 null。',
-    'taskParentTitle 是当前 Jira 任务的直接父任务；当它与 parentTitle 不同时，正文必须保留 taskParentTitle——title 层级。',
+    'parentTitle 已由本地规则解析为最终周报分组，必须原样返回，严禁与其他标题拼接；没有时返回 null。',
+    'taskParentTitle 是当前 Jira 任务的直接父任务，title 是具体工时任务；正文格式由本地系统统一为 taskParentTitle——title，不要自行拼接父级。',
     '周报正文必须以已清理前缀的 Jira 任务标题 title 为主体，不要输出工单号、refId 或 [citation:...] 等内部引用标记。',
     '某个栏位没有可靠的新内容或无法安全优化时，返回该栏位但将 paragraphs 设为空数组，系统会保留原文；不要填写“暂无”“无明确问题”等占位句。',
     '不得输出动作、工具调用、代码、HTML、Markdown 代码块、源码、diff、凭证或附件内容。',
@@ -393,8 +395,14 @@ export function validateWeeklyAiOutput(
   ) {
     throw outputError('AI_OUTPUT_FIELD_SET_INVALID', 'AI 输出字段与请求范围不一致');
   }
+  const eligibleWeeklyWorkRefs = new Set(
+    [...policy.validationReferences.values()]
+      .filter((reference) => reference.sourceType === 'task' && reference.weeklyWorkEligible)
+      .map((reference) => reference.refId),
+  );
 
   for (const field of result.data.fields) {
+    const citedWeeklyWorkRefs = new Set<string>();
     for (const paragraph of field.paragraphs) {
       paragraph.text = cleanWeeklyAiCitations(paragraph.text);
       if (!paragraph.text) {
@@ -413,6 +421,30 @@ export function validateWeeklyAiOutput(
         }
         return reference;
       });
+      let weeklyWorkTask: WeeklyAiValidationReference | null = null;
+      if (field.field === 'weeklyWork') {
+        const citedTasks = cited.filter((reference) => reference.sourceType === 'task');
+        if (citedTasks.length !== 1) {
+          throw outputError(
+            'AI_OUTPUT_WEEKLY_WORK_TASK_REQUIRED',
+            'AI 本周工作段落必须且只能引用一个工时任务',
+          );
+        }
+        weeklyWorkTask = citedTasks[0] ?? null;
+        if (!weeklyWorkTask || !weeklyWorkTask.weeklyWorkEligible) {
+          throw outputError(
+            'AI_OUTPUT_WEEKLY_WORK_WITHOUT_WORKLOG',
+            'AI 本周工作包含未填写本周期工时的任务',
+          );
+        }
+        if (citedWeeklyWorkRefs.has(weeklyWorkTask.refId)) {
+          throw outputError(
+            'AI_OUTPUT_WEEKLY_WORK_TASK_DUPLICATED',
+            'AI 本周工作重复输出了同一工时任务',
+          );
+        }
+        citedWeeklyWorkRefs.add(weeklyWorkTask.refId);
+      }
       if (paragraph.projectName && !isProjectSupported(paragraph.projectName, cited)) {
         // projectName 只是展示分组元数据。模型偶尔会把其他段落的项目标签复制过来；
         // 本地直接丢弃无依据标签，正文仍必须继续通过逐项事实与引用校验。
@@ -459,13 +491,21 @@ export function validateWeeklyAiOutput(
       if (!paragraph.text) {
         throw outputError('AI_OUTPUT_TEXT_EMPTY', 'AI 输出清理内部标记后正文为空');
       }
-      if (
-        field.field === 'weeklyWork' &&
-        paragraph.completionPercent !== null &&
-        !/完成度\s*\d{1,3}\s*%/u.test(paragraph.text)
-      ) {
-        paragraph.text = `${paragraph.text.replace(/[。；;]\s*$/u, '')}（完成度 ${paragraph.completionPercent}%）`;
+      if (weeklyWorkTask) {
+        paragraph.parentTitle = weeklyWorkTask.parentTitle;
+        paragraph.completionPercent = weeklyWorkTask.completionPercent;
+        paragraph.text = canonicalWeeklyWorkText(weeklyWorkTask);
       }
+    }
+    if (
+      field.field === 'weeklyWork' &&
+      field.paragraphs.length > 0 &&
+      !sameValues(citedWeeklyWorkRefs, eligibleWeeklyWorkRefs)
+    ) {
+      throw outputError(
+        'AI_OUTPUT_WEEKLY_WORK_TASK_SET_INVALID',
+        'AI 本周工作必须完整覆盖且只能包含本周期工时任务',
+      );
     }
   }
 
@@ -507,6 +547,30 @@ function renderGroupedWeeklyAiWork(paragraphs: WeeklyAiValidatedParagraph[]): st
           .join('\n')}`,
     )
     .join('\n\n');
+}
+
+function canonicalWeeklyWorkText(reference: WeeklyAiValidationReference): string {
+  if (!reference.taskTitle || !reference.taskStatus || reference.completionPercent === null) {
+    throw outputError('AI_OUTPUT_WEEKLY_WORK_TASK_INVALID', 'AI 本周工作引用的任务事实不完整');
+  }
+  const taskTitle = reference.taskTitle.trim();
+  const taskParentTitle = reference.taskParentTitle?.trim() ?? '';
+  const groupTitle = reference.parentTitle?.trim() ?? '';
+  const hierarchy =
+    taskParentTitle && normalizeFact(taskParentTitle) !== normalizeFact(groupTitle)
+      ? `${taskParentTitle}——${taskTitle}`
+      : taskTitle;
+  const statusText =
+    reference.taskStatus === 'done'
+      ? '已完成并形成结果'
+      : reference.taskStatus === 'blocked'
+        ? '已推进但当前受阻'
+        : '本周持续推进';
+  return `${hierarchy}${statusText}（完成度 ${reference.completionPercent}%）`;
+}
+
+function sameValues(left: Set<string>, right: Set<string>): boolean {
+  return left.size === right.size && [...left].every((value) => right.has(value));
 }
 
 function normalizeWeeklyAiOutputShape(
