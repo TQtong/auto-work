@@ -244,10 +244,10 @@ describe('周报 AI 白名单净化与事实校验', () => {
         tasks: [
           {
             ...task(),
-            parentTitle: '运营后台重制密码功能',
+            parentTitle: '【需求】 +【】运营后台重制密码功能',
             rootParentTitle: '编辑器交互调整',
             sprintNames: ['P_uTwin_20260727_HQ_【空间联通交互升级】'],
-            title: '[前端] + [ ] 前端界面开发',
+            title: '【前端】 +【】前端界面开发',
           },
         ],
       }),

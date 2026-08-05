@@ -556,11 +556,15 @@ export function weeklyTaskGroupTitle(task: WeeklyTaskFact): string | null {
 }
 
 export function weeklyTaskDisplayTitle(task: WeeklyTaskFact): string {
-  return cleanTaskTitle(task.title);
+  return weeklyTaskCleanTitle(task.title);
 }
 
 export function weeklyTaskHasWorklog(task: WeeklyTaskFact): boolean {
   return typeof task.timeSpentSeconds === 'number' && task.timeSpentSeconds > 0;
+}
+
+export function weeklyTaskCleanTitle(value: string): string {
+  return value.replace(/^\s*(?:(?:\[[^\]]*\]|【[^】]*】|［[^］]*］)\s*(?:\+\s*)?)+/u, '').trim();
 }
 
 function workGroupTitle(task: WeeklyTaskFact): string | null {
@@ -571,13 +575,9 @@ function workItemTitle(task: WeeklyTaskFact, groupTitle: string | null): string 
   const immediateParent = task.parentTitle?.trim();
   const cleanedTitle = weeklyTaskDisplayTitle(task);
   if (groupTitle && immediateParent && groupTitle !== immediateParent) {
-    return `${cleanTaskTitle(immediateParent)}——${cleanedTitle}`;
+    return `${weeklyTaskCleanTitle(immediateParent)}——${cleanedTitle}`;
   }
   return cleanedTitle;
-}
-
-function cleanTaskTitle(value: string): string {
-  return value.replace(/^\s*(?:\[[^\]]*\]\s*(?:\+\s*)?)+/u, '').trim();
 }
 
 /**

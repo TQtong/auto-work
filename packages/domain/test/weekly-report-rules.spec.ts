@@ -112,13 +112,13 @@ describe('六字段周报确定性规则', () => {
         tasks: [
           task('child-1', {
             title: '[前端] + [ ] 前端界面开发',
-            parentTitle: '运营后台重制密码功能',
+            parentTitle: '【需求】 +【】运营后台重制密码功能',
             sprintNames: ['P_uTwin_20260727_HQ_【空间联通交互升级】'],
             normalizedStatus: 'done',
             timeSpentSeconds: 7_200,
           }),
           task('child-2', {
-            title: '右键菜单重构-分组',
+            title: '【前端】 +【】右键菜单重构-分组',
             parentTitle: '右键菜单交互优化',
             sprintNames: ['P_uTwin_20260727_HQ_【空间联通交互升级】'],
             normalizedStatus: 'in_progress',

@@ -3,6 +3,7 @@ import { DomainError } from '@auto-work/contracts';
 import {
   requestHash,
   weeklyTaskCompletionPercent,
+  weeklyTaskCleanTitle,
   weeklyTaskDisplayTitle,
   weeklyTaskGroupTitle,
   weeklyTaskHasWorklog,
@@ -14,7 +15,7 @@ import {
 import { z } from 'zod';
 
 export const weeklyAiPromptTemplateVersion = 'weekly-report-ai-prompt-v5';
-export const weeklyAiSanitizationPolicyVersion = 'weekly-report-ai-sanitization-v3';
+export const weeklyAiSanitizationPolicyVersion = 'weekly-report-ai-sanitization-v4';
 export const weeklyAiMaximumRawOutputBytes = 2 * 1024 * 1024;
 
 export const weeklyAiFields = [
@@ -203,7 +204,12 @@ export function sanitizeWeeklyAiInput(
       projectName: requireSafeText(task.projectName, 'task.projectName'),
       ...(groupTitle ? { parentTitle: requireSafeText(groupTitle, 'task.groupTitle') } : {}),
       ...(task.parentTitle
-        ? { taskParentTitle: requireSafeText(task.parentTitle, 'task.parentTitle') }
+        ? {
+            taskParentTitle: requireSafeText(
+              weeklyTaskCleanTitle(task.parentTitle),
+              'task.parentTitle',
+            ),
+          }
         : {}),
       title: requireSafeText(weeklyTaskDisplayTitle(task), 'task.title'),
       status: task.normalizedStatus,
