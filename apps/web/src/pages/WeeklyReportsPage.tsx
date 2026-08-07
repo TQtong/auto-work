@@ -1299,6 +1299,7 @@ export function WeeklyReportsPage() {
   const persistSubmissionSettings = (
     currentReport: WeeklyReport,
     currentVersion: WeeklyReportVersion,
+    schedule: Dayjs | null = selectedSchedule,
   ) =>
     editMutation.mutateAsync({
       reportId: currentReport.id,
@@ -1307,10 +1308,26 @@ export function WeeklyReportsPage() {
       attachmentIds: currentVersion.attachments.map((attachment) => attachment.id),
       recipientValidationIds: selectedRecipientIds,
       templateMappingVersionId: selectedMappingId,
-      scheduleAt: selectedSchedule?.toISOString() ?? null,
+      scheduleAt: schedule?.toISOString() ?? null,
       changeReason: '保存钉钉模板、接收范围和提交时间',
       source: 'metadata',
     });
+
+  const saveSubmissionSettings = (schedule: Dayjs | null = selectedSchedule) => {
+    if (!report || !version || editMutation.isPending) return;
+    setSubmissionSettingsDirty(true);
+    editMutation.mutate({
+      reportId: report.id,
+      baseVersionId: version.id,
+      reportVersion: report.version,
+      attachmentIds: version.attachments.map((attachment) => attachment.id),
+      recipientValidationIds: selectedRecipientIds,
+      templateMappingVersionId: selectedMappingId,
+      scheduleAt: schedule?.toISOString() ?? null,
+      changeReason: '保存钉钉模板、接收范围和提交时间',
+      source: 'metadata',
+    });
+  };
 
   const restoreVersion = (
     targetVersionId: string,
@@ -1767,6 +1784,7 @@ export function WeeklyReportsPage() {
             <Select
               value={selectedReportId ?? undefined}
               loading={reports.isLoading}
+              disabled={editMutation.isPending || directSubmitPending}
               placeholder="选择周报"
               style={{ width: 360 }}
               onChange={(value) => {
@@ -1790,14 +1808,24 @@ export function WeeklyReportsPage() {
               <DatePicker
                 showTime
                 allowClear
+                disabled={editMutation.isPending || directSubmitPending}
                 value={selectedSchedule}
                 onChange={(schedule) => {
                   setSelectedSchedule(schedule);
-                  setSubmissionSettingsDirty(true);
+                  saveSubmissionSettings(schedule);
                 }}
                 placeholder="留空表示点击提交后立即发送"
                 style={{ width: 280 }}
               />
+              <Button
+                size="small"
+                icon={<SaveOutlined />}
+                loading={editMutation.isPending && editMutation.variables?.source === 'metadata'}
+                disabled={!submissionSettingsDirty || editMutation.isPending || directSubmitPending}
+                onClick={() => saveSubmissionSettings()}
+              >
+                {submissionSettingsDirty ? '保存提交时间' : '已保存'}
+              </Button>
               <Typography.Text type="secondary">
                 聚合版本 {report.version} · 更新 {formatDateTime(report.updatedAt)}
               </Typography.Text>
