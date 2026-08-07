@@ -4,14 +4,20 @@ import {
   CloudOutlined,
   CodeOutlined,
   DeleteOutlined,
-  PlusOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+  type UseQueryResult,
+} from '@tanstack/react-query';
 import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Empty,
   Input,
   message,
@@ -24,7 +30,7 @@ import {
 } from 'antd';
 import dayjs from 'dayjs';
 import { useState } from 'react';
-import { apiRequest } from '../api/client.js';
+import { apiRequest, type ApiEnvelope } from '../api/client.js';
 import type {
   CreateBranchesResponse,
   DeleteBranchResponse,
@@ -45,8 +51,8 @@ interface DeleteBranchRequest {
 
 export function GitBranchesPage() {
   const queryClient = useQueryClient();
-  const [repositoryToAdd, setRepositoryToAdd] = useState<string>();
   const [plans, setPlans] = useState<RepositoryPlan[]>([]);
+  const [activeRepositoryId, setActiveRepositoryId] = useState<string>();
   const [lastResult, setLastResult] = useState<CreateBranchesResponse>();
 
   const repositories = useQuery({
@@ -66,12 +72,13 @@ export function GitBranchesPage() {
     (repository) => repository.whitelistStatus === 'confirmed',
   );
   const configuredIds = new Set(plans.map((plan) => plan.repositoryId));
-  const availableRepositories = confirmedRepositories.filter(
-    (repository) => !configuredIds.has(repository.id),
-  );
   const repositoryById = new Map(
     confirmedRepositories.map((repository) => [repository.id, repository]),
   );
+  const activePlanIndex = plans.findIndex((plan) => plan.repositoryId === activeRepositoryId);
+  const activePlan = activePlanIndex >= 0 ? plans[activePlanIndex] : undefined;
+  const activeRepository = activePlan ? repositoryById.get(activePlan.repositoryId) : undefined;
+  const activeBranchQuery = activePlanIndex >= 0 ? branchQueries[activePlanIndex] : undefined;
   const allPlansValid =
     plans.length > 0 &&
     plans.every((plan, index) => {
@@ -153,9 +160,21 @@ export function GitBranchesPage() {
     onError: (error) => message.error(error.message),
   });
 
-  const addRepository = (repositoryId: string) => {
-    setPlans((current) => [...current, { repositoryId, baselineRef: '', branchNamesText: '' }]);
-    setRepositoryToAdd(undefined);
+  const setRepositorySelected = (repositoryId: string, selected: boolean) => {
+    if (selected) {
+      setPlans((current) =>
+        current.some((plan) => plan.repositoryId === repositoryId)
+          ? current
+          : [...current, { repositoryId, baselineRef: '', branchNamesText: '' }],
+      );
+      setActiveRepositoryId(repositoryId);
+    } else {
+      const remaining = plans.filter((plan) => plan.repositoryId !== repositoryId);
+      setPlans(remaining);
+      setActiveRepositoryId((current) =>
+        current === repositoryId ? remaining[0]?.repositoryId : current,
+      );
+    }
     setLastResult(undefined);
   };
 
@@ -166,18 +185,13 @@ export function GitBranchesPage() {
     setLastResult(undefined);
   };
 
-  const removePlan = (repositoryId: string) => {
-    setPlans((current) => current.filter((plan) => plan.repositoryId !== repositoryId));
-    setLastResult(undefined);
-  };
-
   return (
     <Space direction="vertical" size="large" className="page-stack git-branches-page">
       <div className="page-heading">
         <div>
           <Typography.Title level={2}>Git 分支管理</Typography.Title>
           <Typography.Text type="secondary">
-            逐个添加仓库配置面板，全部配置完成后一次性创建所有仓库的本地分支。
+            从左侧选择仓库，在右侧逐个配置；完成后可一次性创建所有选中仓库的本地分支。
           </Typography.Text>
         </div>
         <Tag icon={<BranchesOutlined />} color="blue">
@@ -185,186 +199,129 @@ export function GitBranchesPage() {
         </Tag>
       </div>
 
-      <Card title="添加仓库配置">
-        <Typography.Paragraph type="secondary">
-          每选择一个仓库，就会在下方新增一个独立面板。同一个仓库只能添加一次。
-        </Typography.Paragraph>
-        <Select
-          showSearch
-          allowClear
-          value={repositoryToAdd}
-          optionFilterProp="label"
+      <div className="git-branches-workbench">
+        <Card
+          className="repository-selector-card"
+          title="配置好的仓库"
           loading={repositories.isLoading}
-          placeholder="选择要加入本次批量创建的仓库"
-          className="repository-add-select"
-          suffixIcon={<PlusOutlined />}
-          onChange={(value) => {
-            setRepositoryToAdd(value);
-            if (value) addRepository(value);
-          }}
-          options={availableRepositories.map((repository) => ({
-            value: repository.id,
-            label: repository.alias ?? repository.displayName,
-          }))}
-        />
-        {confirmedRepositories.length === 0 && !repositories.isLoading && (
-          <Alert
-            showIcon
-            type="warning"
-            message="暂无已确认仓库"
-            description="请先到“项目与仓库”中发现并确认仓库。"
-          />
-        )}
-      </Card>
-
-      {plans.length === 0 ? (
-        <Card>
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description="选择仓库后将在这里生成配置面板"
-          />
-        </Card>
-      ) : (
-        plans.map((plan, index) => {
-          const repository = repositoryById.get(plan.repositoryId);
-          const query = branchQueries[index];
-          const branches = query?.data?.data ?? [];
-          const branchCount = parseBranchNames(plan.branchNamesText).length;
-          return (
-            <Card
-              key={plan.repositoryId}
-              className="repository-branch-panel"
-              title={
-                <Space>
-                  <BranchesOutlined />
-                  <span>{repository?.alias ?? repository?.displayName ?? plan.repositoryId}</span>
-                  <Tag>{index + 1}</Tag>
-                </Space>
-              }
-              extra={
-                <Button
-                  type="text"
-                  danger
-                  icon={<DeleteOutlined />}
-                  onClick={() => removePlan(plan.repositoryId)}
-                >
-                  移除
-                </Button>
-              }
-            >
-              {query?.isError && (
-                <Alert
-                  showIcon
-                  type="error"
-                  message="分支加载失败"
-                  description={query.error.message}
-                  action={
-                    <Button size="small" onClick={() => void query.refetch()}>
-                      重试
-                    </Button>
-                  }
-                />
-              )}
-              <div className="form-grid repository-branch-fields">
-                <div>
-                  <Typography.Text strong>基准分支</Typography.Text>
-                  <Select<string>
-                    showSearch
-                    {...(plan.baselineRef ? { value: plan.baselineRef } : {})}
-                    optionFilterProp="label"
-                    loading={query?.isLoading === true}
-                    placeholder="选择本地或远程分支"
-                    onChange={(baselineRef) => updatePlan(plan.repositoryId, { baselineRef })}
-                    options={branches.map((branch) => ({
-                      value: branch.fullName,
-                      label: `${branch.name} · ${branch.scope === 'local' ? '本地' : '远程'} · ${formatTime(branch.updatedAt)}`,
-                    }))}
-                  />
-                  {!plan.baselineRef && (
-                    <Typography.Text type="danger" className="branch-field-error">
-                      请选择基准分支
-                    </Typography.Text>
-                  )}
-                </div>
-                <div>
-                  <Typography.Text strong>新分支名称（每行一个，最多 50 个）</Typography.Text>
-                  <Input.TextArea
-                    rows={5}
-                    value={plan.branchNamesText}
-                    maxLength={12_800}
-                    {...(branchCount === 0 || branchCount > 50 ? { status: 'error' as const } : {})}
-                    placeholder={'feature/task-101\nfeature/task-102\nfix/login-timeout'}
-                    onChange={(event) =>
-                      updatePlan(plan.repositoryId, { branchNamesText: event.target.value })
-                    }
-                  />
-                  <Typography.Text
-                    type={branchCount === 0 || branchCount > 50 ? 'danger' : 'secondary'}
-                    className="branch-field-error"
+          extra={<Tag color="blue">已选 {plans.length}</Tag>}
+        >
+          <Typography.Paragraph type="secondary" className="repository-selector-help">
+            勾选仓库加入批量任务，点击已选仓库可切换右侧内容。
+          </Typography.Paragraph>
+          {confirmedRepositories.length === 0 && !repositories.isLoading ? (
+            <Alert
+              showIcon
+              type="warning"
+              message="暂无已确认仓库"
+              description="请先到“项目与仓库”中发现并确认仓库。"
+            />
+          ) : (
+            <div className="repository-selector-list" aria-label="配置好的仓库">
+              {confirmedRepositories.map((repository) => {
+                const checked = configuredIds.has(repository.id);
+                const active = activeRepositoryId === repository.id;
+                const plan = plans.find((item) => item.repositoryId === repository.id);
+                const branchCount = parseBranchNames(plan?.branchNamesText ?? '').length;
+                const planReady =
+                  Boolean(plan?.baselineRef) && branchCount > 0 && branchCount <= 50;
+                return (
+                  <div
+                    key={repository.id}
+                    role="button"
+                    tabIndex={0}
+                    className={`repository-selector-item${active ? ' is-active' : ''}`}
+                    onClick={() => {
+                      if (checked) setActiveRepositoryId(repository.id);
+                      else setRepositorySelected(repository.id, true);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter' && event.key !== ' ') return;
+                      event.preventDefault();
+                      if (checked) setActiveRepositoryId(repository.id);
+                      else setRepositorySelected(repository.id, true);
+                    }}
                   >
-                    {branchCount === 0
-                      ? '请输入至少一个新分支名称'
-                      : branchCount > 50
-                        ? `已输入 ${branchCount} 个，一次最多 50 个`
-                        : `已配置 ${branchCount} 个新分支`}
-                  </Typography.Text>
-                </div>
-              </div>
+                    <Checkbox
+                      checked={checked}
+                      aria-label={`选择仓库 ${repository.alias ?? repository.displayName}`}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) =>
+                        setRepositorySelected(repository.id, event.target.checked)
+                      }
+                    />
+                    <div className="repository-selector-copy">
+                      <Typography.Text strong ellipsis={{ tooltip: repository.displayName }}>
+                        {repository.alias ?? repository.displayName}
+                      </Typography.Text>
+                      <Typography.Text
+                        type="secondary"
+                        ellipsis={{ tooltip: repository.canonicalPath }}
+                      >
+                        {repository.project?.alias ??
+                          repository.project?.name ??
+                          repository.canonicalPath}
+                      </Typography.Text>
+                    </div>
+                    {checked && (
+                      <Tag color={planReady ? 'success' : 'default'}>
+                        {planReady ? `${branchCount} 个` : '待配置'}
+                      </Tag>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
 
-              <div className="repository-branch-list-heading">
-                <Typography.Text strong>全部分支（{branches.length}）</Typography.Text>
-                <Button
-                  size="small"
-                  icon={<ReloadOutlined />}
-                  loading={query?.isFetching === true}
-                  onClick={() => {
-                    if (query) void query.refetch();
-                  }}
-                >
-                  刷新
-                </Button>
-              </div>
-              <Table<GitBranchView>
-                size="small"
-                rowKey="fullName"
-                loading={query?.isLoading === true}
-                dataSource={branches}
-                pagination={{ pageSize: 8, hideOnSinglePage: true }}
-                locale={{ emptyText: '该仓库暂无分支' }}
-                columns={branchColumns({
-                  deletingBranch:
-                    deleteBranch.isPending &&
-                    deleteBranch.variables?.repositoryId === plan.repositoryId
-                      ? deleteBranch.variables.branch.fullName
-                      : null,
-                  onDelete: (branch) =>
-                    deleteBranch.mutate({ repositoryId: plan.repositoryId, branch }),
-                })}
+        <div className="git-branches-detail">
+          {!activePlan ? (
+            <Card className="repository-detail-empty">
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="请从左侧勾选一个仓库查看并配置分支"
               />
             </Card>
-          );
-        })
-      )}
+          ) : (
+            <RepositoryBranchPanel
+              plan={activePlan}
+              repository={activeRepository}
+              query={activeBranchQuery}
+              deletingBranch={
+                deleteBranch.isPending &&
+                deleteBranch.variables?.repositoryId === activePlan.repositoryId
+                  ? deleteBranch.variables.branch.fullName
+                  : null
+              }
+              onUpdate={(patch) => updatePlan(activePlan.repositoryId, patch)}
+              onDelete={(branch) =>
+                deleteBranch.mutate({ repositoryId: activePlan.repositoryId, branch })
+              }
+            />
+          )}
 
-      {plans.length > 0 && (
-        <Card className="branch-submit-card">
-          <Alert
-            showIcon
-            type="info"
-            message={`已配置 ${plans.length} 个仓库。执行时只新增本地分支，不会切换当前分支、修改文件或推送远程。`}
-          />
-          <Button
-            type="primary"
-            size="large"
-            icon={<BranchesOutlined />}
-            loading={createBranches.isPending}
-            disabled={!allPlansValid}
-            onClick={() => createBranches.mutate()}
-          >
-            在全部 {plans.length} 个仓库中创建分支
-          </Button>
-        </Card>
-      )}
+          {plans.length > 0 && (
+            <Card className="branch-submit-card">
+              <Alert
+                showIcon
+                type="info"
+                message={`已选择 ${plans.length} 个仓库。执行时只新增本地分支，不会切换当前分支、修改文件或推送远程。`}
+              />
+              <Button
+                type="primary"
+                size="large"
+                icon={<BranchesOutlined />}
+                loading={createBranches.isPending}
+                disabled={!allPlansValid}
+                onClick={() => createBranches.mutate()}
+              >
+                在全部 {plans.length} 个仓库中创建分支
+              </Button>
+            </Card>
+          )}
+        </div>
+      </div>
 
       {lastResult && (
         <Card title="本次创建结果">
@@ -434,6 +391,115 @@ export function GitBranchesPage() {
         </Card>
       )}
     </Space>
+  );
+}
+
+function RepositoryBranchPanel(props: {
+  plan: RepositoryPlan;
+  repository: RepositoryView | undefined;
+  query: UseQueryResult<ApiEnvelope<GitBranchView[]>, Error> | undefined;
+  deletingBranch: string | null;
+  onUpdate: (patch: Partial<RepositoryPlan>) => void;
+  onDelete: (branch: GitBranchView) => void;
+}) {
+  const branches = props.query?.data?.data ?? [];
+  const branchCount = parseBranchNames(props.plan.branchNamesText).length;
+  return (
+    <Card
+      className="repository-branch-panel"
+      title={
+        <Space>
+          <BranchesOutlined />
+          <span>
+            {props.repository?.alias ?? props.repository?.displayName ?? props.plan.repositoryId}
+          </span>
+          {props.repository?.project && (
+            <Tag>{props.repository.project.alias ?? props.repository.project.name}</Tag>
+          )}
+        </Space>
+      }
+    >
+      {props.query?.isError && (
+        <Alert
+          showIcon
+          type="error"
+          message="分支加载失败"
+          description={props.query.error?.message}
+          action={
+            <Button size="small" onClick={() => void props.query?.refetch()}>
+              重试
+            </Button>
+          }
+        />
+      )}
+      <div className="form-grid repository-branch-fields">
+        <div>
+          <Typography.Text strong>基准分支</Typography.Text>
+          <Select<string>
+            showSearch
+            {...(props.plan.baselineRef ? { value: props.plan.baselineRef } : {})}
+            optionFilterProp="label"
+            loading={props.query?.isLoading === true}
+            placeholder="选择本地或远程分支"
+            onChange={(baselineRef) => props.onUpdate({ baselineRef })}
+            options={branches.map((branch) => ({
+              value: branch.fullName,
+              label: `${branch.name} · ${branch.scope === 'local' ? '本地' : '远程'} · ${formatTime(branch.updatedAt)}`,
+            }))}
+          />
+          {!props.plan.baselineRef && (
+            <Typography.Text type="danger" className="branch-field-error">
+              请选择基准分支
+            </Typography.Text>
+          )}
+        </div>
+        <div>
+          <Typography.Text strong>新分支名称（每行一个，最多 50 个）</Typography.Text>
+          <Input.TextArea
+            rows={5}
+            value={props.plan.branchNamesText}
+            maxLength={12_800}
+            {...(branchCount === 0 || branchCount > 50 ? { status: 'error' as const } : {})}
+            placeholder={'feature/task-101\nfeature/task-102\nfix/login-timeout'}
+            onChange={(event) => props.onUpdate({ branchNamesText: event.target.value })}
+          />
+          <Typography.Text
+            type={branchCount === 0 || branchCount > 50 ? 'danger' : 'secondary'}
+            className="branch-field-error"
+          >
+            {branchCount === 0
+              ? '请输入至少一个新分支名称'
+              : branchCount > 50
+                ? `已输入 ${branchCount} 个，一次最多 50 个`
+                : `已配置 ${branchCount} 个新分支`}
+          </Typography.Text>
+        </div>
+      </div>
+
+      <div className="repository-branch-list-heading">
+        <Typography.Text strong>全部分支（{branches.length}）</Typography.Text>
+        <Button
+          size="small"
+          icon={<ReloadOutlined />}
+          loading={props.query?.isFetching === true}
+          onClick={() => void props.query?.refetch()}
+        >
+          刷新
+        </Button>
+      </div>
+      <Table<GitBranchView>
+        size="small"
+        rowKey="fullName"
+        loading={props.query?.isLoading === true}
+        dataSource={branches}
+        pagination={{ pageSize: 8, hideOnSinglePage: true }}
+        locale={{ emptyText: '该仓库暂无分支' }}
+        columns={branchColumns({
+          deletingBranch: props.deletingBranch,
+          onDelete: props.onDelete,
+        })}
+      />
+    </Card>
   );
 }
 

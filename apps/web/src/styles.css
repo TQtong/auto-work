@@ -167,8 +167,76 @@ body {
 .branch-result-table {
   margin-top: 16px;
 }
-.repository-add-select {
-  width: min(720px, 100%);
+.git-branches-workbench {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.repository-selector-card {
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 36px);
+}
+.repository-selector-card .ant-card-body {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 104px);
+  padding: 12px;
+}
+.repository-selector-help {
+  margin: 0 4px 12px !important;
+}
+.repository-selector-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+}
+.repository-selector-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 58px;
+  padding: 10px 11px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: var(--app-muted-surface);
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease;
+}
+.repository-selector-item:hover,
+.repository-selector-item:focus-visible {
+  border-color: color-mix(in srgb, var(--ant-color-primary) 55%, var(--app-border));
+  outline: none;
+}
+.repository-selector-item.is-active {
+  border-color: var(--ant-color-primary);
+  background: color-mix(in srgb, var(--ant-color-primary) 12%, var(--app-elevated));
+  box-shadow: inset 3px 0 0 var(--ant-color-primary);
+}
+.repository-selector-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.repository-selector-copy .ant-typography {
+  max-width: 100%;
+}
+.git-branches-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+.repository-detail-empty .ant-card-body {
+  display: grid;
+  min-height: 360px;
+  place-items: center;
 }
 .repository-branch-panel .ant-card-head {
   background: var(--app-card-heading);
@@ -519,6 +587,46 @@ body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .ai-configured-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .git-branches-workbench {
+    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  }
+  .repository-branch-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .repository-selector-item {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .repository-selector-item > .ant-tag {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .git-branches-workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .repository-selector-card {
+    position: static;
+    max-height: none;
+  }
+  .repository-selector-card .ant-card-body {
+    max-height: none;
+  }
+  .repository-selector-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-height: 320px;
+  }
+  .branch-submit-card .ant-card-body {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 560px) {
+  .repository-selector-list {
     grid-template-columns: minmax(0, 1fr);
   }
 }
