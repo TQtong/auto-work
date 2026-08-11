@@ -49,6 +49,24 @@ function Get-ConfigValue([object]$Object, [string]$Name, [object]$Default = $nul
     return $Default
 }
 
+function Set-AutoWorkClipboardText([string]$Value, [int]$TimeoutMilliseconds = 5000) {
+    $deadline = [DateTimeOffset]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        try {
+            [System.Windows.Forms.Clipboard]::SetText($Value)
+            Set-Variable -Name ClipboardUsed -Scope Script -Value $true
+            return
+        } catch {
+            if ([DateTimeOffset]::UtcNow -ge $deadline) { break }
+            # Windows allows only one process to own the clipboard at a time. OCR tools,
+            # screenshot utilities and DingTalk itself can hold it briefly, so retry within
+            # a strict bound instead of failing the whole delivery on the first collision.
+            Start-Sleep -Milliseconds 100
+        }
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+    throw 'DINGTALK_DESKTOP_CLIPBOARD_UNAVAILABLE|Windows 剪贴板持续被占用，5 秒内无法写入周报正文，请关闭占用剪贴板的工具后重试'
+}
+
 function Test-TextMatch([string]$Actual, [string[]]$Expected, [switch]$Contains) {
     $normalized = Normalize-Text $Actual
     foreach ($value in $Expected) {
@@ -337,8 +355,7 @@ function Set-ElementValue([System.Windows.Automation.AutomationElement]$Element,
     }
     if (-not (Invoke-Element $Element)) { return $false }
     Start-Sleep -Milliseconds 150
-    [System.Windows.Forms.Clipboard]::SetText($Value)
-    Set-Variable -Name ClipboardUsed -Scope Script -Value $true
+    Set-AutoWorkClipboardText $Value
     [System.Windows.Forms.SendKeys]::SendWait('^a')
     [System.Windows.Forms.SendKeys]::SendWait('^v')
     return $true
@@ -404,7 +421,11 @@ function Resolve-Form([System.Windows.Automation.AutomationElement]$Root, [objec
         if (-not $candidate) { throw "DINGTALK_DESKTOP_INPUT_NOT_FOUND|找不到字段输入控件：$($label.Current.Name)" }
         $used.Add($candidate.RuntimeId) | Out-Null
         if ($SetValues) {
-            if (-not (Set-ElementValue $candidate.Element $values[$index])) { throw "DINGTALK_DESKTOP_INPUT_FAILED|无法填写字段：$($label.Current.Name)" }
+            # DingTalk initializes a new report with today's date. Scheduling controls only
+            # when this code runs; never replace that date with a period or scheduled date.
+            if ($index -ne 0 -and -not (Set-ElementValue $candidate.Element $values[$index])) {
+                throw "DINGTALK_DESKTOP_INPUT_FAILED|无法填写字段：$($label.Current.Name)"
+            }
             Start-Sleep -Milliseconds 180
         }
     }
@@ -816,6 +837,29 @@ function Get-OcrInputTarget(
     }
 }
 
+function Assert-OcrCurrentReportDate(
+    [object]$Snapshot,
+    [object]$LabelHit,
+    [string]$ExpectedDate
+) {
+    try {
+        $null = [DateTime]::ParseExact($ExpectedDate, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+    } catch {
+        throw 'DINGTALK_DESKTOP_REPORT_DATE_INVALID|周报填写日期必须是 yyyy-MM-dd'
+    }
+    $dateHit = @(
+        Get-OcrHits $Snapshot @($ExpectedDate) -Exact | Where-Object {
+            $_.Top -ge ($LabelHit.Bottom - 4) -and
+            $_.Top -le ($LabelHit.Bottom + 150) -and
+            $_.Right -ge ($LabelHit.Left - 20) -and
+            $_.Left -le ($LabelHit.Right + 520)
+        }
+    ) | Sort-Object Top, Left | Select-Object -First 1
+    if (-not $dateHit) {
+        throw "DINGTALK_DESKTOP_CURRENT_DATE_MISMATCH|钉钉周报填写日期不是执行当天 $ExpectedDate，已停止提交"
+    }
+}
+
 function Get-CalendarMonthInfo([object]$Snapshot) {
     $monthNames = @(
         @('jan', 'january'), @('feb', 'february'), @('mar', 'march'), @('apr', 'april'),
@@ -915,8 +959,7 @@ function Set-OcrInputValue([object]$Snapshot, [object]$Target, [string]$Value, [
         Select-OcrCalendarDate (Get-DingTalkProcess) $requestedDate
         return
     }
-    [System.Windows.Forms.Clipboard]::SetText($Value)
-    Set-Variable -Name ClipboardUsed -Scope Script -Value $true
+    Set-AutoWorkClipboardText $Value
     [System.Windows.Forms.SendKeys]::SendWait('^a')
     [System.Windows.Forms.SendKeys]::SendWait('^v')
     Start-Sleep -Milliseconds 180
@@ -990,6 +1033,13 @@ function Resolve-FormWithOcr(
             if ($completed.Contains($index)) { continue }
             $label = Find-OcrHit $snapshot $labels[$index]
             if (-not $label) { continue }
+            if ($SetValues -and $index -eq 0) {
+                # A new DingTalk report already defaults to the execution day's date. Verify
+                # the visible value and leave the date picker untouched.
+                Assert-OcrCurrentReportDate $snapshot $label $values[$index]
+                $completed.Add($index) | Out-Null
+                continue
+            }
             $hint = Get-OcrInputHint $snapshot $label -DateField:($index -eq 0)
             $target = Get-OcrInputTarget $snapshot $label $hint -DateField:($index -eq 0) -AllowInferred:$SetValues
             if (-not $target) { continue }

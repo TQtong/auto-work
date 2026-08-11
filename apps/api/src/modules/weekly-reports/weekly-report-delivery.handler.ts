@@ -13,6 +13,7 @@ import {
 } from '../dingtalk/dingtalk-desktop.client.js';
 import type { JobExecutionContext, JobHandler } from '../jobs/job-registry.service.js';
 import { JobRegistryService } from '../jobs/job-registry.service.js';
+import { businessDateAt } from './weekly-report-delivery-date.js';
 import { buildDingTalkReportContents } from './weekly-report-delivery.payload.js';
 import {
   buildWeeklyReportRobotNotification,
@@ -195,7 +196,9 @@ export class WeeklyReportDeliveryHandler implements JobHandler, OnModuleInit {
       );
     }
     const result = await this.desktopClient.submit(config.data, {
-      reportDate: intent.confirmedVersion.reportDateText,
+      // “提交时间”只决定 Job 何时执行。钉钉新建日志的填写日期应是执行当日，
+      // 不能复用周报周期末日，也不能从预约时间反向写入冻结正文。
+      reportDate: businessDateAt(new Date(), intent.report.timezone),
       recentGoals: intent.confirmedVersion.recentGoalsText,
       weeklyWork: intent.confirmedVersion.weeklyWorkText,
       nextWeekPlans: intent.confirmedVersion.nextWeekPlansText,

@@ -16,6 +16,7 @@ import { JobRegistryService } from '../src/modules/jobs/job-registry.service.js'
 import type { JobHandler } from '../src/modules/jobs/job-registry.service.js';
 import type { SessionService } from '../src/modules/session/session.service.js';
 import { WeeklyReportDeliveryHandler } from '../src/modules/weekly-reports/weekly-report-delivery.handler.js';
+import { businessDateAt } from '../src/modules/weekly-reports/weekly-report-delivery-date.js';
 import { WeeklyReportDeliveryRecoveryService } from '../src/modules/weekly-reports/weekly-report-delivery-recovery.service.js';
 import { WeeklyReportDeliveryService } from '../src/modules/weekly-reports/weekly-report-delivery.service.js';
 import { WeeklyReportNotificationLedgerService } from '../src/modules/weekly-reports/weekly-report-notification-ledger.service.js';
@@ -111,7 +112,8 @@ describe('周报钉钉正式日志与机器人双通道交付', () => {
       recipientGroupName: 'R&D Center',
       timeoutSeconds: 45,
     });
-    expect(desktopCall[1].reportDate).toBe('2026-07-18');
+    expect(desktopCall[1].reportDate).toBe(businessDateAt(new Date(), 'Asia/Shanghai'));
+    expect(desktopCall[1].reportDate).not.toBe('2026-07-18');
     expect(Object.keys(desktopCall[1])).toEqual([...weeklyFields]);
     expect(
       [
