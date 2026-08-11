@@ -1,5 +1,7 @@
 # 04 项目、Git 与 GitLab 详细设计
 
+> macOS 的 Git 可执行文件、APFS 大小写/符号链接边界、原生目录选择和真实仓库门禁见 [macOS 原生能力与页面入口](./macos-compatibility/04-native-capabilities-and-ui-entry.md)及[测试与验收](./macos-compatibility/08-test-and-acceptance.md)。
+
 ## 1. 功能边界
 
 本模块提供仓库发现、项目登记、本地状态采集、GitLab 只读元数据、受控 Git 写操作和批次结果管理。GitLab API 不替代本地 Git：工作区、Index、本地分支和真实写操作必须来自平台 Git CLI（Windows 为 `git.exe`，Linux/macOS 为 `git`）；GitLab 提供远端平台视角。

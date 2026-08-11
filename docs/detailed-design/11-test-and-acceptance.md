@@ -1,5 +1,7 @@
 # 11 测试与验收设计
 
+> Windows、macOS Intel/Apple Silicon 和 Linux Docker 的兼容矩阵、49 条 macOS 验收条件及真实钉钉 UAT 见 [macOS 测试与验收](./macos-compatibility/08-test-and-acceptance.md)。
+
 ## 1. 质量策略
 
 测试目标不是只证明“正常路径能点通”，而是证明：不会漏任务、不会越权执行 Git、不会重复提交正式日志、不会把空工时当零、不会把 AI 建议当事实、失败后能判断和恢复。所有关键业务状态机、合并规则和安全边界必须在外部系统不可用时仍可自动验证。

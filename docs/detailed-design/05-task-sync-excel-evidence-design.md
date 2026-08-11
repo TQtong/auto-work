@@ -1,5 +1,7 @@
 # 05 任务同步、Excel 与证据详细设计
 
+> Excel 导入组件接入“任务与证据”页、提交后的查询刷新和跨平台行为见 [macOS 原生能力与页面入口](./macos-compatibility/04-native-capabilities-and-ui-entry.md)。Excel 业务解析和来源规则仍以本篇为准。
+
 ## 1. 目标
 
 建立统一的个人任务视图：Jira 为主事实，Excel 为 Jira 不可用时的兜底和缺失排期/工时补充；Git/GitLab 元数据作为工作证据。系统不写 Jira，不凭推测更改任务状态。

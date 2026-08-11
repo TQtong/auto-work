@@ -1,5 +1,7 @@
 # 10 安全、可靠性与运维设计
 
+> macOS sealed vault、签名桌面桥接、系统隐私权限、剪贴板和本机目录 IPC 的安全增量见 [身份、配置与数据迁移](./macos-compatibility/03-identity-config-and-data-migration.md)、[macOS 钉钉桌面桥接](./macos-compatibility/05-macos-dingtalk-desktop-bridge.md)和[安装与发布](./macos-compatibility/07-macos-installation-and-release.md)。
+
 ## 1. 保护目标
 
 1. 防止 Git/Jira/钉钉/AI 凭证泄漏。

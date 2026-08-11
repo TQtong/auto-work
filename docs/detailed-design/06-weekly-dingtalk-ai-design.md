@@ -1,5 +1,7 @@
 # 06 周报、钉钉与 AI 详细设计
 
+> macOS 无接口权限钉钉桌面提交的签名桥接、系统权限、AX/Vision、v2 协议、防重和 unknown 处理见 [macOS 钉钉桌面桥接](./macos-compatibility/05-macos-dingtalk-desktop-bridge.md)。
+
 ## 1. 目标和边界
 
 系统从可追溯的 Jira/Git/人工事实生成周报草稿，用户修改并确认后，才通过钉钉正式日志通道提交；Custom Webhook 只承担提醒和短摘要。AI 是可替换的表述服务，不是事实源、执行器或审批者。

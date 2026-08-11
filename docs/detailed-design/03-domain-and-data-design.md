@@ -1,5 +1,7 @@
 # 03 领域与数据设计
 
+> `windowsSid` 向 `localIdentityKey + platform` 的兼容迁移、macOS 目录、sealed vault 和 DPAPI 跨平台边界见 [macOS 身份、配置与数据迁移](./macos-compatibility/03-identity-config-and-data-migration.md)。
+
 ## 1. 数据设计原则
 
 - SQLite 是本机事实缓存和操作记录，不取代 Jira/GitLab/钉钉的源事实。

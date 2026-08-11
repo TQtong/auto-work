@@ -1,8 +1,11 @@
 # 已知限制与使用边界
 
+> macOS 13+ 原生和完整桌面能力的详细兼容设计已经形成，见 [macOS 兼容详细设计文档集](../detailed-design/macos-compatibility/README.md)。当前原生代码、签名发布包和真实钉钉 UAT 尚未完成，因此不能提前宣称 macOS 已达到与 Windows 相同的完整支持等级。
+
 ## 已实现但受部署环境约束
 
 - 产品支持 Docker Linux 容器和 Windows 本机两种单用户部署，但宿主机都只允许 loopback 访问；不支持远程访问、多用户并发、服务端集群、反向代理或移动端。
+- macOS Docker Desktop 可承载现有 Linux 容器核心功能；原生目录选择、平台中立身份、用户级安装、macOS 钉钉桌面桥接和双架构原生发布门禁仍处于详细设计阶段。
 - Windows 凭证使用当前用户范围 DPAPI；Docker 使用 AES-256-GCM 密封文件。DPAPI 引用不能在 Linux 解密，迁移时必须重新配置；Docker 完整备份必须包含主密钥。
 - 默认 Docker 主密钥与密文位于同一命名卷，Docker daemon/卷管理员属于信任边界；高安全环境需使用独立只读 secret 挂载。
 - SQLite、调度器和实例租约仍只支持单容器副本；Compose 不能设置多副本或共享网络文件系统数据库。

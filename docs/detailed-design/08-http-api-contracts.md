@@ -1,5 +1,7 @@
 # 08 HTTP API 契约
 
+> 平台能力端点、跨平台会话字段、macOS 目录选择和钉钉探测扩展见 [macOS API 契约与前端行为](./macos-compatibility/06-api-contracts-and-frontend-behavior.md)。
+
 ## 1. 协议约定
 
 ### 1.1 基础
