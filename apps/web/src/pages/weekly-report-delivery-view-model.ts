@@ -8,6 +8,14 @@ export interface DeliveryRecoveryActions {
   retryBlockedReason: string | null;
 }
 
+const desktopDatePreflightErrorCodes = new Set([
+  'DINGTALK_DESKTOP_CURRENT_DATE_MISMATCH',
+  'DINGTALK_DESKTOP_DATE_INPUT_NOT_FOUND',
+  'DINGTALK_DESKTOP_DATE_PICKER_FAILED',
+  'DINGTALK_DESKTOP_DATE_SELECTION_UNVERIFIED',
+  'DINGTALK_DESKTOP_DATE_OUT_OF_RANGE',
+]);
+
 export function currentLogDeliveryIntent(
   intents: WeeklyReportDeliveryIntent[],
   confirmationId: string | null | undefined,
@@ -41,14 +49,21 @@ export function deliveryRecoveryActions(
 ): DeliveryRecoveryActions {
   const unresolved = intent.status === 'unknown' || intent.status === 'needs_review';
   const resultQuerySupported = options.resultQuerySupported ?? true;
+  const retryingProvablyPreSubmitDateFailure =
+    intent.channel === 'dingtalk_log' &&
+    intent.lastErrorCode !== null &&
+    desktopDatePreflightErrorCodes.has(intent.lastErrorCode) &&
+    intent.attemptCount < 10;
+  const canRetry =
+    intent.status === 'failed' && (intent.attemptCount < 3 || retryingProvablyPreSubmitDateFailure);
   return {
     canReconcile: intent.channel === 'dingtalk_log' && unresolved && resultQuerySupported,
     canResolve: unresolved,
-    canRetry: intent.status === 'failed' && intent.attemptCount < 3,
+    canRetry,
     retryBlockedReason:
       unresolved && intent.channel === 'dingtalk_log'
         ? '结果尚未证明失败，必须先查询或人工核对，禁止重放创建请求'
-        : intent.attemptCount >= 3
+        : intent.attemptCount >= 3 && !retryingProvablyPreSubmitDateFailure
           ? '已达到三次显式尝试上限'
           : null,
   };

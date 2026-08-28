@@ -22,6 +22,28 @@ const queryWindowPaddingMs = 2 * 60_000;
 const providerVisibilityGraceMs = 2 * 60_000;
 const repeatedAbsenceGapMs = 30_000;
 const maximumDeliveryAttempts = 3;
+const maximumDesktopDatePreflightAttempts = 10;
+const desktopDatePreflightErrorCodes = new Set([
+  'DINGTALK_DESKTOP_CURRENT_DATE_MISMATCH',
+  'DINGTALK_DESKTOP_DATE_INPUT_NOT_FOUND',
+  'DINGTALK_DESKTOP_DATE_PICKER_FAILED',
+  'DINGTALK_DESKTOP_DATE_SELECTION_UNVERIFIED',
+  'DINGTALK_DESKTOP_DATE_OUT_OF_RANGE',
+]);
+
+export function canRetryFailedDeliveryAttempt(input: {
+  attemptCount: number;
+  connectionType: string;
+  lastErrorCode: string | null;
+}): boolean {
+  if (input.attemptCount < maximumDeliveryAttempts) return true;
+  return (
+    input.connectionType === 'dingtalk_desktop' &&
+    input.lastErrorCode !== null &&
+    desktopDatePreflightErrorCodes.has(input.lastErrorCode) &&
+    input.attemptCount < maximumDesktopDatePreflightAttempts
+  );
+}
 
 interface RecoveryAuditContext {
   correlationId: string;
@@ -334,7 +356,13 @@ export class WeeklyReportDeliveryRecoveryService {
         suggestedAction: 'manual_review',
       });
     }
-    if (intent.attemptCount >= maximumDeliveryAttempts) {
+    if (
+      !canRetryFailedDeliveryAttempt({
+        attemptCount: intent.attemptCount,
+        connectionType: intent.connection.type,
+        lastErrorCode: intent.lastErrorCode,
+      })
+    ) {
       throw new DomainError(
         'DELIVERY_RETRY_LIMIT_REACHED',
         `交付最多允许 ${maximumDeliveryAttempts} 次显式尝试，当前必须人工处理`,

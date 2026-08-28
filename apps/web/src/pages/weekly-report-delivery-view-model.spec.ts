@@ -72,6 +72,15 @@ describe('周报交付恢复视图模型', () => {
       canRetry: false,
       retryBlockedReason: '已达到三次显式尝试上限',
     });
+    expect(
+      deliveryRecoveryActions(
+        intent({
+          status: 'failed',
+          attemptCount: 3,
+          lastErrorCode: 'DINGTALK_DESKTOP_CURRENT_DATE_MISMATCH',
+        }),
+      ),
+    ).toMatchObject({ canRetry: true, retryBlockedReason: null });
   });
 
   it('恢复状态和证据结果使用明确中文，不把首次未找到显示成已失败', () => {

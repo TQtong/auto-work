@@ -88,6 +88,7 @@ export class DingTalkDesktopProbeService implements IntegrationProbe, OnModuleIn
         organizationName: config.data.organizationName,
         templateHash,
         recipientGroupName: config.data.recipientGroupName,
+        observedAt: observedAt.toISOString(),
       });
       if (recipientVisible) {
         await this.persistRecipient(
@@ -200,10 +201,8 @@ export class DingTalkDesktopProbeService implements IntegrationProbe, OnModuleIn
       select: { id: true },
     });
     if (exists) {
-      await this.prisma.dingTalkRecipientValidation.update({
-        where: { id: exists.id },
-        data: { observedAt, expiresAt },
-      });
+      // 接收范围快照受数据库不可变触发器保护；同一次探测重放时直接复用，
+      // 新探测通过包含 observedAt 的能力哈希追加新行，绝不覆盖历史事实。
       return;
     }
     await this.prisma.dingTalkRecipientValidation.create({

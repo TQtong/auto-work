@@ -46,9 +46,10 @@ import {
 } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiClientError, apiRequest, type ApiEnvelope } from '../api/client.js';
 import type {
+  DingTalkRecipientValidation,
   DingTalkTemplateMappingHistory,
   Integration,
   WeeklyReport,
@@ -74,6 +75,7 @@ import {
 import {
   compareWeeklyFields,
   previousVersionId,
+  resolveCurrentRecipientValidationIds,
   weeklyReportFields,
 } from './weekly-report-view-model.js';
 
@@ -208,6 +210,7 @@ const originLabels: Record<string, string> = {
 
 export function WeeklyReportsPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const requestedReportId = searchParams.get('reportId');
   const [messageApi, holder] = message.useMessage();
@@ -415,14 +418,64 @@ export function WeeklyReportsPage() {
           `/api/v1/integrations/${connection.id}/dingtalk/template-mappings`,
         ),
       staleTime: 30_000,
+      refetchInterval: 15_000,
     })),
   });
+  const mappingHistories = mappingQueries.flatMap((query) =>
+    query.data?.data ? [query.data.data] : [],
+  );
+  const mappingVersions = mappingHistories.flatMap((history) => history.versions);
   const currentMappings = mappingQueries.flatMap((query) => {
     const history = query.data?.data;
     return history
       ? history.versions.filter((mapping) => mapping.id === history.currentVersionId)
       : [];
   });
+  const selectedMapping = mappingVersions.find((mapping) => mapping.id === selectedMappingId);
+  const selectedMappingConnection = (integrations.data?.data ?? []).find(
+    (connection) => connection.id === selectedMapping?.connectionId,
+  );
+  const replacementMapping = currentMappings.find(
+    (mapping) =>
+      mapping.connectionId === selectedMapping?.connectionId &&
+      !mapping.expired &&
+      selectedMappingConnection?.enabled &&
+      selectedMappingConnection.status === 'healthy',
+  );
+  const selectedMappingReady = Boolean(
+    selectedMapping &&
+    !selectedMapping.expired &&
+    selectedMappingConnection?.enabled &&
+    selectedMappingConnection.status === 'healthy' &&
+    mappingHistories.some(
+      (history) =>
+        history.connectionId === selectedMapping.connectionId &&
+        history.currentVersionId === selectedMapping.id,
+    ),
+  );
+  const recipientValidations = useQuery({
+    queryKey: ['dingtalk-recipient-validations', selectedConnectionId],
+    queryFn: () => {
+      if (!selectedConnectionId) throw new Error('尚未选择钉钉连接');
+      return apiRequest<DingTalkRecipientValidation[]>(
+        `/api/v1/integrations/${selectedConnectionId}/dingtalk/recipients`,
+      );
+    },
+    enabled: Boolean(selectedConnectionId),
+    staleTime: 30_000,
+    refetchInterval: 15_000,
+  });
+  const recipientResolution = useMemo(() => {
+    if (!version || version.recipientScope.connectionId !== selectedConnectionId) {
+      return { ids: selectedRecipientIds, ready: false, replaced: false };
+    }
+    return resolveCurrentRecipientValidationIds(
+      selectedRecipientIds,
+      version.recipientScope.recipients,
+      recipientValidations.data?.data ?? [],
+    );
+  }, [recipientValidations.data, selectedConnectionId, selectedRecipientIds, version]);
+  const selectedRecipientsReady = recipientValidations.isSuccess && recipientResolution.ready;
   const comparedVersion = useQuery({
     queryKey: ['weekly-report-version', selectedReportId, compareVersionId],
     queryFn: () => {
@@ -1111,6 +1164,25 @@ export function WeeklyReportsPage() {
   }, [currentMappings, selectedConnectionId, selectedMappingId]);
 
   useEffect(() => {
+    if (
+      !selectedMappingId ||
+      !selectedMapping ||
+      !replacementMapping ||
+      replacementMapping.id === selectedMappingId
+    )
+      return;
+    setSelectedMappingId(replacementMapping.id);
+    setSelectedConnectionId(replacementMapping.connectionId);
+    setSubmissionSettingsDirty(true);
+  }, [replacementMapping, selectedMapping, selectedMappingId]);
+
+  useEffect(() => {
+    if (!recipientResolution.ready || !recipientResolution.replaced) return;
+    setSelectedRecipientIds(recipientResolution.ids);
+    setSubmissionSettingsDirty(true);
+  }, [recipientResolution]);
+
+  useEffect(() => {
     if (!dirty || !report || !version || editMutation.isPending) return;
     // 保存失败/冲突后保留未保存内容，但不循环重试；用户再次编辑会把状态改回 dirty。
     if (autosaveState === 'error' || autosaveState === 'conflict') return;
@@ -1225,9 +1297,31 @@ export function WeeklyReportsPage() {
         intent.channel === 'dingtalk_robot' && intent.connectionId === selectedRobotConnectionId,
     ) ?? null;
   const logResultUnknown = logIntent?.status === 'unknown' || logIntent?.status === 'needs_review';
+  const mappingQueriesLoading = mappingQueries.some((query) => query.isLoading);
+  const mappingReadinessMessage = mappingQueriesLoading
+    ? null
+    : selectedMappingReady
+      ? null
+      : !selectedMappingId
+        ? '当前周报尚未绑定钉钉模板，请先在“设置与集成”完成钉钉桌面连接测试。'
+        : selectedMapping?.expired
+          ? `当前钉钉模板映射已于 ${formatDateTime(selectedMapping.expiresAt)} 过期。请重新测试钉钉桌面连接；测试通过后系统会自动刷新模板映射。`
+          : !selectedMappingConnection?.enabled || selectedMappingConnection?.status !== 'healthy'
+            ? '当前钉钉模板连接不可用。请在“设置与集成”重新测试连接。'
+            : '当前周报绑定的模板已不是最新版本。请刷新页面，或重新测试钉钉桌面连接。';
+  const recipientReadinessMessage =
+    recipientValidations.isLoading || !selectedConnectionId
+      ? null
+      : selectedRecipientsReady
+        ? null
+        : selectedRecipientIds.length === 0
+          ? '当前周报尚未绑定接收范围，请重新测试钉钉桌面连接。'
+          : '当前周报的收件人校验快照已失效，且没有找到同一接收对象的最新有效快照。请重新测试钉钉桌面连接。';
   const logSubmissionBlocked =
     !report ||
     !version ||
+    !selectedMappingReady ||
+    !selectedRecipientsReady ||
     version.attachments.length > 0 ||
     Boolean(logIntent && !logDeliveryCanRetry) ||
     Boolean(historicalUnresolvedLogIntent) ||
@@ -1902,6 +1996,34 @@ export function WeeklyReportsPage() {
               </Button>
             </Space>
           </div>
+
+          {mappingReadinessMessage && (
+            <Alert
+              type="warning"
+              showIcon
+              message="钉钉模板需要重新验证"
+              description={mappingReadinessMessage}
+              action={
+                <Button size="small" onClick={() => void navigate('/settings?tab=integrations')}>
+                  前往设置与集成
+                </Button>
+              }
+            />
+          )}
+
+          {!mappingReadinessMessage && recipientReadinessMessage && (
+            <Alert
+              type="warning"
+              showIcon
+              message="钉钉接收范围需要重新验证"
+              description={recipientReadinessMessage}
+              action={
+                <Button size="small" onClick={() => void navigate('/settings?tab=integrations')}>
+                  前往设置与集成
+                </Button>
+              }
+            />
+          )}
 
           {logIntent && (
             <Alert

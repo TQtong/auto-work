@@ -1,4 +1,4 @@
-import type { WeeklyReportVersion } from '../api/types.js';
+import type { DingTalkRecipientValidation, WeeklyReportVersion } from '../api/types.js';
 
 export const weeklyReportFields = [
   { key: 'reportDate', label: '填写日期', multiline: false },
@@ -17,6 +17,56 @@ export interface WeeklyFieldDifference {
   changed: boolean;
   before: string;
   after: string;
+}
+
+export interface CurrentRecipientValidationResolution {
+  ids: string[];
+  ready: boolean;
+  replaced: boolean;
+}
+
+export function resolveCurrentRecipientValidationIds(
+  selectedIds: string[],
+  savedRecipients: WeeklyReportVersion['recipientScope']['recipients'],
+  latestValidations: DingTalkRecipientValidation[],
+): CurrentRecipientValidationResolution {
+  if (selectedIds.length === 0) return { ids: [], ready: false, replaced: false };
+
+  const selectable = latestValidations.filter(
+    (validation) => validation.available && !validation.expired,
+  );
+  const currentById = new Map(selectable.map((validation) => [validation.id, validation]));
+  const savedById = new Map(
+    (savedRecipients ?? []).map((recipient) => [recipient.validationId, recipient]),
+  );
+  const resolvedIds: string[] = [];
+
+  for (const selectedId of selectedIds) {
+    const current = currentById.get(selectedId);
+    if (current) {
+      resolvedIds.push(current.id);
+      continue;
+    }
+    const saved = savedById.get(selectedId);
+    const replacement = saved
+      ? selectable.find(
+          (validation) =>
+            validation.subjectType === saved.subjectType &&
+            validation.externalId === saved.externalId,
+        )
+      : undefined;
+    if (!replacement) return { ids: selectedIds, ready: false, replaced: false };
+    resolvedIds.push(replacement.id);
+  }
+
+  if (new Set(resolvedIds).size !== resolvedIds.length) {
+    return { ids: selectedIds, ready: false, replaced: false };
+  }
+  return {
+    ids: resolvedIds,
+    ready: true,
+    replaced: resolvedIds.some((id, index) => id !== selectedIds[index]),
+  };
 }
 
 export function compareWeeklyFields(

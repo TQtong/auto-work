@@ -12,6 +12,7 @@ import { IntegrationProbeRegistry } from '../src/modules/integrations/integratio
 import { IntegrationTestHandler } from '../src/modules/integrations/integration-test.handler.js';
 import { IntegrationsController } from '../src/modules/integrations/integrations.controller.js';
 import { IntegrationsService } from '../src/modules/integrations/integrations.service.js';
+import { DingTalkTemplateMappingService } from '../src/modules/integrations/dingtalk-template-mapping.service.js';
 import type { JobRegistryService } from '../src/modules/jobs/job-registry.service.js';
 import type { JobQueueService } from '../src/modules/jobs/job-queue.service.js';
 import type { SessionService } from '../src/modules/session/session.service.js';
@@ -85,23 +86,31 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
         return Promise.resolve();
       },
     };
-    handler = new IntegrationTestHandler(
-      { register: vi.fn() } as unknown as JobRegistryService,
-      prisma as unknown as PrismaService,
-      probes,
-      vault,
-      new AuditService(prisma as unknown as PrismaService),
-      { enqueue } as unknown as JobQueueService,
-    );
     const prismaService = prisma as unknown as PrismaService;
     const sessions = { currentProfileId: 'local-user' } as SessionService;
     const security = {
       sessionHash: () => 'dingtalk-rotation-session-hash',
     } as unknown as LocalSecurityService;
+    const audit = new AuditService(prismaService);
+    const dingtalkMappings = new DingTalkTemplateMappingService(
+      prismaService,
+      sessions,
+      audit,
+      security,
+    );
+    handler = new IntegrationTestHandler(
+      { register: vi.fn() } as unknown as JobRegistryService,
+      prismaService,
+      probes,
+      vault,
+      audit,
+      { enqueue } as unknown as JobQueueService,
+      dingtalkMappings,
+    );
     integrations = new IntegrationsService(
       prismaService,
       sessions,
-      new AuditService(prismaService),
+      audit,
       security,
       { enqueue } as unknown as JobQueueService,
       probes,
@@ -310,6 +319,71 @@ describe('钉钉机器人待测试凭证安全轮换', () => {
     expect(
       await prisma.integrationConnection.count({ where: { name: '伪造风险规则机器人' } }),
     ).toBe(0);
+  });
+
+  it('钉钉桌面探测成功后自动续建当前模板映射版本', async () => {
+    const observedAt = new Date();
+    const expiresAt = new Date(observedAt.getTime() + 30 * 24 * 60 * 60 * 1_000);
+    const fieldNames = ['填写日期', '近期目标', '本周内容', '下周计划', '协助问题', '其他补充'];
+    probes.register({
+      type: 'dingtalk_desktop',
+      probe: () =>
+        Promise.resolve({
+          healthy: true,
+          status: 'healthy',
+          capabilities: {
+            templateDiscovery: {
+              supported: true,
+              snapshotHash: 'a'.repeat(64),
+              observedAt: observedAt.toISOString(),
+              expiresAt: expiresAt.toISOString(),
+              selectedTemplate: {
+                templateId: 'desktop-template-weekly',
+                templateName: '产研周报',
+                externalTemplateVersion: null,
+                templateHash: 'b'.repeat(64),
+                fields: fieldNames.map((externalFieldName, index) => ({
+                  externalFieldId: `desktop-field-${index}`,
+                  externalFieldName,
+                  externalType: index === 0 ? 'date' : 'text',
+                  order: index + 1,
+                  required: true,
+                  maxLength: null,
+                })),
+              },
+            },
+          },
+        }),
+    });
+    await prisma.integrationConnection.create({
+      data: {
+        id: 'desktop-auto-mapping',
+        type: 'dingtalk_desktop',
+        name: '钉钉桌面周报',
+        configJson: JSON.stringify({}),
+      },
+    });
+    await createTestJob('desktop-auto-mapping', 'desktop-auto-mapping');
+
+    const result = await handler.execute(jobContext('desktop-auto-mapping'));
+    const mapping = await prisma.dingTalkTemplateMapping.findUniqueOrThrow({
+      where: { connectionId: 'desktop-auto-mapping' },
+      include: { currentVersion: true },
+    });
+
+    expect(result).toMatchObject({
+      healthy: true,
+      templateMappingVersion: {
+        id: mapping.currentVersionId,
+        versionNo: 1,
+        expiresAt: expiresAt.toISOString(),
+      },
+    });
+    expect(mapping.currentVersion).toMatchObject({
+      templateName: '产研周报',
+      expiresAt,
+      createdBy: 'local-user',
+    });
   });
 
   it('固定消息测试成功后原子提升新凭证并清除旧保险箱引用', async () => {

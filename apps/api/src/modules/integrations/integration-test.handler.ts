@@ -9,6 +9,7 @@ import { AuditService } from '../audit/audit.service.js';
 import type { JobExecutionContext, JobHandler } from '../jobs/job-registry.service.js';
 import { JobRegistryService } from '../jobs/job-registry.service.js';
 import { JobQueueService } from '../jobs/job-queue.service.js';
+import { DingTalkTemplateMappingService } from './dingtalk-template-mapping.service.js';
 import { IntegrationProbeRegistry, type IntegrationType } from './integration-probe.registry.js';
 
 interface TestAuditContext {
@@ -32,6 +33,7 @@ export class IntegrationTestHandler implements JobHandler, OnModuleInit {
     @Inject(CREDENTIAL_VAULT) private readonly vault: CredentialVault,
     private readonly audit: AuditService,
     private readonly queue: JobQueueService,
+    private readonly dingtalkMappings: DingTalkTemplateMappingService,
   ) {}
 
   public onModuleInit(): void {
@@ -81,6 +83,20 @@ export class IntegrationTestHandler implements JobHandler, OnModuleInit {
     });
     if (connection.type === 'jira' && result.healthy) {
       await this.enqueueInitialJiraSync(connection.id, result.capabilities);
+    }
+    if (result.healthy && ['dingtalk_log', 'dingtalk_desktop'].includes(connection.type)) {
+      const mapping = await this.dingtalkMappings.refreshFromCurrentDiscovery(
+        connection.id,
+        auditContext,
+      );
+      return {
+        ...result,
+        templateMappingVersion: {
+          id: mapping.version.id,
+          versionNo: mapping.version.versionNo,
+          expiresAt: mapping.version.expiresAt,
+        },
+      };
     }
     return result;
   }

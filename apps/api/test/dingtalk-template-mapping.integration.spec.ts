@@ -6,8 +6,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { PrismaService } from '../src/infrastructure/database/prisma.service.js';
 import type { LocalSecurityService } from '../src/infrastructure/http/local-security.service.js';
 import { AuditService } from '../src/modules/audit/audit.service.js';
+import type { DingTalkDesktopClient } from '../src/modules/dingtalk/dingtalk-desktop.client.js';
+import { DingTalkDesktopProbeService } from '../src/modules/dingtalk/dingtalk-desktop-probe.service.js';
 import { saveDingTalkTemplateMappingSchema } from '../src/modules/integrations/dingtalk-template-mapping.schemas.js';
 import { DingTalkTemplateMappingService } from '../src/modules/integrations/dingtalk-template-mapping.service.js';
+import { IntegrationProbeRegistry } from '../src/modules/integrations/integration-probe.registry.js';
 import type { SessionService } from '../src/modules/session/session.service.js';
 
 describe('钉钉模板映射不可变版本与能力快照约束', () => {
@@ -130,6 +133,53 @@ describe('钉钉模板映射不可变版本与能力快照约束', () => {
       code: 'DINGTALK_TEMPLATE_FIELD_ORDER_INVALID',
     });
     await expect(mappings.list('missing')).rejects.toMatchObject({ code: 'RESOURCE_NOT_FOUND' });
+  });
+
+  it('桌面重复探测通过追加快照刷新接收群有效期，不修改受保护的历史行', async () => {
+    await prisma.integrationConnection.create({
+      data: {
+        id: 'dingtalk-desktop-refresh',
+        type: 'dingtalk_desktop',
+        name: '桌面周报',
+        configJson: JSON.stringify({}),
+      },
+    });
+    const client = {
+      probe: () =>
+        Promise.resolve({
+          success: true,
+          status: 'healthy',
+          recipientVisible: true,
+          observedFields: ['日期', '近期目标', '本周工作', '下周计划', '问题', '其他'],
+        }),
+    } as unknown as DingTalkDesktopClient;
+    const service = new DingTalkDesktopProbeService(
+      new IntegrationProbeRegistry(),
+      prisma as unknown as PrismaService,
+      client,
+    );
+    const target = {
+      id: 'dingtalk-desktop-refresh',
+      type: 'dingtalk_desktop' as const,
+      baseUrl: null,
+      config: {
+        organizationName: '示例科技有限公司',
+        templateName: '研发周报',
+        recipientGroupName: '研发中心',
+        timeoutSeconds: 45,
+      },
+      credential: null,
+    };
+
+    await expect(service.probe(target)).resolves.toMatchObject({ healthy: true });
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 2));
+    await expect(service.probe(target)).resolves.toMatchObject({ healthy: true });
+
+    expect(
+      await prisma.dingTalkRecipientValidation.count({
+        where: { connectionId: 'dingtalk-desktop-refresh' },
+      }),
+    ).toBe(2);
   });
 
   function mappingInput(overrides: Record<string, unknown> = {}) {

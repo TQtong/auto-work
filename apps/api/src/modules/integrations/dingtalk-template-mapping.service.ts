@@ -7,7 +7,10 @@ import { LocalSecurityService } from '../../infrastructure/http/local-security.s
 import { AuditService } from '../audit/audit.service.js';
 import { SessionService } from '../session/session.service.js';
 import type { RequestAuditContext } from '../settings/profile.service.js';
-import type { SaveDingTalkTemplateMappingInput } from './dingtalk-template-mapping.schemas.js';
+import {
+  saveDingTalkTemplateMappingSchema,
+  type SaveDingTalkTemplateMappingInput,
+} from './dingtalk-template-mapping.schemas.js';
 
 const requiredInternalFields = [
   'reportDate',
@@ -17,6 +20,17 @@ const requiredInternalFields = [
   'problems',
   'other',
 ] as const;
+
+export interface TemplateMappingProbeAuditContext {
+  actorType: 'local_user' | 'system';
+  actorId: string;
+  correlationId: string;
+  clientSessionHash: string;
+}
+
+interface TemplateMappingAuditContext extends TemplateMappingProbeAuditContext {
+  createdBy: string;
+}
 
 @Injectable()
 export class DingTalkTemplateMappingService {
@@ -49,6 +63,60 @@ export class DingTalkTemplateMappingService {
     context: RequestAuditContext,
   ) {
     const connection = await this.requireDingTalkLogConnection(connectionId);
+    return this.saveForConnection(connection, input, {
+      actorType: 'local_user',
+      actorId: this.sessions.currentProfileId,
+      createdBy: this.sessions.currentProfileId,
+      correlationId: context.correlationId,
+      clientSessionHash: this.security.sessionHash(context.sessionId),
+    });
+  }
+
+  /**
+   * 真实连接探测成功后立即把同一份能力快照固化为当前模板版本。
+   * 这样模板的 30 天有效期可以通过“测试连接”正常续期，不依赖隐藏的手工 API。
+   */
+  public async refreshFromCurrentDiscovery(
+    connectionId: string,
+    context: TemplateMappingProbeAuditContext,
+  ) {
+    const connection = await this.requireDingTalkLogConnection(connectionId);
+    const capabilities = this.parseObject(connection.capabilitiesJson);
+    const discovery = this.parseObject(capabilities.templateDiscovery);
+    const selectedTemplate = this.parseObject(discovery.selectedTemplate);
+    const discoveredFields = Array.isArray(selectedTemplate.fields)
+      ? selectedTemplate.fields.map((field) => this.parseObject(field))
+      : [];
+    const input = saveDingTalkTemplateMappingSchema.parse({
+      connectionVersion: connection.version,
+      templateId: selectedTemplate.templateId,
+      templateName: selectedTemplate.templateName,
+      externalTemplateVersion: selectedTemplate.externalTemplateVersion ?? null,
+      templateHash: selectedTemplate.templateHash,
+      capabilitySnapshotHash: discovery.snapshotHash,
+      observedAt: discovery.observedAt,
+      expiresAt: discovery.expiresAt,
+      fields: discoveredFields.map((field, index) => ({
+        internalField: requiredInternalFields[index],
+        externalFieldId: field.externalFieldId,
+        externalFieldName: field.externalFieldName,
+        externalType: field.externalType,
+        order: field.order,
+        required: field.required,
+        maxLength: field.maxLength ?? null,
+      })),
+    });
+    return this.saveForConnection(connection, input, {
+      ...context,
+      createdBy: context.actorId,
+    });
+  }
+
+  private async saveForConnection(
+    connection: Awaited<ReturnType<DingTalkTemplateMappingService['requireDingTalkLogConnection']>>,
+    input: SaveDingTalkTemplateMappingInput,
+    context: TemplateMappingAuditContext,
+  ) {
     if (!connection.enabled || connection.status !== 'healthy') {
       throw new DomainError(
         'DINGTALK_TEMPLATE_CONNECTION_NOT_HEALTHY',
@@ -152,18 +220,18 @@ export class DingTalkTemplateMappingService {
     try {
       return await this.prisma.$transaction(async (tx) => {
         let mapping = await tx.dingTalkTemplateMapping.findUnique({
-          where: { connectionId },
+          where: { connectionId: connection.id },
           include: { currentVersion: true },
         });
         if (mapping?.currentVersion?.contentHash === contentHash) {
           return {
             replayed: true,
-            version: this.serializeVersion(mapping.currentVersion, connectionId),
+            version: this.serializeVersion(mapping.currentVersion, connection.id),
           };
         }
         if (!mapping) {
           mapping = await tx.dingTalkTemplateMapping.create({
-            data: { id: newId(), connectionId },
+            data: { id: newId(), connectionId: connection.id },
             include: { currentVersion: true },
           });
         }
@@ -185,7 +253,7 @@ export class DingTalkTemplateMappingService {
             observedAt: new Date(input.observedAt),
             expiresAt: new Date(input.expiresAt),
             contentHash,
-            createdBy: this.sessions.currentProfileId,
+            createdBy: context.createdBy,
           },
         });
         const changed = await tx.dingTalkTemplateMapping.updateMany({
@@ -199,7 +267,8 @@ export class DingTalkTemplateMappingService {
           });
         }
         await this.audit.recordInTransaction(tx, {
-          actorId: this.sessions.currentProfileId,
+          actorType: context.actorType,
+          actorId: context.actorId,
           action: 'dingtalk.template_mapping_version_saved',
           targetType: 'dingtalk_template_mapping',
           targetId: mapping.id,
@@ -212,9 +281,9 @@ export class DingTalkTemplateMappingService {
             versionNo: version.versionNo,
             contentHash,
           },
-          clientSessionHash: this.security.sessionHash(context.sessionId),
+          clientSessionHash: context.clientSessionHash,
         });
-        return { replayed: false, version: this.serializeVersion(version, connectionId) };
+        return { replayed: false, version: this.serializeVersion(version, connection.id) };
       });
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {

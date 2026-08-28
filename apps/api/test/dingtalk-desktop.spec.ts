@@ -195,12 +195,15 @@ describe('钉钉桌面正式日志适配器', () => {
     expect(createRecipient).not.toHaveBeenCalled();
   });
 
-  it('相同桌面事实的重复探测保持能力快照稳定并刷新接收群有效期', async () => {
-    const updateRecipient = vi.fn().mockResolvedValue({ id: 'existing' });
+  it('相同桌面事实的重复探测追加新能力与接收群快照，不覆盖历史事实', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-28T06:00:00.000Z'));
+    const createRecipient = vi.fn().mockResolvedValue({ id: 'created' });
+    const updateRecipient = vi.fn();
     const prisma = {
       dingTalkRecipientValidation: {
-        findFirst: vi.fn().mockResolvedValue({ id: 'existing' }),
-        create: vi.fn(),
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: createRecipient,
         update: updateRecipient,
       },
     } as unknown as PrismaService;
@@ -228,12 +231,18 @@ describe('钉钉桌面正式日志适配器', () => {
       credential: null,
     };
 
-    const first = await service.probe(target);
-    const second = await service.probe(target);
-    const firstDiscovery = first.capabilities.templateDiscovery as { snapshotHash: string };
-    const secondDiscovery = second.capabilities.templateDiscovery as { snapshotHash: string };
+    try {
+      const first = await service.probe(target);
+      vi.advanceTimersByTime(1);
+      const second = await service.probe(target);
+      const firstDiscovery = first.capabilities.templateDiscovery as { snapshotHash: string };
+      const secondDiscovery = second.capabilities.templateDiscovery as { snapshotHash: string };
 
-    expect(secondDiscovery.snapshotHash).toBe(firstDiscovery.snapshotHash);
-    expect(updateRecipient).toHaveBeenCalledTimes(2);
+      expect(secondDiscovery.snapshotHash).not.toBe(firstDiscovery.snapshotHash);
+      expect(createRecipient).toHaveBeenCalledTimes(2);
+      expect(updateRecipient).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

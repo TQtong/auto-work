@@ -837,27 +837,105 @@ function Get-OcrInputTarget(
     }
 }
 
-function Assert-OcrCurrentReportDate(
+function Get-OcrReportDateCandidates([DateTime]$Date) {
+    $enUs = [Globalization.CultureInfo]::GetCultureInfo('en-US')
+    return @(
+        $Date.ToString('yyyy-MM-dd'),
+        $Date.ToString('yyyy-M-d'),
+        $Date.ToString('yyyy/M/d'),
+        $Date.ToString('yyyy/MM/dd'),
+        $Date.ToString('yyyy.M.d'),
+        $Date.ToString('yyyy.MM.dd'),
+        $Date.ToString('M/d/yyyy'),
+        $Date.ToString('MM/dd/yyyy'),
+        $Date.ToString('MMM d, yyyy', $enUs),
+        $Date.ToString('MMM d yyyy', $enUs),
+        $Date.ToString('MMMM d, yyyy', $enUs),
+        $Date.ToString('MMMM d yyyy', $enUs),
+        $Date.ToString('yyyy年M月d日'),
+        $Date.ToString('yyyy年MM月dd日')
+    ) | Select-Object -Unique
+}
+
+function Find-OcrCurrentReportDateHit(
     [object]$Snapshot,
     [object]$LabelHit,
     [string]$ExpectedDate
 ) {
     try {
-        $null = [DateTime]::ParseExact($ExpectedDate, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+        $requestedDate = [DateTime]::ParseExact($ExpectedDate, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
     } catch {
         throw 'DINGTALK_DESKTOP_REPORT_DATE_INVALID|周报填写日期必须是 yyyy-MM-dd'
     }
-    $dateHit = @(
-        Get-OcrHits $Snapshot @($ExpectedDate) -Exact | Where-Object {
-            $_.Top -ge ($LabelHit.Bottom - 4) -and
-            $_.Top -le ($LabelHit.Bottom + 150) -and
+    # OCR may return the field label and its value as one line. A contains match plus the
+    # label's own top edge supports that layout while the bounded area still prevents a date
+    # elsewhere in the report from satisfying the guard.
+    $dateCandidates = Get-OcrReportDateCandidates $requestedDate
+    return @(
+        Get-OcrHits $Snapshot $dateCandidates | Where-Object {
+            $_.Top -ge ($LabelHit.Top - 8) -and
+            $_.Top -le ($LabelHit.Bottom + 170) -and
             $_.Right -ge ($LabelHit.Left - 20) -and
-            $_.Left -le ($LabelHit.Right + 520)
+            $_.Left -le ($LabelHit.Right + 620)
         }
     ) | Sort-Object Top, Left | Select-Object -First 1
-    if (-not $dateHit) {
-        throw "DINGTALK_DESKTOP_CURRENT_DATE_MISMATCH|钉钉周报填写日期不是执行当天 $ExpectedDate，已停止提交"
+}
+
+function Get-OcrReportDateDiagnostic([object]$Snapshot, [object]$LabelHit) {
+    $values = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in @(Get-OcrResults $Snapshot | ForEach-Object { $_.Lines })) {
+        if (@($line.Words).Count -eq 0) { continue }
+        $left = ($line.Words | ForEach-Object { $_.BoundingRect.X } | Measure-Object -Minimum).Minimum
+        $top = ($line.Words | ForEach-Object { $_.BoundingRect.Y } | Measure-Object -Minimum).Minimum
+        $right = ($line.Words | ForEach-Object { $_.BoundingRect.X + $_.BoundingRect.Width } | Measure-Object -Maximum).Maximum
+        if (
+            $top -lt ($LabelHit.Top - 8) -or
+            $top -gt ($LabelHit.Bottom + 170) -or
+            $right -lt ($LabelHit.Left - 20) -or
+            $left -gt ($LabelHit.Right + 620)
+        ) { continue }
+        $text = ([string]$line.Text -replace '[\r\n|]+', ' ').Trim()
+        if ($text -and $text.Length -le 80 -and -not $values.Contains($text)) { $values.Add($text) }
+        if ($values.Count -ge 6) { break }
     }
+    return if ($values.Count -gt 0) { $values -join ' / ' } else { '未识别到日期字段附近文本' }
+}
+
+function Assert-OcrCurrentReportDate(
+    [object]$Snapshot,
+    [object]$LabelHit,
+    [string]$ExpectedDate
+) {
+    $dateHit = Find-OcrCurrentReportDateHit $Snapshot $LabelHit $ExpectedDate
+    if (-not $dateHit) {
+        $diagnostic = Get-OcrReportDateDiagnostic $Snapshot $LabelHit
+        throw "DINGTALK_DESKTOP_CURRENT_DATE_MISMATCH|钉钉周报填写日期不是执行当天 $ExpectedDate，已停止提交；日期字段附近 OCR：$diagnostic"
+    }
+}
+
+function Resolve-OcrReportDate(
+    [System.Diagnostics.Process]$Process,
+    [object]$Snapshot,
+    [object]$LabelHit,
+    [string]$ExpectedDate
+) {
+    if (Find-OcrCurrentReportDateHit $Snapshot $LabelHit $ExpectedDate) { return $false }
+    $dateHint = Get-OcrInputHint $Snapshot $LabelHit -DateField
+    if (-not $dateHint) {
+        # No blank-field placeholder means the page contains an unexpected existing value or
+        # an unrecognized layout. Fail closed rather than overwriting a potentially old draft.
+        Assert-OcrCurrentReportDate $Snapshot $LabelHit $ExpectedDate
+    }
+    $dateTarget = Get-OcrInputTarget $Snapshot $LabelHit $dateHint -DateField
+    if (-not $dateTarget) {
+        throw 'DINGTALK_DESKTOP_DATE_INPUT_NOT_FOUND|日期字段为空，但无法安全定位日期控件'
+    }
+    Set-OcrInputValue $Snapshot $dateTarget $ExpectedDate -DateField
+    $afterDate = Get-WindowOcrSnapshot $Process
+    $currentLabel = Find-OcrHit $afterDate @([string]$LabelHit.Text)
+    if (-not $currentLabel) { $currentLabel = $LabelHit }
+    Assert-OcrCurrentReportDate $afterDate $currentLabel $ExpectedDate
+    return $true
 }
 
 function Get-CalendarMonthInfo([object]$Snapshot) {
@@ -929,14 +1007,7 @@ function Select-OcrCalendarDate([System.Diagnostics.Process]$Process, [DateTime]
             Invoke-WindowPoint $calendar ($dayHits[0].Left + ($dayHits[0].Width / 2)) ($dayHits[0].Top + ($dayHits[0].Height / 2))
             Start-Sleep -Milliseconds 300
             $selected = Get-WindowOcrSnapshot $Process
-            $dateCandidates = @(
-                $RequestedDate.ToString('yyyy-MM-dd'),
-                $RequestedDate.ToString('yyyy/MM/dd'),
-                $RequestedDate.ToString('MM/dd/yyyy'),
-                $RequestedDate.ToString('M/d/yyyy'),
-                $RequestedDate.ToString('MMM d, yyyy', [Globalization.CultureInfo]::GetCultureInfo('en-US')),
-                "$($RequestedDate.Year)年$($RequestedDate.Month)月$($RequestedDate.Day)日"
-            )
+            $dateCandidates = Get-OcrReportDateCandidates $RequestedDate
             if (-not (Test-OcrText $selected $dateCandidates)) {
                 throw 'DINGTALK_DESKTOP_DATE_SELECTION_UNVERIFIED|日期点击后未识别到目标日期，已停止提交'
             }
@@ -1034,10 +1105,17 @@ function Resolve-FormWithOcr(
             $label = Find-OcrHit $snapshot $labels[$index]
             if (-not $label) { continue }
             if ($SetValues -and $index -eq 0) {
-                # A new DingTalk report already defaults to the execution day's date. Verify
-                # the visible value and leave the date picker untouched.
-                Assert-OcrCurrentReportDate $snapshot $label $values[$index]
+                # Some DingTalk builds default this field to today while others leave a
+                # localized "Choose time" placeholder. Preserve an already-correct value;
+                # only use the date picker when the field is provably blank. An unexpected
+                # existing date still fails closed so an old draft cannot be submitted.
+                $dateChanged = Resolve-OcrReportDate $Process $snapshot $label $values[$index]
+                if ($dateChanged) {
+                    $filledOnThisPass = $true
+                    $stalledPages = 0
+                }
                 $completed.Add($index) | Out-Null
+                if ($filledOnThisPass) { break }
                 continue
             }
             $hint = Get-OcrInputHint $snapshot $label -DateField:($index -eq 0)
@@ -1083,6 +1161,36 @@ function Resolve-FormWithOcr(
             if ($completed.Contains($index)) { [string]$labels[$index][0] }
         }
     )
+}
+
+function Validate-ReportDateWithOcr(
+    [System.Diagnostics.Process]$Process,
+    [object]$Request,
+    [int]$TimeoutSeconds
+) {
+    $expectedDate = [string](Get-ConfigValue $Request 'reportDate' '')
+    if (-not $expectedDate) {
+        throw 'DINGTALK_DESKTOP_REPORT_DATE_INVALID|日期探测必须提供 yyyy-MM-dd 格式的执行日期'
+    }
+    $dateLabels = @(Get-FieldLabels $Request)[0]
+    $snapshot = Get-WindowOcrSnapshot $Process
+    Invoke-WindowPoint $snapshot ($snapshot.WindowRect.Width * 0.87) ($snapshot.WindowRect.Height * 0.52)
+    [System.Windows.Forms.SendKeys]::SendWait('^{HOME}')
+    Start-Sleep -Milliseconds 350
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $snapshot = Get-WindowOcrSnapshot $Process
+        $label = Find-OcrHit $snapshot $dateLabels
+        if ($label) {
+            $changed = Resolve-OcrReportDate $Process $snapshot $label $expectedDate
+            return [pscustomobject]@{
+                ExpectedDate = $expectedDate
+                DateWasBlank = $changed
+            }
+        }
+        Start-Sleep -Milliseconds 350
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+    throw "DINGTALK_DESKTOP_FIELD_NOT_FOUND|日期探测未识别到周报字段：$($dateLabels[0])"
 }
 
 function Find-RecipientSubmitAreaWithOcr(
@@ -1218,7 +1326,7 @@ try {
         }
         exit 0
     }
-    if ($operation -notin @('probe', 'submit')) {
+    if ($operation -notin @('probe', 'submit', 'validate_date')) {
         throw 'DINGTALK_DESKTOP_OPERATION_INVALID|不支持的桌面自动化操作'
     }
     if ($operation -eq 'submit') {
@@ -1236,6 +1344,19 @@ try {
     # client exactly as the user sees it, while UI Automation remains responsible for safe
     # process/window activation and organization identity.
     Open-ReportFormWithOcr $context.Process $request $timeoutSeconds
+    if ($operation -eq 'validate_date') {
+        $dateValidation = Validate-ReportDateWithOcr $context.Process $request $timeoutSeconds
+        Write-Result @{
+            success = $true
+            status = 'healthy'
+            processId = $context.Process.Id
+            windowTitle = $context.Process.MainWindowTitle
+            expectedDate = $dateValidation.ExpectedDate
+            dateWasBlank = $dateValidation.DateWasBlank
+            submitClicked = $false
+        }
+        exit 0
+    }
     $observedFields = Resolve-FormWithOcr $context.Process $request -SetValues:($operation -eq 'submit')
     $recipient = [string](Get-ConfigValue $request 'recipientGroupName' '')
     $submitArea = @(

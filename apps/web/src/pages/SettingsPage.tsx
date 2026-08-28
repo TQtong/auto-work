@@ -22,6 +22,7 @@ import {
   message,
 } from 'antd';
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   weeklyReportWarningRuleCatalog,
   type WeeklyReportWarningRuleCode,
@@ -87,7 +88,26 @@ interface ReminderPolicyFormValues {
   graceMinutes: number;
 }
 
+interface OperationReference {
+  operationId: string;
+  status: string;
+  statusUrl: string;
+}
+
+interface OperationDetail {
+  status: string;
+  error?: { message: string };
+  result?: {
+    healthy?: boolean;
+    status?: string;
+    errorCode?: string;
+    message?: string;
+  };
+}
+
 export function SettingsPage() {
+  const [searchParams] = useSearchParams();
+  const requestedTab = searchParams.get('tab');
   return (
     <Space direction="vertical" size={20} style={{ width: '100%' }}>
       <div>
@@ -97,6 +117,7 @@ export function SettingsPage() {
         </Typography.Text>
       </div>
       <Tabs
+        defaultActiveKey={requestedTab === 'integrations' ? 'integrations' : 'profile'}
         items={[
           { key: 'profile', label: '个人身份与别名', children: <ProfileSettings /> },
           { key: 'reminders', label: '周报提醒', children: <ReminderPolicySettings /> },
@@ -525,6 +546,7 @@ function IntegrationSettings() {
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey: ['integrations'] });
     await queryClient.invalidateQueries({ queryKey: ['gitlab-projects'] });
+    await queryClient.invalidateQueries({ queryKey: ['dingtalk-template-mappings'] });
   };
   const create = useMutation({
     mutationFn: (values: IntegrationFormValues) =>
@@ -567,22 +589,50 @@ function IntegrationSettings() {
     onError: (error: Error) => void messageApi.error(error.message),
   });
   const action = useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       row,
       kind,
     }: {
       row: Integration;
       kind: 'test' | 'sync' | 'disable' | 'revoke';
     }) => {
-      if (kind === 'test')
-        return row.type === 'dingtalk_robot'
-          ? apiRequest(`/api/v1/integrations/${row.id}/dingtalk-robot/test`, {
-              method: 'POST',
-              headers: { 'Idempotency-Key': crypto.randomUUID() },
-              // Popconfirm 只负责交互提示；服务端仍要求不可省略的显式确认字段。
-              body: JSON.stringify({ confirmSendTestMessage: true }),
-            })
-          : apiRequest(`/api/v1/integrations/${row.id}/test`, { method: 'POST' });
+      if (kind === 'test') {
+        const operation = await apiRequest<OperationReference>(
+          row.type === 'dingtalk_robot'
+            ? `/api/v1/integrations/${row.id}/dingtalk-robot/test`
+            : `/api/v1/integrations/${row.id}/test`,
+          {
+            method: 'POST',
+            ...(row.type === 'dingtalk_robot'
+              ? {
+                  headers: { 'Idempotency-Key': crypto.randomUUID() },
+                  // Popconfirm 只负责交互提示；服务端仍要求不可省略的显式确认字段。
+                  body: JSON.stringify({ confirmSendTestMessage: true }),
+                }
+              : {}),
+          },
+        );
+        for (let attempt = 0; attempt < 240; attempt += 1) {
+          const current = await apiRequest<OperationDetail>(operation.data.statusUrl);
+          if (!['queued', 'running'].includes(current.data.status)) {
+            if (current.data.status !== 'succeeded') {
+              throw new Error(
+                current.data.error?.message ?? `连接测试失败：${current.data.status}`,
+              );
+            }
+            if (current.data.result?.healthy !== true) {
+              const result = current.data.result;
+              throw new Error(
+                result?.message ??
+                  `连接探测未通过：${result?.errorCode ?? result?.status ?? '未知原因'}`,
+              );
+            }
+            return current;
+          }
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+        }
+        throw new Error('连接测试仍在后台运行，请稍后刷新状态');
+      }
       if (kind === 'sync')
         return apiRequest(`/api/v1/integrations/${row.id}/gitlab/sync`, {
           method: 'POST',
@@ -598,9 +648,14 @@ function IntegrationSettings() {
         body: JSON.stringify({ version: row.version }),
       });
     },
-    onSuccess: async () => {
+    onSuccess: async (_result, variables) => {
       await refresh();
-      void messageApi.success('操作已受理');
+      void messageApi.success(
+        variables.kind === 'test' &&
+          ['dingtalk_log', 'dingtalk_desktop'].includes(variables.row.type)
+          ? '连接测试通过，当前模板映射已自动刷新'
+          : '操作已完成',
+      );
     },
     onError: (error: Error) => void messageApi.error(error.message),
   });
@@ -708,6 +763,11 @@ function IntegrationSettings() {
                   >
                     <Button
                       size="small"
+                      loading={
+                        action.isPending &&
+                        action.variables?.kind === 'test' &&
+                        action.variables.row.id === row.id
+                      }
                       disabled={
                         !row.enabled || (!row.credentialMask && !row.credentialReplacementPending)
                       }
@@ -718,6 +778,11 @@ function IntegrationSettings() {
                 ) : row.type !== 'jira' ? (
                   <Button
                     size="small"
+                    loading={
+                      action.isPending &&
+                      action.variables?.kind === 'test' &&
+                      action.variables.row.id === row.id
+                    }
                     onClick={() => action.mutate({ row, kind: 'test' })}
                     disabled={!row.enabled}
                   >

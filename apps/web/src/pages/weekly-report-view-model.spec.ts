@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { WeeklyReportVersion } from '../api/types.js';
-import { compareWeeklyFields, previousVersionId } from './weekly-report-view-model.js';
+import {
+  compareWeeklyFields,
+  previousVersionId,
+  resolveCurrentRecipientValidationIds,
+} from './weekly-report-view-model.js';
 
 describe('周报工作台视图模型', () => {
   it('按六字段生成稳定差异，并选择严格小于当前版本的最近历史', () => {
@@ -21,6 +25,44 @@ describe('周报工作台视图模型', () => {
         3,
       ),
     ).toBe('v2');
+  });
+
+  it('按连接内同一收件人事实把过期快照替换成最新有效快照', () => {
+    const savedRecipients = version().recipientScope.recipients;
+    expect(
+      resolveCurrentRecipientValidationIds(['recipient-1'], savedRecipients, [
+        {
+          id: 'recipient-2',
+          subjectType: 'user',
+          externalId: 'user-1',
+          displayName: '接收人',
+          available: true,
+          expired: false,
+          observedAt: '2026-08-28T00:00:00.000Z',
+          expiresAt: '2026-09-27T00:00:00.000Z',
+          contentHash: 'recipient-hash-2',
+        },
+      ]),
+    ).toEqual({ ids: ['recipient-2'], ready: true, replaced: true });
+  });
+
+  it('找不到同一收件人的最新有效快照时保持原选择并阻止提交', () => {
+    const savedRecipients = version().recipientScope.recipients;
+    expect(
+      resolveCurrentRecipientValidationIds(['recipient-1'], savedRecipients, [
+        {
+          id: 'another-recipient',
+          subjectType: 'user',
+          externalId: 'user-2',
+          displayName: '其他人',
+          available: true,
+          expired: false,
+          observedAt: '2026-08-28T00:00:00.000Z',
+          expiresAt: '2026-09-27T00:00:00.000Z',
+          contentHash: 'another-hash',
+        },
+      ]),
+    ).toEqual({ ids: ['recipient-1'], ready: false, replaced: false });
   });
 
   function version(): WeeklyReportVersion {
