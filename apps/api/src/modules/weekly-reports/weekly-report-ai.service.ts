@@ -644,7 +644,7 @@ export class WeeklyReportAiService {
           base,
           suggestion.id,
           validated.fields
-            .filter((field) => field.paragraphs.length > 0)
+            .filter((field) => field.paragraphs.length > 0 || field.field === 'nextWeekPlans')
             .map((field) => field.field),
           structured.blocks,
           attempt.policy!,
@@ -817,7 +817,7 @@ export class WeeklyReportAiService {
     );
     for (const field of validated.fields) {
       // AI 没有产出有效段落时，正文文本、结构化模板块和原有引用必须一起保留。
-      if (field.paragraphs.length === 0) continue;
+      if (field.paragraphs.length === 0 && field.field !== 'nextWeekPlans') continue;
       fields[field.field] = field.paragraphs.map((paragraph) => {
         const id = newId();
         blocks.set(id, { field: field.field, citations: paragraph.citations });

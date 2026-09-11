@@ -141,12 +141,12 @@ describe('周报 AI 白名单净化与事实校验', () => {
   });
 
   it('只接受被段落引用直接支持的工单号、日期、数字和项目名', () => {
-    const sanitized = sanitizeWeeklyAiInput(input());
+    const sanitized = sanitizeWeeklyAiInput(input({ selectedFields: ['other'] }));
     const taskRef = sanitized.storedReferences.find((item) => item.sourceType === 'task')!.refId;
     const valid = JSON.stringify({
       fields: [
         {
-          field: 'recentGoals',
+          field: 'other',
           paragraphs: [
             {
               projectName: 'Alpha',
@@ -159,9 +159,9 @@ describe('周报 AI 白名单净化与事实校验', () => {
     });
     const result = validateWeeklyAiOutput(valid, sanitized, baseFields());
 
-    expect(result.fieldTexts.recentGoals).toContain('1、推进 Alpha 项目 完成完整实现 AI 建议');
-    expect(result.fieldTexts.recentGoals).not.toContain('AW-12');
-    expect(result.fieldTexts.recentGoals).not.toContain('[citation:');
+    expect(result.fieldTexts.other).toContain('1、推进 Alpha 项目 完成完整实现 AI 建议');
+    expect(result.fieldTexts.other).not.toContain('AW-12');
+    expect(result.fieldTexts.other).not.toContain('[citation:');
     expect(result.fields[0]?.paragraphs[0]?.citations).toEqual([taskRef]);
     expect(result.fieldTexts.weeklyWork).toBe('本周原始工作');
   });
@@ -231,11 +231,112 @@ describe('周报 AI 白名单净化与事实校验', () => {
       parentTitle: 'Alpha 父任务',
       completionPercent: 50,
     });
-    expect(result.fieldTexts.recentGoals).toBe(baseFields().recentGoals);
+    expect(result.fieldTexts.recentGoals).toBe('1、Alpha 父任务');
     expect(result.fieldTexts.weeklyWork).toBe(
       '【Alpha 父任务】\n1、实现完整周报 AI本周持续推进（完成度 50%）',
     );
+    expect(result.fieldTexts.nextWeekPlans).toBe(result.fieldTexts.weeklyWork);
+    expect(result.fields.find((field) => field.field === 'nextWeekPlans')?.paragraphs).toEqual(
+      result.fields.find((field) => field.field === 'weeklyWork')?.paragraphs,
+    );
   });
+
+  it.each(['【GIS工具】\n1、修复导出\n2、验证导入\n\n【编辑器】\n1、交互调整', ''])(
+    '单独生成下周计划时复用正文，正文为空时按排期任务生成：%s',
+    (weeklyWork) => {
+      const fields = { ...baseFields(), weeklyWork };
+      const sanitized = sanitizeWeeklyAiInput(
+        input({ selectedFields: ['nextWeekPlans'], baseFields: fields }),
+      );
+      const result = validateWeeklyAiOutput(
+        JSON.stringify({ fields: [{ field: 'nextWeekPlans', paragraphs: [] }] }),
+        sanitized,
+        fields,
+      );
+      expect(result.fieldTexts.nextWeekPlans).toBe(
+        weeklyWork || '【Alpha 父任务】\n1、实现完整周报 AI',
+      );
+      const paragraphs = result.fields[0]!.paragraphs;
+      if (weeklyWork) {
+        expect(paragraphs[0]?.text).toBe(weeklyWork);
+        expect(paragraphs[0]?.citations).toEqual([
+          sanitized.storedReferences.find((reference) => reference.field === 'weeklyWork')!.refId,
+        ]);
+      } else {
+        expect(paragraphs).toEqual([
+          expect.objectContaining({ text: '实现完整周报 AI', completionPercent: null }),
+        ]);
+      }
+    },
+  );
+
+  it('AI 返回空目标时仍按父级名称去重，并引用同组全部工时任务', () => {
+    const sanitized = sanitizeWeeklyAiInput(
+      input({
+        tasks: [task(), { ...task(), id: 'task-2', title: '另一个子任务' }],
+      }),
+    );
+    const result = validateWeeklyAiOutput(
+      JSON.stringify({ fields: [{ field: 'recentGoals', paragraphs: [] }] }),
+      sanitized,
+      baseFields(),
+    );
+    expect(result.fieldTexts.recentGoals).toBe('1、Alpha 父任务');
+    expect(result.fields[0]?.paragraphs[0]?.citations).toEqual(
+      sanitized.storedReferences
+        .filter((reference) => reference.sourceType === 'task')
+        .map((reference) => reference.refId),
+    );
+  });
+
+  it('排期任务尚未填写工时时，近期目标仍替换旧模板为任务父级', () => {
+    const sanitized = sanitizeWeeklyAiInput(
+      input({ tasks: [{ ...task(), timeSpentSeconds: null }] }),
+    );
+    const result = validateWeeklyAiOutput(
+      JSON.stringify({ fields: [{ field: 'recentGoals', paragraphs: [] }] }),
+      sanitized,
+      baseFields(),
+    );
+    expect(result.fieldTexts.recentGoals).toBe('1、Alpha 父任务');
+  });
+
+  it.each([false, true])(
+    '没有本周工时但有已完成排期时，AI 本周工作及其空输出回退均包含任务：%s',
+    (emptyOutput) => {
+      const fields = { ...baseFields(), weeklyWork: '', nextWeekPlans: '' };
+      const sanitized = sanitizeWeeklyAiInput(
+        input({
+          selectedFields: ['weeklyWork', 'nextWeekPlans'],
+          baseFields: fields,
+          tasks: [{ ...task(), timeSpentSeconds: null, normalizedStatus: 'done' }],
+        }),
+      );
+      const source = sanitized.sanitizedInput.sources.find((item) => item.kind === 'task')!;
+      expect(source.weeklyWorkEligible).toBe(true);
+      expect(source).not.toHaveProperty('actualHours');
+      const result = validateWeeklyAiOutput(
+        JSON.stringify({
+          fields: [
+            {
+              field: 'weeklyWork',
+              paragraphs: emptyOutput
+                ? []
+                : [{ text: '实现完整周报 AI已完成', citations: [source.refId] }],
+            },
+            { field: 'nextWeekPlans', paragraphs: [] },
+          ],
+        }),
+        sanitized,
+        fields,
+      );
+      expect(result.fieldTexts.weeklyWork).toBe(
+        '【Alpha 父任务】\n1、实现完整周报 AI已完成（完成度 100%）',
+      );
+      expect(result.fieldTexts.nextWeekPlans).toBe(result.fieldTexts.weeklyWork);
+      expect(result.fields[0]?.paragraphs[0]?.citations).toEqual([source.refId]);
+    },
+  );
 
   it('优先使用 Sprint 父级分组，并保留 Jira 父任务与具体子任务层级', () => {
     const sanitized = sanitizeWeeklyAiInput(
@@ -385,12 +486,12 @@ describe('周报 AI 白名单净化与事实校验', () => {
   });
 
   it('清空无引用依据的项目标签，但保留通过事实校验的正文', () => {
-    const sanitized = sanitizeWeeklyAiInput(input());
+    const sanitized = sanitizeWeeklyAiInput(input({ selectedFields: ['other'] }));
     const taskRef = sanitized.storedReferences.find((item) => item.sourceType === 'task')!.refId;
     const raw = JSON.stringify({
       fields: [
         {
-          field: 'recentGoals',
+          field: 'other',
           paragraphs: [
             {
               projectName: 'Imaginary',
@@ -404,7 +505,7 @@ describe('周报 AI 白名单净化与事实校验', () => {
 
     const result = validateWeeklyAiOutput(raw, sanitized, baseFields());
     expect(result.fields[0]?.paragraphs[0]?.projectName).toBeNull();
-    expect(result.fieldTexts.recentGoals).toBe('1、推进 Alpha 项目 已投入 2 小时。');
+    expect(result.fieldTexts.other).toBe('1、推进 Alpha 项目 已投入 2 小时。');
   });
 
   it('拒绝字段缺失、重复和额外动作结构', () => {

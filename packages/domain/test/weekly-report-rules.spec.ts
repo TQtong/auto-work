@@ -43,7 +43,7 @@ function input(
 }
 
 describe('六字段周报确定性规则', () => {
-  it('按任务状态生成目标、本周、计划和问题，并保持空工时为 null', () => {
+  it('按工时任务生成父级目标，计划复用正文，并按状态生成问题', () => {
     const draft = generateWeeklyReportRuleDraft(
       input({
         tasks: [
@@ -75,7 +75,9 @@ describe('六字段周报确定性规则', () => {
     );
 
     expect(draft.fields.recentGoals.map((block) => block.body)).toEqual([
-      expect.stringContaining('任务 2'),
+      '编辑器交互调整',
+      '贵安漏洞修复',
+      '任务 3',
     ]);
     expect(draft.fields.weeklyWork.map((block) => block.body)).toEqual(
       expect.arrayContaining([
@@ -96,14 +98,121 @@ describe('六字段周报确定性规则', () => {
     const blockedWork = draft.fields.weeklyWork.find((block) => block.body.includes('任务 2'));
     expect(blockedWork?.title).toBe('编辑器交互调整');
     expect(blockedWork?.body).toContain('完成度 50%');
-    expect(draft.fields.nextWeekPlans.some((block) => block.body.includes('任务 3'))).toBe(false);
+    expect(draft.fields.nextWeekPlans.map((block) => block.body)).toEqual(
+      draft.fields.weeklyWork.map((block) => block.body),
+    );
     expect(draft.fields.nextWeekPlans.find((block) => block.body.includes('任务 2'))).toMatchObject(
       {
-        estimatedHours: 8,
+        estimatedHours: 16,
       },
     );
     expect(draft.fields.problems[0]?.body).toContain('任务受阻');
     expect(draft.sourceIds.taskIds).toEqual(['1', '2', '3']);
+  });
+
+  it('近期目标与父级分组一致，同一父级只填一次并保留全部工时来源', () => {
+    const tasks = [
+      ...['a', 'b', 'c', 'd'].map((id) =>
+        task(id, {
+          parentTaskId: 'parent',
+          parentTitle: 'GIS数据处理工具稳定性提升',
+          rootParentTitle: '产品年度规划',
+          normalizedStatus: 'done',
+          timeSpentSeconds: 3_600,
+        }),
+      ),
+      task('unlogged', { parentTitle: 'GIS数据处理工具稳定性提升' }),
+      task('sprint', {
+        parentTitle: '具体需求',
+        sprintNames: ['Sprint【空间联通交互升级】'],
+        timeSpentSeconds: 1_800,
+      }),
+    ];
+    const draft = generateWeeklyReportRuleDraft(input({ tasks }));
+    expect(draft.fields.recentGoals).toHaveLength(2);
+    expect(draft.fields.recentGoals.map((block) => block.body)).toEqual(
+      expect.arrayContaining(['空间联通交互升级', 'GIS数据处理工具稳定性提升']),
+    );
+    const gisGoal = draft.fields.recentGoals.find(
+      (block) => block.body === 'GIS数据处理工具稳定性提升',
+    );
+    expect(gisGoal?.sourceRefs.map((source) => source.id)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+      'unlogged',
+    ]);
+    expect(generateWeeklyReportRuleDraft(input({ tasks: [...tasks].reverse() }))).toEqual(draft);
+  });
+
+  it('本周尚未填工时也应按排期生成父级目标和本周工作，实际工时仍为空', () => {
+    const draft = generateWeeklyReportRuleDraft(
+      input({
+        tasks: [
+          task('scheduled', {
+            parentTitle: 'GIS数据处理工具稳定性提升',
+            timeSpentSeconds: null,
+          }),
+        ],
+      }),
+    );
+    expect(draft.fields.recentGoals.map((block) => block.body)).toEqual([
+      'GIS数据处理工具稳定性提升',
+    ]);
+    expect(draft.fields.weeklyWork).toEqual([
+      expect.objectContaining({
+        title: 'GIS数据处理工具稳定性提升',
+        body: '任务 scheduled进行中（完成度 0%）',
+        actualHours: null,
+        sourceRefs: [{ type: 'task', id: 'scheduled' }],
+      }),
+    ]);
+    expect(draft.fields.nextWeekPlans.map((block) => block.body)).toEqual(
+      draft.fields.weeklyWork.map((block) => block.body),
+    );
+  });
+
+  it('排期回退只使用周期内可见任务，不把未开始或已取消任务写成实际进展', () => {
+    const draft = generateWeeklyReportRuleDraft(
+      input({
+        tasks: [
+          task('scheduled', { normalizedStatus: 'planned' }),
+          task('cancelled', { normalizedStatus: 'cancelled' }),
+          task('future', { plannedStartDate: '2026-07-20', dueDate: '2026-07-24' }),
+          task('past', { plannedStartDate: '2026-07-06', dueDate: '2026-07-10' }),
+          task('hidden', { visibilityState: 'out_of_scope' }),
+          task('other-user', { isCurrentUser: false }),
+        ],
+      }),
+    );
+    expect(draft.fields.weeklyWork).toEqual([
+      expect.objectContaining({
+        body: '任务 scheduled已排期，尚未开始（完成度 0%）',
+        actualHours: null,
+      }),
+    ]);
+  });
+
+  it('下周计划完整复用正文的人工补充、工时任务、来源与顺序，块 ID 独立', () => {
+    const draft = generateWeeklyReportRuleDraft(
+      input({
+        tasks: [task('logged', { timeSpentSeconds: 3_600 }), task('unlogged')],
+        manualInputs: [
+          { id: 'work', field: 'weeklyWork', text: '参与跨组评审', pinned: true },
+          { id: 'old-plan', field: 'nextWeekPlans', text: '旧计划' },
+        ],
+      }),
+    );
+    expect(draft.fields.nextWeekPlans).toHaveLength(2);
+    draft.fields.nextWeekPlans.forEach((plan, index) => {
+      const work = draft.fields.weeklyWork[index];
+      if (!work) throw new Error('下周计划缺少对应正文');
+      expect({ ...plan, id: work.id, field: 'weeklyWork' }).toEqual(work);
+      expect(plan.field).toBe('nextWeekPlans');
+      expect(plan.id).not.toBe(work.id);
+    });
+    expect(generateWeeklyReportRuleDraft(input()).fields.nextWeekPlans).toEqual([]);
   });
 
   it('为周报本周工作保留根父级分组，并输出子任务层级和完成度', () => {
@@ -163,13 +272,15 @@ describe('六字段周报确定性规则', () => {
     expect(work?.actualHours).toBe(1);
   });
 
-  it('没有本周期工时的任务即使同步、变更状态或关联证据也不进入本周工作', () => {
+  it('既无本周期工时也无排期的任务，不因同步、变更状态或关联证据进入本周工作', () => {
     const draft = generateWeeklyReportRuleDraft(
       input({
         tasks: [
           task('unlogged', {
             statusChangedAt: '2026-07-16T10:00:00+08:00',
             timeSpentSeconds: null,
+            plannedStartDate: null,
+            dueDate: null,
           }),
         ],
         evidence: [

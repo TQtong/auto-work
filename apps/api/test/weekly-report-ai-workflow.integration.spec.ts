@@ -79,7 +79,7 @@ describe('周报 AI 建议、确定性回退与人工决定完整工作流', () 
         baseVersionId: 'base-main',
         reportVersion: 1,
         providerConnectionId: 'ai-provider',
-        fields: ['recentGoals'],
+        fields: ['recentGoals', 'weeklyWork', 'nextWeekPlans'],
         consent: {
           allowPeopleNames: false,
           allowInternalUrls: false,
@@ -96,7 +96,7 @@ describe('周报 AI 建议、确定性回退与人工决定完整工作流', () 
     expect(result.generation).toMatchObject({
       status: 'succeeded',
       adoptionStatus: 'pending',
-      requestedFields: ['recentGoals'],
+      requestedFields: ['recentGoals', 'weeklyWork', 'nextWeekPlans'],
     });
     expect(result.generation.sanitizedInputHash).toMatch(/^[a-f0-9]{64}$/u);
     const report = await prisma.weeklyReport.findUniqueOrThrow({ where: { id: 'report-main' } });
@@ -105,10 +105,26 @@ describe('周报 AI 建议、确定性回退与人工决定完整工作流', () 
       where: { id: result.suggestionVersion.id },
       include: { sourceLinks: true },
     });
-    expect(suggestion.recentGoalsText).toContain('完整实现 AI 建议');
+    expect(suggestion.recentGoalsText).toBe('1、Alpha 父任务');
     expect(suggestion.recentGoalsText).not.toContain('AW-12');
-    expect(suggestion.weeklyWorkText).toBe('本周推进 Alpha 项目 AW-12，投入 2 小时。');
-    expect(suggestion.nextWeekPlansText).toBe('下周继续推进 Alpha 项目 AW-12。');
+    expect(suggestion.weeklyWorkText).toBe(
+      '【Alpha 父任务】\n1、完整实现 AI 建议本周持续推进（完成度 50%）',
+    );
+    expect(suggestion.nextWeekPlansText).toBe(suggestion.weeklyWorkText);
+    const structured = JSON.parse(suggestion.fieldsJson) as Record<
+      string,
+      Array<{ id: string; body: string }>
+    >;
+    expect(structured.nextWeekPlans?.map((block) => block.body)).toEqual(
+      structured.weeklyWork?.map((block) => block.body),
+    );
+    expect(suggestion.sourceLinks.filter((link) => link.fieldName === 'nextWeekPlans')).toEqual([
+      expect.objectContaining({
+        sourceType: 'task',
+        sourceId: 'task-1',
+        blockId: structured.nextWeekPlans?.[0]?.id,
+      }),
+    ]);
     expect(suggestion.problemsText).toBe('暂无');
     expect(suggestion.otherText).toBe('无');
     expect(
@@ -532,6 +548,7 @@ describe('周报 AI 建议、确定性回退与人工决定完整工作流', () 
       issueKey: 'AW-12',
       projectId: 'project-1',
       projectName: 'Alpha',
+      parentTitle: 'Alpha 父任务',
       title: '完整实现 AI 建议',
       normalizedStatus: 'in_progress',
       plannedStartDate: '2026-07-13',

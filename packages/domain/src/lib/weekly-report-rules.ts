@@ -1,7 +1,7 @@
 import { DomainError } from '@auto-work/contracts';
 import { requestHash } from './hash.js';
 
-export const weeklyReportRuleVersion = 'weekly-report-rule-v2';
+export const weeklyReportRuleVersion = 'weekly-report-rule-v5';
 
 export type WeeklyReportField =
   'recentGoals' | 'weeklyWork' | 'nextWeekPlans' | 'problems' | 'other';
@@ -162,14 +162,14 @@ export function generateWeeklyReportRuleDraft(
   };
 
   appendManualBlocks(fields, input.manualInputs);
-  fields.recentGoals.push(...buildGoalBlocks(tasks, periodEnd.time));
-  fields.weeklyWork.push(...buildWorkBlocks(tasks, evidence));
-  fields.nextWeekPlans.push(...buildPlanBlocks(tasks, periodEnd.time));
+  fields.recentGoals.push(...buildWeeklyReportGoalBlocks(tasks));
+  fields.weeklyWork.push(...buildWorkBlocks(tasks, evidence, input.periodStart, input.periodEnd));
   fields.problems.push(...buildProblemBlocks(tasks, evidence, periodEnd.time));
 
   for (const field of Object.keys(fields) as WeeklyReportField[]) {
     fields[field] = deduplicateBlocks(fields[field]).sort(compareBlocks);
   }
+  fields.nextWeekPlans = buildWeeklyReportPlanBlocks(tasks, fields.weeklyWork);
   const warnings = buildWarnings(tasks, evidence, taskById, Boolean(input.calendarVersion));
   const sourceIds = {
     taskIds: [...new Set(tasks.map((task) => task.id))].sort(),
@@ -189,62 +189,102 @@ export function generateWeeklyReportRuleDraft(
   return { ...withoutHash, contentHash: requestHash(withoutHash) };
 }
 
-function buildGoalBlocks(tasks: WeeklyTaskFact[], periodEnd: number): WeeklyReportBlock[] {
-  const horizon = addDays(periodEnd, 14);
-  const candidates = tasks.filter((task) => {
-    if (completedStatuses.has(task.normalizedStatus)) return false;
-    const start = task.plannedStartDate
-      ? parseBusinessDate(task.plannedStartDate, 'plannedStartDate').time
-      : null;
-    const due = task.dueDate ? parseBusinessDate(task.dueDate, 'dueDate').time : null;
-    return (
-      task.sprintActive ||
-      task.normalizedStatus === 'blocked' ||
-      (start !== null && start <= horizon) ||
-      (due !== null && due <= horizon)
-    );
-  });
-  const groups = groupTasks(candidates);
-  const blocks: WeeklyReportBlock[] = [];
-  for (const group of groups.values()) {
-    for (const task of [...group].sort(compareTasks).slice(0, 3)) {
-      const expected = task.dueDate ? `，预期在 ${task.dueDate} 前完成` : '';
-      blocks.push(
-        makeBlock(
-          'recentGoals',
-          task.projectName,
-          taskGroupTitle(task),
-          `推进${displayTask(task)}${expected}`,
-          [{ type: 'task', id: task.id }],
-          null,
-          secondsToHours(task.remainingEstimateSeconds ?? task.originalEstimateSeconds),
-          false,
-          taskSortKey(task),
-        ),
-      );
+export function buildWeeklyReportGoalBlocks(tasks: WeeklyTaskFact[]): WeeklyReportBlock[] {
+  const groups = new Map<string, WeeklyTaskFact[]>();
+  for (const task of tasks) {
+    if (!task.isCurrentUser || task.visibilityState !== 'visible') {
+      continue;
     }
+    // 与任务列表的父级分组一致：Sprint 中的业务父级优先，其次是直接父任务。
+    const title = weeklyTaskGoalTitle(task);
+    const key = `${task.projectId ?? task.projectName}:${title}`;
+    const group = groups.get(key) ?? [];
+    group.push(task);
+    groups.set(key, group);
   }
-  return blocks;
+  return [...groups.values()]
+    .map((group) => {
+      const sorted = [...group].sort((left, right) => left.id.localeCompare(right.id));
+      const task = sorted[0]!;
+      const title = weeklyTaskGoalTitle(task);
+      return makeBlock(
+        'recentGoals',
+        task.projectName,
+        title,
+        title,
+        sorted.map((item) => ({ type: 'task', id: item.id })),
+        null,
+        null,
+        false,
+        title,
+      );
+    })
+    .sort(compareBlocks);
+}
+
+export function copyWeeklyReportBlocks(
+  blocks: WeeklyReportBlock[],
+  field: WeeklyReportField,
+): WeeklyReportBlock[] {
+  return blocks.map((block) =>
+    makeBlock(
+      field,
+      block.projectName,
+      block.title,
+      block.body,
+      block.sourceRefs.map((reference) => ({ ...reference })),
+      block.actualHours,
+      block.estimatedHours,
+      block.pinned,
+      block.sortKey,
+    ),
+  );
+}
+
+export function buildWeeklyReportPlanBlocks(
+  tasks: WeeklyTaskFact[],
+  weeklyWork: WeeklyReportBlock[],
+): WeeklyReportBlock[] {
+  if (weeklyWork.some((block) => block.body.trim())) {
+    return copyWeeklyReportBlocks(weeklyWork, 'nextWeekPlans');
+  }
+  return tasks
+    .filter(
+      (task) =>
+        task.isCurrentUser &&
+        task.visibilityState === 'visible' &&
+        Boolean(task.plannedStartDate || task.dueDate),
+    )
+    .map((task) => {
+      const title = workGroupTitle(task);
+      return makeBlock(
+        'nextWeekPlans',
+        task.projectName,
+        title ?? task.projectName,
+        workItemTitle(task, title),
+        [{ type: 'task', id: task.id }],
+        null,
+        secondsToHours(task.originalEstimateSeconds),
+        false,
+        taskSortKey(task),
+      );
+    })
+    .sort(compareBlocks);
 }
 
 function buildWorkBlocks(
   tasks: WeeklyTaskFact[],
   evidence: WeeklyEvidenceFact[],
+  periodStart: string,
+  periodEnd: string,
 ): WeeklyReportBlock[] {
   const blocks: WeeklyReportBlock[] = [];
-  for (const task of tasks) {
-    // timeSpentSeconds 是服务层按当前周报周期、当前用户汇总后的工时；本周工作严格以它为准。
-    if (!weeklyTaskHasWorklog(task)) continue;
+  for (const task of weeklyReportWorkTasks(tasks, periodStart, periodEnd)) {
     const taskEvidence = evidence
       .filter((item) => item.taskId === task.id && item.relationStatus === 'confirmed')
       .sort((left, right) => left.id.localeCompare(right.id));
     const evidenceKinds = summarizeEvidenceKinds(taskEvidence);
-    const statusText =
-      task.normalizedStatus === 'done'
-        ? '已完成并形成结果'
-        : task.normalizedStatus === 'blocked'
-          ? '已推进但当前受阻'
-          : '本周持续推进';
+    const statusText = weeklyTaskWorkStatusText(task.normalizedStatus, weeklyTaskHasWorklog(task));
     const evidenceText = evidenceKinds ? `，关联${evidenceKinds}` : '';
     const groupTitle = workGroupTitle(task);
     const workTitle = workItemTitle(task, groupTitle);
@@ -267,47 +307,6 @@ function buildWorkBlocks(
     );
   }
   return blocks;
-}
-
-function buildPlanBlocks(tasks: WeeklyTaskFact[], periodEnd: number): WeeklyReportBlock[] {
-  const nextWeekEnd = addDays(periodEnd, 7);
-  return tasks
-    .filter((task) => {
-      if (completedStatuses.has(task.normalizedStatus)) return false;
-      const start = task.plannedStartDate
-        ? parseBusinessDate(task.plannedStartDate, 'plannedStartDate').time
-        : null;
-      const due = task.dueDate ? parseBusinessDate(task.dueDate, 'dueDate').time : null;
-      return (
-        task.sprintActive ||
-        task.normalizedStatus === 'in_progress' ||
-        (start !== null && start > periodEnd && start <= nextWeekEnd) ||
-        (due !== null && due <= nextWeekEnd)
-      );
-    })
-    .sort(compareTasks)
-    .map((task) => {
-      const overdue = task.dueDate
-        ? parseBusinessDate(task.dueDate, 'dueDate').time < periodEnd
-        : false;
-      const verb = overdue
-        ? '继续收尾'
-        : task.normalizedStatus === 'in_progress'
-          ? '继续推进'
-          : '计划开展';
-      const completion = task.dueDate ? `，预期完成点 ${task.dueDate}` : '';
-      return makeBlock(
-        'nextWeekPlans',
-        task.projectName,
-        taskGroupTitle(task),
-        `${verb}${displayTask(task)}${completion}`,
-        [{ type: 'task', id: task.id }],
-        null,
-        secondsToHours(task.remainingEstimateSeconds ?? task.originalEstimateSeconds),
-        false,
-        taskSortKey(task),
-      );
-    });
 }
 
 function buildProblemBlocks(
@@ -474,27 +473,6 @@ function makeBlock(
   };
 }
 
-function groupTasks(tasks: WeeklyTaskFact[]): Map<string, WeeklyTaskFact[]> {
-  const groups = new Map<string, WeeklyTaskFact[]>();
-  for (const task of tasks) {
-    const key = `${task.projectId ?? task.projectName}:${task.parentTaskId ?? task.parentTitle ?? 'root'}`;
-    groups.set(key, [...(groups.get(key) ?? []), task]);
-  }
-  return groups;
-}
-
-function compareTasks(left: WeeklyTaskFact, right: WeeklyTaskFact): number {
-  if (left.normalizedStatus === 'blocked' && right.normalizedStatus !== 'blocked') return -1;
-  if (right.normalizedStatus === 'blocked' && left.normalizedStatus !== 'blocked') return 1;
-  const priority = priorityValue(left.priority) - priorityValue(right.priority);
-  if (priority !== 0) return priority;
-  const due = (left.dueDate ?? '9999-12-31').localeCompare(right.dueDate ?? '9999-12-31');
-  if (due !== 0) return due;
-  return `${left.projectName}:${left.title}:${left.id}`.localeCompare(
-    `${right.projectName}:${right.title}:${right.id}`,
-  );
-}
-
 function compareBlocks(left: WeeklyReportBlock, right: WeeklyReportBlock): number {
   if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
   return `${left.projectName ?? ''}:${left.sortKey}:${left.id}`.localeCompare(
@@ -555,12 +533,69 @@ export function weeklyTaskGroupTitle(task: WeeklyTaskFact): string | null {
   return sprintParent || task.rootParentTitle?.trim() || task.parentTitle?.trim() || null;
 }
 
+function weeklyTaskGoalTitle(task: WeeklyTaskFact): string {
+  const sprintParent = (task.sprintNames ?? [])
+    .map((name) => /【([^】]+)】/u.exec(name)?.[1]?.trim() ?? '')
+    .find(Boolean);
+  return (
+    sprintParent ||
+    task.parentTitle?.trim() ||
+    task.rootParentTitle?.trim() ||
+    weeklyTaskDisplayTitle(task)
+  );
+}
+
 export function weeklyTaskDisplayTitle(task: WeeklyTaskFact): string {
   return weeklyTaskCleanTitle(task.title);
 }
 
 export function weeklyTaskHasWorklog(task: WeeklyTaskFact): boolean {
   return typeof task.timeSpentSeconds === 'number' && task.timeSpentSeconds > 0;
+}
+
+/** 优先采用本周期实填工时；尚无工时记录时，按周期内排期与任务状态生成正文。 */
+export function weeklyReportWorkTasks(
+  tasks: WeeklyTaskFact[],
+  periodStart: string,
+  periodEnd: string,
+): WeeklyTaskFact[] {
+  const visible = tasks.filter((task) => task.isCurrentUser && task.visibilityState === 'visible');
+  const logged = visible.filter(weeklyTaskHasWorklog);
+  const selected = logged.length
+    ? logged
+    : visible.filter((task) => {
+        if (task.normalizedStatus === 'cancelled') return false;
+        const start = task.plannedStartDate;
+        const due = task.dueDate;
+        return (
+          Boolean(start && start >= periodStart && start <= periodEnd) ||
+          Boolean(due && due >= periodStart && due <= periodEnd) ||
+          Boolean(start && due && start <= periodEnd && due >= periodStart)
+        );
+      });
+  return [...selected].sort((left, right) =>
+    `${left.projectName}:${taskSortKey(left)}`.localeCompare(
+      `${right.projectName}:${taskSortKey(right)}`,
+    ),
+  );
+}
+
+export function weeklyTaskWorkStatusText(status: WeeklyTaskStatus, hasWorklog: boolean): string {
+  if (!hasWorklog) {
+    return {
+      planned: '已排期，尚未开始',
+      in_progress: '进行中',
+      blocked: '当前受阻',
+      done: '已完成',
+      cancelled: '已取消',
+      other: '状态待确认',
+    }[status];
+  }
+  return status === 'done'
+    ? '已完成并形成结果'
+    : status === 'blocked'
+      ? '已推进但当前受阻'
+      : '本周持续推进';
 }
 
 export function weeklyTaskCleanTitle(value: string): string {

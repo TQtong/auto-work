@@ -1368,8 +1368,14 @@ export function WeeklyReportsPage() {
       return;
     }
     const applicableFields = Object.fromEntries(
-      Object.entries(templateFields).filter(([, value]) => value.trim().length > 0),
+      Object.entries(templateFields).filter(
+        ([field, value]) =>
+          field !== 'recentGoals' && field !== 'nextWeekPlans' && value.trim().length > 0,
+      ),
     ) as Partial<WeeklyReportContentTemplate['fields']>;
+    if (applicableFields.weeklyWork) {
+      applicableFields.nextWeekPlans = applicableFields.weeklyWork;
+    }
     if (Object.keys(applicableFields).length === 0) {
       void messageApi.warning('模板中没有可应用的默认内容');
       return;
@@ -1840,15 +1846,14 @@ export function WeeklyReportsPage() {
             icon={<DiffOutlined />}
             loading={contentTemplate.isLoading}
             onClick={() => {
-              contentTemplateForm.setFieldsValue(
-                contentTemplate.data?.data.fields ?? {
-                  recentGoals: '',
-                  weeklyWork: '',
-                  nextWeekPlans: '',
-                  problems: '',
-                  other: '',
-                },
-              );
+              contentTemplateForm.setFieldsValue({
+                weeklyWork: '',
+                problems: '',
+                other: '',
+                ...contentTemplate.data?.data.fields,
+                recentGoals: '',
+                nextWeekPlans: '',
+              });
               setContentTemplateOpen(true);
             }}
           >
@@ -3093,7 +3098,7 @@ export function WeeklyReportsPage() {
           type="info"
           showIcon
           message="这里维护六字段正文模块的默认内容"
-          description="保存后，新建周报会优先使用非空默认值；已有周报可在六字段正文右上角点击“应用周报模板”。模板中留空的字段不会覆盖已有内容，填写日期也不会被模板修改。"
+          description="近期目标根据本周期任务的父级分组生成，无需已填写工时；下周计划复用本周工作正文，正文为空时从排期任务生成同样的分组列表。这两项不使用固定模板。其余字段优先使用非空默认值；已有周报可点击“应用周报模板”，留空的字段保持原文。"
           style={{ marginBottom: 16 }}
         />
         <Form form={contentTemplateForm} layout="vertical">
@@ -3105,7 +3110,14 @@ export function WeeklyReportsPage() {
                   autoSize={{ minRows: definition.key === 'weeklyWork' ? 5 : 3, maxRows: 12 }}
                   showCount
                   maxLength={50_000}
-                  placeholder={`输入${definition.label}的默认内容；留空则自动生成`}
+                  disabled={definition.key === 'recentGoals' || definition.key === 'nextWeekPlans'}
+                  placeholder={
+                    definition.key === 'recentGoals'
+                      ? '自动填写本周期任务的父级名称'
+                      : definition.key === 'nextWeekPlans'
+                        ? '自动使用正文；正文为空时根据排期任务生成'
+                        : `输入${definition.label}的默认内容；留空则自动生成`
+                  }
                 />
               </Form.Item>
             ))}

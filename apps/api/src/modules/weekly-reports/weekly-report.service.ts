@@ -4,6 +4,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma, type WorkCalendarVersion } from '@prisma/client';
 import { DomainError, errorCodes } from '@auto-work/contracts';
 import {
+  buildWeeklyReportPlanBlocks,
   generateWeeklyReportRuleDraft,
   newId,
   requestHash,
@@ -210,6 +211,9 @@ export class WeeklyReportService {
     const templateFields = this.contentTemplateFields(contentTemplate);
     const effectiveFields = Object.fromEntries(
       weeklyFields.map((field) => {
+        if (field === 'recentGoals' || field === 'nextWeekPlans') {
+          return [field, ruleDraft.fields[field]];
+        }
         const text = templateFields[field];
         if (!text.trim()) return [field, ruleDraft.fields[field]];
         return [
@@ -231,6 +235,10 @@ export class WeeklyReportService {
         ];
       }),
     ) as Record<WeeklyReportField, WeeklyReportBlock[]>;
+    effectiveFields.nextWeekPlans = buildWeeklyReportPlanBlocks(
+      sources.tasks,
+      effectiveFields.weeklyWork,
+    );
     const jiraQuery = {
       scope: 'weekly',
       currentUser: true,
@@ -1931,7 +1939,7 @@ export class WeeklyReportService {
         projectId: task.projectId,
         projectName: task.project?.name ?? task.projectKey ?? '未归属项目',
         parentTaskId: task.parentTaskId,
-        parentTitle: task.parentTitle,
+        parentTitle: task.parentTask?.title ?? task.parentTitle,
         rootParentTaskId: rootParent?.id ?? null,
         rootParentIssueKey: rootParent?.issueKey ?? null,
         rootParentTitle: rootParent?.title ?? null,
@@ -2184,7 +2192,7 @@ export class WeeklyReportService {
     return Object.fromEntries(
       weeklyFields.map((field) => [
         field,
-        field === 'weeklyWork'
+        field === 'weeklyWork' || field === 'nextWeekPlans'
           ? this.renderGroupedWeeklyWork(fields[field])
           : this.renderNumberedBlocks(fields[field]),
       ]),

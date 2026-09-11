@@ -203,14 +203,14 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
     ).rejects.toThrow();
   });
 
-  it('保存六字段正文默认模板，并在新建周报时优先套用非空默认值', async () => {
+  it('目标取父级、计划复用正文，不被旧默认模板覆盖', async () => {
     expect(await reports.getContentTemplate()).toMatchObject({ id: null, version: 0 });
     const saved = await reports.updateContentTemplate(
       {
         version: 0,
         recentGoals: '默认近期目标',
         weeklyWork: '1、打包回归修复',
-        nextWeekPlans: '',
+        nextWeekPlans: '消防大赛支持',
         problems: '',
         other: '默认补充说明',
       },
@@ -223,10 +223,28 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
 
     const generated = await reports.generate(baseInput(), context, now);
     expect(generated.version.fields).toMatchObject({
-      recentGoals: '1、默认近期目标',
+      recentGoals: '1、周报能力建设',
       weeklyWork: '1、打包回归修复',
+      nextWeekPlans: '1、打包回归修复',
       other: '1、默认补充说明',
     });
+  });
+
+  it('只有排期、没有本周实填工时时仍生成本周工作和父级目标', async () => {
+    await prisma.taskWorklog.deleteMany();
+    const generated = await reports.generate(baseInput(), context, now);
+    expect(generated.version.fields.recentGoals).toBe('1、周报能力建设');
+    expect(generated.version.fields.weeklyWork).toContain(
+      '【周报能力建设】\n1、完成周报快照进行中',
+    );
+    expect(generated.version.fields.nextWeekPlans).toBe(generated.version.fields.weeklyWork);
+    expect(generated.version.sourceLinks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'recentGoals', sourceType: 'task', sourceId: 'task-1' }),
+        expect.objectContaining({ field: 'weeklyWork', sourceType: 'task', sourceId: 'task-1' }),
+        expect.objectContaining({ field: 'nextWeekPlans', sourceType: 'task', sourceId: 'task-1' }),
+      ]),
+    );
   });
 
   it('在一个事务内冻结来源、生成六字段版本和段落级链接，并可从历史复现', async () => {
@@ -251,6 +269,13 @@ describe('周报来源快照、不可变规则版本与周期重放', () => {
       },
     });
     expect(result.version.fields.weeklyWork).toContain('【周报能力建设】');
+    expect(result.version.fields.recentGoals).toBe('1、周报能力建设');
+    expect(result.version.fields.nextWeekPlans).toBe(result.version.fields.weeklyWork);
+    const workLinks = result.version.sourceLinks.filter((link) => link.field === 'weeklyWork');
+    const planLinks = result.version.sourceLinks.filter((link) => link.field === 'nextWeekPlans');
+    expect(planLinks.map((link) => link.sourceId).sort()).toEqual(
+      workLinks.map((link) => link.sourceId).sort(),
+    );
     expect(result.version.fields.weeklyWork).toContain('1、完成周报快照');
     expect(result.version.fields.weeklyWork).toContain('完成度 50%');
     expect(result.version.fields.weeklyWork).not.toContain('PROJ-1');
